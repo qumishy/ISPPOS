@@ -1,0 +1,50 @@
+import React from 'react';
+import { createStackNavigator } from '@react-navigation/stack';
+import DashboardScreen from '../screens/DashboardScreen';
+import AdminScreen from '../screens/AdminScreen';
+import CashierScreen from '../screens/CashierScreen';
+import ReportsScreen from '../screens/ReportsScreen';
+import SettingsScreen from '../screens/SettingsScreen';
+import {
+  InvoicesScreen,
+  CollectionsScreen,
+  InventoryScreen,
+  POSScreen,
+  WalletsScreen,
+} from '../screens/MainScreens';
+import {
+  InvoiceDetailScreen,
+  NewInvoiceScreen,
+  NewCollectionScreen,
+  AddBatchScreen,
+  NewPOSScreen,
+  EditPOSScreen,
+  AssignWalletScreen,
+} from '../screens/FormScreens';
+
+const Stack = createStackNavigator();
+
+export default function AdminDrawerNavigator() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Dashboard" component={DashboardScreen} />
+      <Stack.Screen name="Invoices" component={InvoicesScreen} />
+      <Stack.Screen name="Collections" component={CollectionsScreen} />
+      <Stack.Screen name="Inventory" component={InventoryScreen} />
+      <Stack.Screen name="POS" component={POSScreen} />
+      <Stack.Screen name="Wallets" component={WalletsScreen} />
+      <Stack.Screen name="Reports" component={ReportsScreen} />
+      <Stack.Screen name="Admin" component={AdminScreen} />
+      <Stack.Screen name="Cashier" component={CashierScreen} />
+      <Stack.Screen name="Settings" component={SettingsScreen} />
+
+      <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} />
+      <Stack.Screen name="NewInvoice" component={NewInvoiceScreen} />
+      <Stack.Screen name="NewCollection" component={NewCollectionScreen} />
+      <Stack.Screen name="AddBatch" component={AddBatchScreen} />
+      <Stack.Screen name="NewPOS" component={NewPOSScreen} />
+      <Stack.Screen name="EditPOS" component={EditPOSScreen} />
+      <Stack.Screen name="AssignWallet" component={AssignWalletScreen} />
+    </Stack.Navigator>
+  );
+}

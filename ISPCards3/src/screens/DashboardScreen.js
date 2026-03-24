@@ -1,241 +1,206 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import {
-  View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, RefreshControl, Dimensions, ActivityIndicator,
-} from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, ScrollView, StyleSheet, Dimensions } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { getLocalInvoices, getLocalCollections, execSQL } from '../services/database';
 import { colors, spacing, radius, fontSize } from '../theme';
-import { supabase } from '../services/supabase';
-import { getLocalInvoices, getLocalCollections } from '../services/database';
-import { formatCurrency, formatNumber, creditPercent, creditColor, formatDateShort } from '../utils/helpers';
-import { Badge, Btn, Loading, ProgressBar, Row } from '../components/UI';
-import SyncBar from '../components/SyncBar';
-import { useAuth } from '../services/AuthContext';
-import { isOnline } from '../services/SyncService';
+import { LineChart, PieChart } from 'react-native-chart-kit';
 
-const W = Dimensions.get('window').width;
+const screenWidth = Dimensions.get('window').width;
 
-function StatCard({ value, label, icon, color }) {
-  return (
-    <View style={[s.statCard, { borderTopColor: color, borderTopWidth: 3 }]}>
-      <Text style={s.statIcon}>{icon}</Text>
-      <Text style={[s.statValue, { color }]} numberOfLines={1}>{value}</Text>
-      <Text style={s.statLabel}>{label}</Text>
-    </View>
-  );
-}
+export default function DashboardScreen() {
 
-export default function DashboardScreen({ navigation }) {
-  const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState({
-    total_sales:0, total_collected:0, pending_inv:0,
-    overdue_inv:0, pending_col:0, blocked_pos:0, total_stock:0,
+    totalSales: 0,
+    totalCollected: 0,
+    totalPending: 0,
+    invoicesCount: 0,
   });
-  const [recentInvoices, setRecentInvoices] = useState([]);
-  const [pendingCols, setPendingCols] = useState([]);
-  const [topDebtors, setTopDebtors] = useState([]);
-  const [online, setOnline] = useState(isOnline());
 
-  const load = useCallback(async () => {
-    setOnline(isOnline());
+  const [chartData, setChart] = useState([0,0,0,0,0,0,0]);
+  const [pieData, setPie] = useState([]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadDashboard();
+    }, [])
+  );
+
+  const loadDashboard = async () => {
     try {
-      if (isOnline()) {
-        // بيانات من Supabase
-        const [invR, colR, posR, stockR] = await Promise.all([
-          supabase.from('invoices').select('id,net_amount,total_amount,status').eq('active',true),
-          supabase.from('collections').select('id,amount,status,agent_id,pos_id,collection_date,collection_number').eq('active',true),
-          supabase.from('pos_customers').select('id,name,owner_name,credit_used,credit_limit,is_blocked').eq('active',true),
-          supabase.from('batches').select('available_cards').eq('status','active'),
-        ]);
 
-        const invs = invR.data || [];
-        const cols = colR.data || [];
-        const pos = posR.data || [];
+      const invoices = await getLocalInvoices() || [];
+      const collections = await getLocalCollections() || [];
 
-        const total_sales = invs.reduce((s,i)=>s+(i.net_amount||i.total_amount||0),0);
-        const total_collected = cols.filter(c=>c.status==='approved').reduce((s,c)=>s+(c.amount||0),0);
-        const total_stock = (stockR.data||[]).reduce((s,b)=>s+(b.available_cards||0),0);
+      const totalSales = invoices.reduce((s, i) =>
+        s + Number(i.net_amount || i.total_amount || 0), 0);
 
-        setStats({
-          total_sales, total_collected,
-          pending_inv: invs.filter(i=>i.status==='pending').length,
-          overdue_inv: invs.filter(i=>i.status==='overdue').length,
-          pending_col: cols.filter(c=>c.status==='pending').length,
-          blocked_pos: pos.filter(p=>p.is_blocked).length,
-          total_stock,
+      const invoicesCount = invoices.length;
+
+      const pending = invoices.filter(i => i.status !== 'paid');
+      const totalPending = pending.reduce((s, i) =>
+        s + Number(i.net_amount || i.total_amount || 0), 0);
+
+      const approvedCollections = collections.filter(c => c.status === 'approved');
+      const totalCollected = approvedCollections.reduce((s, c) =>
+        s + Number(c.amount || 0), 0);
+
+      setStats({
+        totalSales,
+        totalCollected,
+        totalPending,
+        invoicesCount,
+      });
+
+      const days = getLast7DaysFull();
+
+      const chart = days.map(date => {
+        const total = collections
+          .filter(c => c.collection_date?.startsWith(date))
+          .reduce((s, c) => s + Number(c.amount || 0), 0);
+
+        return Number(total || 0);
+      });
+
+      setChart(chart);
+
+      let usersMap = {};
+
+      try {
+        const usersRes = await execSQL("SELECT id, name FROM users");
+        usersRes.rows._array.forEach(u => {
+          usersMap[u.id] = u.name;
         });
+      } catch (e) {}
 
-        // آخر 5 فواتير (من SQLite المحلي)
-        const localInvs = await getLocalInvoices();
-        setRecentInvoices(localInvs.slice(0,5));
+      const byAgent = {};
 
-        // أعلى التحصيلات المعلقة
-        const localCols = await getLocalCollections({status:'pending'});
-        setPendingCols(localCols.slice(0,3));
+      collections.forEach(c => {
+        const name = usersMap[c.agent_id] || 'غير معروف';
+        byAgent[name] = (byAgent[name] || 0) + Number(c.amount || 0);
+      });
 
-        // أعلى المديونيات
-        const sorted = pos.filter(p=>p.credit_used>0).sort((a,b)=>b.credit_used-a.credit_used).slice(0,4);
-        setTopDebtors(sorted);
+      const pie = Object.keys(byAgent).map((key, i) => ({
+        name: formatName(key),
+        amount: byAgent[key],
+        color: getColor(i),
+        legendFontColor: "#ccc",
+        legendFontSize: 12
+      }));
 
-      } else {
-        // أوفلاين — من SQLite
-        const [localInvs, localCols] = await Promise.all([
-          getLocalInvoices(), getLocalCollections({status:'pending'}),
-        ]);
-        const total_sales = localInvs.reduce((s,i)=>s+(i.net_amount||i.total_amount||0),0);
-        setStats({
-          total_sales, total_collected:0,
-          pending_inv: localInvs.filter(i=>i.status==='pending').length,
-          overdue_inv: localInvs.filter(i=>i.status==='overdue').length,
-          pending_col: localCols.length,
-          blocked_pos:0, total_stock:0,
-        });
-        setRecentInvoices(localInvs.slice(0,5));
-        setPendingCols(localCols.slice(0,3));
-        setTopDebtors([]);
-      }
-    } catch(e) { console.log('Dashboard error:', e.message); }
-    setLoading(false);
-    setRefreshing(false);
-  }, [user]);
+      setPie(pie);
 
-  useEffect(() => { load(); }, [load]);
+    } catch (e) {
+      console.log('Dashboard error', e);
+    }
+  };
 
-  if (loading) return <Loading />;
+  const formatName = (name) => {
+    if (!name) return 'غير معروف';
+    return name.length > 10 ? name.substring(0, 10) + '...' : name;
+  };
 
-  const remaining = (stats.total_sales||0) - (stats.total_collected||0);
+  const getLast7DaysFull = () => {
+    const arr = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      arr.push(d.toISOString().slice(0, 10));
+    }
+    return arr;
+  };
+
+  const getLast7DaysLabels = () => {
+    const arr = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      arr.push(d.toLocaleDateString('en-US', { day: '2-digit', month: '2-digit' }));
+    }
+    return arr;
+  };
+
+  const getColor = (i) => {
+    const colorsArr = ['#4CAF50','#2196F3','#FFC107','#E91E63','#9C27B0'];
+    return colorsArr[i % colorsArr.length];
+  };
+
+  const formatCurrency = (n) =>
+    `${Number(n || 0).toLocaleString()} ر.ي`;
 
   return (
-    <View style={{ flex:1, backgroundColor:colors.bg }}>
-      <SyncBar />
-      {!online && (
-        <View style={s.offlineBanner}>
-          <Text style={s.offlineTxt}>📵 أوفلاين — البيانات المالية قد لا تكون محدّثة</Text>
-        </View>
+    <ScrollView style={styles.screen} contentContainerStyle={{padding:spacing.lg}}>
+
+      <View style={styles.row}>
+        <Card title="إجمالي المبيعات" value={formatCurrency(stats.totalSales)} />
+        <Card title="التحصيلات" value={formatCurrency(stats.totalCollected)} />
+      </View>
+
+      <View style={styles.row}>
+        <Card title="المعلق" value={formatCurrency(stats.totalPending)} />
+        <Card title="عدد الفواتير" value={stats.invoicesCount} />
+      </View>
+
+      <Text style={styles.title}>تحصيلات آخر 7 أيام</Text>
+
+      <LineChart
+        data={{
+          labels: getLast7DaysLabels(),
+          datasets: [{ data: chartData }]
+        }}
+        width={screenWidth - 40}
+        height={220}
+        chartConfig={chartConfig}
+        bezier
+        style={{ borderRadius: 16 }}
+      />
+
+      <Text style={styles.title}>تحصيل حسب المندوب</Text>
+
+      {pieData.length > 0 && (
+        <PieChart
+          data={pieData}
+          width={screenWidth - 40}
+          height={220}
+          chartConfig={chartConfig}
+          accessor="amount"
+          backgroundColor="transparent"
+          paddingLeft="20"
+        />
       )}
-      <ScrollView
-        contentContainerStyle={{ padding:spacing.md, paddingBottom:90 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}
-      >
-        {/* بطاقات الإحصائيات */}
-        <View style={s.statsGrid}>
-          <StatCard value={formatCurrency(stats.total_sales)} label="إجمالي المبيعات" icon="📊" color={colors.blue}/>
-          <StatCard value={formatCurrency(stats.total_collected)} label="إجمالي المحصّل" icon="✅" color={colors.green}/>
-          <StatCard value={formatCurrency(remaining)} label="المستحقات" icon="⏳" color={colors.orange}/>
-          <StatCard value={formatNumber(stats.total_stock)} label="كروت بالمخزن" icon="📦" color={colors.cyan}/>
-        </View>
 
-        {/* تنبيهات */}
-        {(stats.pending_inv>0||stats.overdue_inv>0||stats.pending_col>0||stats.blocked_pos>0)&&(
-          <View style={s.alertBar}>
-            {stats.pending_inv>0&&<View style={[s.chip,{backgroundColor:colors.orange+'22'}]}><Text style={[s.chipTxt,{color:colors.orange}]}>🧾 {stats.pending_inv} فاتورة معلقة</Text></View>}
-            {stats.overdue_inv>0&&<View style={[s.chip,{backgroundColor:colors.red+'22'}]}><Text style={[s.chipTxt,{color:colors.red}]}>⚠️ {stats.overdue_inv} متأخرة</Text></View>}
-            {stats.pending_col>0&&<View style={[s.chip,{backgroundColor:colors.purple+'22'}]}><Text style={[s.chipTxt,{color:colors.purple}]}>💰 {stats.pending_col} قبض معلق</Text></View>}
-            {stats.blocked_pos>0&&<View style={[s.chip,{backgroundColor:colors.red+'22'}]}><Text style={[s.chipTxt,{color:colors.red}]}>🚫 {stats.blocked_pos} محجوب</Text></View>}
-          </View>
-        )}
+    </ScrollView>
+  );
+}
 
-        {/* آخر الفواتير */}
-        <Row style={s.secHeader}>
-          <Text style={s.secTitle}>🧾 آخر الفواتير</Text>
-          <TouchableOpacity onPress={()=>navigation.navigate('Invoices')}><Text style={s.secLink}>الكل ←</Text></TouchableOpacity>
-        </Row>
-        <View style={s.card}>
-          {recentInvoices.length===0
-            ? <Text style={s.empty}>لا توجد فواتير بعد</Text>
-            : recentInvoices.map((inv,i)=>(
-              <TouchableOpacity key={inv.id}
-                style={[s.listRow,i===recentInvoices.length-1&&{borderBottomWidth:0}]}>
-                <View style={{flex:1}}>
-                  <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.cyan}}>{inv.invoice_number}</Text>
-                  <Text style={{fontSize:fontSize.xs,color:colors.t3,marginTop:2}}>
-                    {inv.pos_customers?.name||'—'} • {formatDateShort(inv.invoice_date)}
-                  </Text>
-                </View>
-                <View style={{alignItems:'flex-end',gap:3}}>
-                  <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.t1}}>
-                    {formatCurrency(inv.net_amount||inv.total_amount)}
-                  </Text>
-                  <Badge status={inv.status}/>
-                </View>
-              </TouchableOpacity>
-            ))
-          }
-        </View>
-
-        {/* تحصيلات معلقة */}
-        {pendingCols.length>0&&(
-          <>
-            <Row style={s.secHeader}>
-              <Text style={s.secTitle}>💰 تحصيلات معلقة</Text>
-              <TouchableOpacity onPress={()=>navigation.navigate('Cashier')}><Text style={s.secLink}>اعتماد ←</Text></TouchableOpacity>
-            </Row>
-            <View style={s.card}>
-              {pendingCols.map((col,i)=>(
-                <View key={col.id} style={[s.listRow,i===pendingCols.length-1&&{borderBottomWidth:0}]}>
-                  <View style={{flex:1}}>
-                    <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.t1}}>{col.users?.name||'—'}</Text>
-                    <Text style={{fontSize:fontSize.xs,color:colors.t3,marginTop:2}}>{col.pos_customers?.name||'—'}</Text>
-                  </View>
-                  <Text style={{fontSize:fontSize.lg,fontWeight:'800',color:colors.green}}>{formatCurrency(col.amount)}</Text>
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-
-        {/* أعلى المديونيات */}
-        {topDebtors.length>0&&(
-          <>
-            <Row style={s.secHeader}>
-              <Text style={s.secTitle}>💳 أعلى المديونيات</Text>
-              <TouchableOpacity onPress={()=>navigation.navigate('Reports')}><Text style={s.secLink}>الكل ←</Text></TouchableOpacity>
-            </Row>
-            <View style={s.card}>
-              {topDebtors.map((p,i)=>{
-                const pct=creditPercent(p.credit_used,p.credit_limit);
-                const col=creditColor(pct,p.is_blocked);
-                return (
-                  <View key={p.id} style={[s.listRow,i===topDebtors.length-1&&{borderBottomWidth:0}]}>
-                    <View style={{flex:1,marginLeft:spacing.sm}}>
-                      <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.t1}}>{p.name}</Text>
-                      <ProgressBar percent={pct} color={col} height={3}/>
-                    </View>
-                    <View style={{alignItems:'flex-end'}}>
-                      <Text style={{fontSize:fontSize.md,fontWeight:'700',color:colors.orange}}>{formatCurrency(p.credit_used)}</Text>
-                      <Text style={{fontSize:fontSize.xs,color:col}}>{pct}%</Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          </>
-        )}
-      </ScrollView>
+function Card({ title, value }) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={styles.cardValue} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
 
-const s = StyleSheet.create({
-  statsGrid:{flexDirection:'row',flexWrap:'wrap',gap:spacing.sm,marginBottom:spacing.md},
-  statCard:{
-    width:(W-spacing.md*2-spacing.sm)/2-1,
-    backgroundColor:colors.card,borderWidth:1,borderColor:colors.border,
-    borderRadius:radius.md,padding:spacing.md,alignItems:'center',
+const chartConfig = {
+  backgroundGradientFrom: "#0f172a",
+  backgroundGradientTo: "#0f172a",
+  decimalPlaces: 0,
+  color: () => "#3b82f6",
+  labelColor: () => "#aaa",
+};
+
+const styles = StyleSheet.create({
+  screen: { flex:1, backgroundColor: colors.bg },
+  row: { flexDirection:'row', gap:10, marginBottom:10 },
+  card: {
+    flex:1,
+    backgroundColor: colors.card,
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth:1,
+    borderColor: colors.border
   },
-  statIcon:{fontSize:22,marginBottom:spacing.xs},
-  statValue:{fontSize:fontSize.xl,fontWeight:'800',marginBottom:2,textAlign:'center'},
-  statLabel:{fontSize:fontSize.xs,color:colors.t3,textAlign:'center'},
-  offlineBanner:{backgroundColor:colors.red+'22',padding:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.red+'44'},
-  offlineTxt:{color:colors.red,fontSize:fontSize.xs,textAlign:'center',fontWeight:'600'},
-  alertBar:{flexDirection:'row',flexWrap:'wrap',gap:spacing.sm,marginBottom:spacing.md},
-  chip:{paddingHorizontal:spacing.md,paddingVertical:spacing.xs,borderRadius:radius.full},
-  chipTxt:{fontSize:fontSize.xs,fontWeight:'700'},
-  secHeader:{justifyContent:'space-between',alignItems:'center',marginBottom:spacing.sm,marginTop:spacing.sm},
-  secTitle:{fontSize:fontSize.lg,fontWeight:'800',color:colors.t1},
-  secLink:{fontSize:fontSize.xs,color:colors.blue,fontWeight:'700'},
-  card:{backgroundColor:colors.card,borderWidth:1,borderColor:colors.border,borderRadius:radius.md,padding:spacing.md,marginBottom:spacing.md},
-  listRow:{flexDirection:'row',alignItems:'center',paddingVertical:spacing.sm,borderBottomWidth:1,borderBottomColor:colors.border},
-  empty:{textAlign:'center',color:colors.t3,fontSize:fontSize.sm,paddingVertical:spacing.lg},
+  cardTitle: { color: colors.t3 },
+  cardValue: { color: colors.t1, fontSize: 18, fontWeight:'800', marginTop:5 },
+  title: { color: colors.t1, marginTop:20, marginBottom:10 }
 });

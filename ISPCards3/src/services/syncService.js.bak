@@ -1,0 +1,62 @@
+import NetInfo from '@react-native-community/netinfo';
+import { db } from './database';
+import { supabase } from './supabase';
+
+export const processSyncQueue = () => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `SELECT * FROM sync_queue ORDER BY id ASC`,
+      [],
+      async (_, { rows }) => {
+
+        for (let i = 0; i < rows.length; i++) {
+          const item = rows.item(i);
+          const data = JSON.parse(item.data);
+
+          try {
+
+            if (item.action === 'insert') {
+              await supabase.from(item.table_name).insert(data);
+            }
+
+            if (item.action === 'update') {
+              await supabase.from(item.table_name)
+                .update(data)
+                .eq('id', data.id);
+            }
+
+            if (item.action === 'delete') {
+              await supabase.from(item.table_name)
+                .delete()
+                .eq('id', data.id);
+            }
+
+            // حذف بعد النجاح
+            tx.executeSql(`DELETE FROM sync_queue WHERE id = ?`, [item.id]);
+
+          } catch (err) {
+            console.log('Sync error:', err);
+            break;
+          }
+        }
+
+      }
+    );
+  });
+};
+
+// مراقبة الإنترنت
+export const startSyncListener = () => {
+  NetInfo.addEventListener(state => {
+    if (state.isConnected) {
+      processSyncQueue();
+    }
+  });
+};
+
+// مزامنة دورية
+export const startAutoSync = () => {
+  setInterval(() => {
+    processSyncQueue();
+  }, 30000);
+};

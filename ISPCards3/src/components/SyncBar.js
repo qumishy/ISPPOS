@@ -1,50 +1,63 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { useSync } from '../hooks/useSync';
-import { colors, fontSize, spacing } from '../theme';
 
 export default function SyncBar() {
-  const { online, pending, syncing, manualSync } = useSync();
+  const { online, pending, syncing, runSync } = useSync();
 
-  if (online && pending === 0 && !syncing) return null;
-
-  const bg = online ? (syncing ? colors.blue : pending > 0 ? colors.orange : colors.green) : colors.red;
-
-  let msg = '';
-  if (!online) msg = '📵 أوفلاين — البيانات محفوظة محلياً';
-  else if (syncing) msg = '🔄 جاري المزامنة...';
-  else if (pending > 0) msg = `📤 ${pending} عملية بانتظار الرفع`;
+  const bg = !online ? '#7f1d1d' : pending > 0 ? '#92400e' : '#065f46';
+  const label = !online
+    ? 'أوفلاين'
+    : syncing
+      ? 'جاري المزامنة...'
+      : pending > 0
+        ? `${pending} بانتظار الرفع`
+        : 'تمت المزامنة';
 
   return (
     <TouchableOpacity
-      style={[styles.bar, { backgroundColor: bg + '22', borderBottomColor: bg + '55' }]}
-      onPress={online && pending > 0 && !syncing ? manualSync : undefined}
-      activeOpacity={online && pending > 0 ? 0.7 : 1}
+      style={[s.wrap, { backgroundColor: bg }]}
+      onPress={runSync}
+      activeOpacity={0.85}
     >
-      <View style={styles.content}>
-        {syncing
-          ? <ActivityIndicator size="small" color={bg} style={{ marginLeft: 6 }} />
-          : null
-        }
-        <Text style={[styles.text, { color: bg }]}>{msg}</Text>
-        {online && pending > 0 && !syncing && (
-          <View style={[styles.badge, { backgroundColor: bg }]}>
-            <Text style={styles.badgeTxt}>{pending}</Text>
-          </View>
+      <View style={s.row}>
+        {syncing ? (
+          <ActivityIndicator color="#fff" size="small" />
+        ) : (
+          <Text style={s.icon}>{online ? '☁️' : '📴'}</Text>
         )}
-        {online && pending > 0 && !syncing && (
-          <Text style={[styles.action, { color: bg }]}>اضغط للمزامنة</Text>
-        )}
+        <Text style={s.text}>{label}</Text>
+        <Text style={s.action}>اضغط للمزامنة</Text>
       </View>
     </TouchableOpacity>
   );
 }
 
-const styles = StyleSheet.create({
-  bar: { borderBottomWidth: 1, paddingVertical: spacing.sm, paddingHorizontal: spacing.lg },
-  content: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  text: { flex: 1, fontSize: fontSize.sm, fontWeight: '600' },
-  badge: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  badgeTxt: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  action: { fontSize: fontSize.xs, fontWeight: '700', opacity: 0.8 },
+const s = StyleSheet.create({
+  wrap: {
+    marginHorizontal: 14,
+    marginVertical: 8,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  row: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 10,
+  },
+  icon: {
+    fontSize: 16,
+  },
+  text: {
+    color: '#fff',
+    fontWeight: '800',
+    flex: 1,
+    textAlign: 'right',
+  },
+  action: {
+    color: '#fff',
+    opacity: 0.9,
+    fontSize: 12,
+  },
 });

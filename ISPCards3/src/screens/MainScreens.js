@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import { execSQL } from '../services/database';
+import { syncCollections } from '../services/sync';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   TextInput, RefreshControl, Alert, ScrollView,
@@ -105,10 +108,24 @@ export function CollectionsScreen({ navigation }) {
   const [tab, setTab] = useState('pending');
 
   const load = useCallback(async () => {
-    const data = await getLocalCollections();
-    setCols(data); setLoading(false); setRefreshing(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+  setLoading(true);
+
+  // ✅ أولاً sync
+  await syncCollections();
+
+  // ✅ ثم قراءة
+  const data = await getLocalCollections();
+  setCols(data);
+
+  setLoading(false);
+  setRefreshing(false);
+
+}, []);
+useFocusEffect(
+  useCallback(() => {
+    load();
+  }, [load])
+);
 
   const handleApprove = (id,amount) => Alert.alert('اعتماد التحصيل',`هل تؤكد استلام ${formatCurrency(amount)}؟`,[
     {text:'إلغاء',style:'cancel'},
@@ -164,7 +181,7 @@ export function CollectionsScreen({ navigation }) {
                   <View style={s.colItem}><Text style={s.colLabel}>المندوب</Text><Text style={s.colVal}>{col.users?.name||'—'}</Text></View>
                   <View style={s.colItem}><Text style={s.colLabel}>نقطة البيع</Text><Text style={s.colVal}>{col.pos_customers?.name||'—'}</Text></View>
                   <View style={s.colItem}><Text style={s.colLabel}>الطريقة</Text><Text style={s.colVal}>{methodLabel(col.method)}</Text></View>
-                  {col.invoice?.invoice_number&&<View style={s.colItem}><Text style={s.colLabel}>الفاتورة</Text><Text style={[s.colVal,{color:colors.blue}]}>{col.invoice.invoice_number}</Text></View>}
+                  {col.invoices?.invoice_number&&<View style={s.colItem}><Text style={s.colLabel}>الفاتورة</Text><Text style={[s.colVal,{color:colors.blue}]}>{col.invoices.invoice_number}</Text></View>}
                 </View>
                 {col.status==='pending'&&can('canApproveCollection')&&(
                   <Row style={{gap:spacing.sm,marginTop:spacing.sm}}>

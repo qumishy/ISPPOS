@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { isOnline, addSyncListener, syncNow } from '../services/SyncService';
-import { getSyncQueueCount } from '../services/database';
+import { getSyncQueueCount, subscribeDataChanges } from '../services/database';
 
 export function useSync() {
   const [online, setOnline] = useState(false);
@@ -8,23 +8,33 @@ export function useSync() {
   const [syncing, setSyncing] = useState(false);
 
   const refresh = useCallback(async () => {
-    try { setPending(await getSyncQueueCount()); } catch(e) { setPending(0); }
+    try {
+      setPending(await getSyncQueueCount());
+    } catch (e) {
+      setPending(0);
+    }
     setOnline(isOnline());
   }, []);
 
+  const runSync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await syncNow();
+    } finally {
+      setSyncing(false);
+      await refresh();
+    }
+  }, [refresh]);
+
   useEffect(() => {
     refresh();
-    const unsub = addSyncListener(refresh);
-    return unsub;
+    const unsubSync = addSyncListener(refresh);
+    const unsubData = subscribeDataChanges(refresh);
+    return () => {
+      unsubSync?.();
+      unsubData?.();
+    };
   }, [refresh]);
 
-  const manualSync = useCallback(async () => {
-    if (!isOnline()) return;
-    setSyncing(true);
-    await syncNow();
-    await refresh();
-    setSyncing(false);
-  }, [refresh]);
-
-  return { online, pending, syncing, manualSync, refresh };
+  return { online, pending, syncing, refresh, runSync };
 }
