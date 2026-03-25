@@ -39,7 +39,7 @@ export function InvoicesScreen({ navigation }) {
   useEffect(() => { setLoading(true); load(); }, [load]);
 
   const filtered = invoices.filter(inv =>
-    !search || inv.invoice_number?.includes(search) || inv.pos_customers?.name?.includes(search)
+    !search || inv.invoice_number?.includes(search) || inv.pos_name.includes(search)
   );
   const total = invoices.reduce((s,i)=>s+(i.net_amount||i.total_amount||0),0);
   const paid = invoices.filter(i=>i.status==='paid').reduce((s,i)=>s+(i.net_amount||i.total_amount||0),0);
@@ -82,8 +82,8 @@ export function InvoicesScreen({ navigation }) {
                     <Text style={s.rowNum}>{inv.invoice_number}</Text>
                     {inv.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
                   </Row>
-                  <Text style={s.rowPos}>{inv.pos_customers?.name||'—'}</Text>
-                  <Text style={s.rowMeta}>{inv.users?.name||'—'} • {formatDateShort(inv.invoice_date)}</Text>
+                  <Text style={s.rowPos}>{inv.pos_name||'—'}</Text>
+                  <Text style={s.rowMeta}>{inv.agent_name||'—'} • {formatDateShort(inv.invoice_date)}</Text>
                 </View>
                 <View style={{alignItems:'flex-end',gap:4}}>
                   <Text style={s.rowAmt}>{formatCurrency(inv.net_amount||inv.total_amount)}</Text>
@@ -102,93 +102,169 @@ export function InvoicesScreen({ navigation }) {
 // ══════════════════════════════════════════════════
 export function CollectionsScreen({ navigation }) {
   const { can } = useAuth();
+
   const [cols, setCols] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState('pending');
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
-  setLoading(true);
+    try {
+      setLoading(true);
 
-  // ✅ أولاً sync
-  await syncCollections();
+      await syncCollections();
 
-  // ✅ ثم قراءة
-  const data = await getLocalCollections();
-  setCols(data);
+      const data = await getLocalCollections();
+      setCols(data);
 
-  setLoading(false);
-  setRefreshing(false);
+    } catch (e) {
+      console.log("LOAD ERROR:", e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
-}, []);
-useFocusEffect(
-  useCallback(() => {
-    load();
-  }, [load])
-);
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
-  const handleApprove = (id,amount) => Alert.alert('اعتماد التحصيل',`هل تؤكد استلام ${formatCurrency(amount)}؟`,[
-    {text:'إلغاء',style:'cancel'},
-    {text:'✅ نعم اعتماد',onPress:async()=>{await approveLocalCollection(id);load();}},
-  ]);
-  const handleReject = (id) => Alert.alert('رفض التحصيل','هل تريد رفض هذا الإشعار؟',[
-    {text:'إلغاء',style:'cancel'},
-    {text:'❌ رفض',style:'destructive',onPress:async()=>{await rejectLocalCollection(id,'مرفوض');load();}},
-  ]);
+  const handleApprove = (id, amount) =>
+    Alert.alert('اعتماد التحصيل', `هل تؤكد استلام ${formatCurrency(amount)}؟`, [
+      { text: 'إلغاء', style: 'cancel' },
+      { text: '✅ نعم اعتماد', onPress: async () => { await approveLocalCollection(id); load(); } },
+    ]);
 
-  const pending=cols.filter(c=>c.status==='pending');
-  const approved=cols.filter(c=>c.status==='approved');
-  const display=tab==='pending'?pending:tab==='approved'?approved:cols;
-  const totalPending=pending.reduce((s,c)=>s+(c.amount||0),0);
-  const totalApproved=approved.reduce((s,c)=>s+(c.amount||0),0);
-  const methodLabel=m=>({cash:'نقدي',transfer:'تحويل',check:'شيك'}[m]||m);
+  const handleReject = (id) =>
+    Alert.alert('رفض التحصيل', 'هل تريد رفض هذا الإشعار؟', [
+      { text: 'إلغاء', style: 'cancel' },
+      { text: '❌ رفض', style: 'destructive', onPress: async () => { await rejectLocalCollection(id, 'مرفوض'); load(); } },
+    ]);
+
+  const pending = cols.filter(c => c.status === 'pending');
+  const approved = cols.filter(c => c.status === 'approved');
+  const display = tab === 'pending' ? pending : tab === 'approved' ? approved : cols;
+
+  const filtered = display.filter(c =>
+    (c.collection_number || '').toLowerCase().includes(search.toLowerCase()) ||
+    (c.agent_name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (c.pos_name || '').toLowerCase().includes(search.toLowerCase())
+  );
+
+  const totalPending = pending.reduce((s, c) => s + (c.amount || 0), 0);
+  const totalApproved = approved.reduce((s, c) => s + (c.amount || 0), 0);
+
+  const methodLabel = m => ({ cash: 'نقدي', transfer: 'تحويل', check: 'شيك' }[m] || m);
 
   return (
     <View style={s.screen}>
-      <SyncBar/>
+      <SyncBar />
+
+      {/* KPI */}
       <View style={s.kpiRow}>
-        <KpiCard value={pending.length} label="معلق" color={colors.orange}/>
-        <KpiCard value={formatCurrency(totalPending)} label="قيد الانتظار" color={colors.orange}/>
-        <KpiCard value={formatCurrency(totalApproved)} label="محصّل" color={colors.green}/>
+        <KpiCard value={pending.length} label="معلق" color={colors.orange} />
+        <KpiCard value={formatCurrency(totalPending)} label="قيد الانتظار" color={colors.orange} />
+        <KpiCard value={formatCurrency(totalApproved)} label="محصّل" color={colors.green} />
       </View>
+
+      {/* Tabs + Search */}
       <View style={s.tabs}>
-        {[{k:'pending',l:`معلقة (${pending.length})`},{k:'approved',l:`معتمدة (${approved.length})`},{k:'all',l:`الكل (${cols.length})`}].map(t=>(
-          <TouchableOpacity key={t.k} style={[s.tab,tab===t.k&&s.tabAct]} onPress={()=>setTab(t.k)}>
-            <Text style={[s.tabTxt,tab===t.k&&s.tabTxtAct]}>{t.l}</Text>
+        {[
+          { k: 'pending', l: `معلقة (${pending.length})` },
+          { k: 'approved', l: `معتمدة (${approved.length})` },
+          { k: 'all', l: `الكل (${cols.length})` }
+        ].map(t => (
+          <TouchableOpacity key={t.k} style={[s.tab, tab === t.k && s.tabAct]} onPress={() => setTab(t.k)}>
+            <Text style={[s.tabTxt, tab === t.k && s.tabTxtAct]}>{t.l}</Text>
           </TouchableOpacity>
         ))}
-        <TouchableOpacity style={{marginLeft:'auto',paddingHorizontal:spacing.md,paddingVertical:spacing.md}}
-          onPress={()=>navigation.navigate('NewCollection')}>
-          <Text style={{color:colors.blue,fontWeight:'700',fontSize:fontSize.sm}}>+ قبض</Text>
-        </TouchableOpacity>
+
+        <View style={s.searchRow}>
+        <View style={s.searchBox}>
+          <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch}
+            placeholder="بحث..." placeholderTextColor={colors.t3}/>
+        </View>
+        <Btn label="+ سند قبض" variant="primary" size="sm" onPress={()=>navigation.navigate('NewCollection')}/>
       </View>
-      {loading ? <Loading/> : display.length===0
-        ? <Empty icon="💰" title={tab==='pending'?'✅ لا تحصيلات معلقة':'لا توجد تحصيلات'}
-            action="+ إشعار قبض" onAction={()=>navigation.navigate('NewCollection')}/>
-        : <ScrollView contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}>
-            {display.map(col=>(
+      </View>
+
+      {/* Content */}
+      {loading ? <Loading /> : filtered.length === 0
+        ? <Empty
+            icon="💰"
+            title="لا توجد تحصيلات"
+            action="+ قبض جديد"
+            onAction={() => navigation.navigate('NewCollection')}
+          />
+        : <ScrollView
+            contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={() => { setRefreshing(true); load(); }}
+                tintColor={colors.blue}
+              />
+            }
+          >
+            {filtered.map(col => (
               <View key={col.id} style={s.apc}>
-                <Row style={{justifyContent:'space-between',marginBottom:spacing.sm}}>
-                  <Row style={{gap:6}}>
-                    <Text style={s.colNum}>{col.collection_number}</Text>
-                    {col.synced==0&&<Text style={{fontSize:10}}>📤</Text>}
-                  </Row>
-                  <Badge status={col.status}/>
-                </Row>
-                <Text style={s.colAmt}>{formatCurrency(col.amount)}</Text>
-                <View style={s.colGrid}>
-                  <View style={s.colItem}><Text style={s.colLabel}>المندوب</Text><Text style={s.colVal}>{col.users?.name||'—'}</Text></View>
-                  <View style={s.colItem}><Text style={s.colLabel}>نقطة البيع</Text><Text style={s.colVal}>{col.pos_customers?.name||'—'}</Text></View>
-                  <View style={s.colItem}><Text style={s.colLabel}>الطريقة</Text><Text style={s.colVal}>{methodLabel(col.method)}</Text></View>
-                  {col.invoices?.invoice_number&&<View style={s.colItem}><Text style={s.colLabel}>الفاتورة</Text><Text style={[s.colVal,{color:colors.blue}]}>{col.invoices.invoice_number}</Text></View>}
+
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm }}>
+                  <Text style={s.colNum}>{col.collection_number}</Text>
+                  <Badge status={col.status} />
                 </View>
-                {col.status==='pending'&&can('canApproveCollection')&&(
-                  <Row style={{gap:spacing.sm,marginTop:spacing.sm}}>
-                    <Btn label="✅ اعتماد واستلام" variant="success" size="sm" style={{flex:1}} onPress={()=>handleApprove(col.id,col.amount)}/>
-                    <Btn label="❌ رفض" variant="danger" size="sm" style={{flex:1}} onPress={()=>handleReject(col.id)}/>
-                  </Row>
+
+                <Text style={s.colAmt}>{formatCurrency(col.amount)}</Text>
+
+                <View style={s.colGrid}>
+                  <View style={s.colItem}>
+                    <Text style={s.colLabel}>المندوب</Text>
+                    <Text style={s.colVal}>{col.agent_name || '—'}</Text>
+                  </View>
+
+                  <View style={s.colItem}>
+                    <Text style={s.colLabel}>نقطة البيع</Text>
+                    <Text style={s.colVal}>{col.pos_name || '—'}</Text>
+                  </View>
+
+                  <View style={s.colItem}>
+                    <Text style={s.colLabel}>الطريقة</Text>
+                    <Text style={s.colVal}>{methodLabel(col.method)}</Text>
+                  </View>
+
+                  {col.invoice_number && (
+                    <View style={s.colItem}>
+                      <Text style={s.colLabel}>الفاتورة</Text>
+                      <Text style={[s.colVal, { color: colors.blue }]}>
+                        {col.invoice_number}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                {col.status === 'pending' && can('canApproveCollection') && (
+                  <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                    <Btn
+                      label="✅ اعتماد"
+                      variant="success"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      onPress={() => handleApprove(col.id, col.amount)}
+                    />
+                    <Btn
+                      label="❌ رفض"
+                      variant="danger"
+                      size="sm"
+                      style={{ flex: 1 }}
+                      onPress={() => handleReject(col.id)}
+                    />
+                  </View>
                 )}
+
               </View>
             ))}
           </ScrollView>
@@ -196,7 +272,6 @@ useFocusEffect(
     </View>
   );
 }
-
 // ══════════════════════════════════════════════════
 // المخزون — Supabase مباشرة
 // ══════════════════════════════════════════════════

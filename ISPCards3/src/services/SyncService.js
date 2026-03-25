@@ -172,100 +172,26 @@ export async function processSyncQueue() {
   }
 }
 
+
 export async function syncAll() {
   console.log(" SYNC START");
 
   try {
+    //  :   
+    await processSyncQueue();
 
-    // ===== USERS =====
-    const { data: users } = await supabase
-      .from('users')
-      .select('id, name');
-
-    console.log(" users from server:", users?.length);
-
-    if (users) {
-      for (const u of users) {
-        await execSQL(`
-          INSERT OR REPLACE INTO users (id, name)
-          VALUES (?, ?)
-        `, [u.id, u.name]);
-      }
-    }
-
-    // ===== invoices =====
-    // =====   =====
-    const { data: invoices } = await supabase
-      .from('invoices')
-      .select('*');
-
-    console.log(" invoices from server:", invoices?.length);
-
-    if (invoices) {
-      for (const item of invoices) {
-        await execSQL(`
-          INSERT OR REPLACE INTO invoices
-          (id, invoice_number, pos_id, agent_id, type, total_amount, net_amount, paid_amount, status, notes, invoice_date, active, created_at, synced)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [
-          item.id,
-          item.invoice_number,
-          item.pos_id,
-          item.agent_id,
-          item.type,
-          Number(item.total_amount || 0),
-          Number(item.net_amount || 0),
-          Number(item.paid_amount || 0),
-          item.status,
-          item.notes || '',
-          item.invoice_date,
-          item.active ?? 1,
-          item.created_at,
-          1
-        ]);
-      }
-    }
-
-    // =====   =====
-    const { data: collections } = await supabase
-      .from('collections')
-      .select('*');
-
-    console.log(" collections from server:", collections?.length);
-
-    if (collections) {
-      for (const item of collections) {
-        await execSQL(`
-          INSERT OR REPLACE INTO collections
-          (id, collection_number, agent_id, pos_id, invoice_id, amount, method, reference_number, status, approved_at, rejection_reason, collection_date, active, created_at, synced)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [
-          item.id,
-          item.collection_number,
-          item.agent_id,
-          item.pos_id,
-          item.invoice_id,
-          Number(item.amount || 0),
-          item.method,
-          item.reference_number,
-          item.status,
-          item.approved_at,
-          item.rejection_reason,
-          item.collection_date,
-          item.active ?? 1,
-          item.created_at,
-          1
-        ]);
-      }
-    }
+    //  :     
+    await pullRemoteChanges();
 
     console.log(" SYNC DONE");
-notifyDataChanged('all');
+
+    notifyDataChanged('all');
 
   } catch (e) {
     console.log(" SYNC ERROR:", e);
   }
 }
+
 
 export const syncNow = syncAll;
 
@@ -301,10 +227,34 @@ async function pullRemoteChanges() {
       if (!data || data.length === 0) continue;
 
       for (const row of data) {
-        const cols = Object.keys(row);
-        const vals = Object.values(row).map(v =>
-          typeof v === 'boolean' ? (v ? 1 : 0) : v
-        );
+
+  //      
+  const clean = { ...row };
+
+  // =====  is_active  active =====
+  if ('is_active' in clean) {
+    clean.active = clean.is_active;
+    delete clean.is_active;
+  }
+
+  // =====      =====
+  if (t.name === 'collections') {
+    delete clean.notes; //     SQLite
+  }
+
+  if (t.name === 'card_categories') {
+    delete clean.is_active;
+  }
+
+  if (t.name === 'users') {
+    delete clean.is_active;
+  }
+
+  // =====   =====
+  const cols = Object.keys(clean);
+  const vals = Object.values(clean).map(v =>
+    typeof v === 'boolean' ? (v ? 1 : 0) : v
+  );
         const ph = cols.map(() => '?').join(',');
 
         try {

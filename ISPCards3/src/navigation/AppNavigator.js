@@ -209,81 +209,109 @@ options={{ tabBarButton: () => null }} />
 }
 
 /* ================= DRAWER ================= */
-
-function CustomDrawer({ navigation }) {
+function CustomDrawer({ navigation, state }) {
   const { logout } = useAuth();
 
+  const currentRoute = state?.routeNames[state.index];
+
+  const Item = ({ route, label, icon, onPress, danger }) => {
+    const active = currentRoute === route;
+
+    return (
+      <TouchableOpacity
+        onPress={onPress}
+        style={{
+          flexDirection: 'row-reverse', // 👈 عربي RTL
+          alignItems: 'center',
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          borderRadius: 12,
+          marginBottom: 6,
+          backgroundColor: active ? '#1e293b' : 'transparent',
+        }}
+      >
+        <Text style={{ fontSize: 18, marginLeft: 10 }}>{icon}</Text>
+
+        <Text style={{
+          color: danger ? '#ef4444' : active ? '#3b82f6' : '#fff',
+          fontSize: 15,
+          fontWeight: active ? '700' : '500',
+          textAlign: 'right'
+        }}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
   return (
-    <View style={{ flex:1, backgroundColor:'#0f172a', paddingTop:50 }}>
+    <View style={{ flex:1, backgroundColor:'#0f172a', paddingTop:40 }}>
 
-      {/* الرئيسية */}
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'DashboardTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>📊 الرئيسية</Text>
-      </TouchableOpacity>
+      {/* 🔷 HEADER */}
+      <View style={{
+        paddingHorizontal:16,
+        paddingBottom:20,
+        borderBottomWidth:1,
+        borderBottomColor:'#1e293b',
+        marginBottom:10,
+        alignItems:'flex-end'
+      }}>
+        <Text style={{ color:'#fff', fontSize:18, fontWeight:'700' }}>
+          👋 أهلاً بك
+        </Text>
+        <Text style={{ color:'#94a3b8', fontSize:13 }}>
+          نظام إدارة الشبكة
+        </Text>
+      </View>
 
-      {/* الفواتير */}
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'InvoicesTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>🧾 الفواتير</Text>
-      </TouchableOpacity>
+      {/* 🔷 MENU */}
+      <View style={{ paddingHorizontal:10, flex:1 }}>
 
-      {/* التحصيلات */}
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'CollectionsTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>💰 التحصيلات</Text>
-      </TouchableOpacity>
+        <Item route="DashboardTab" label="الرئيسية" icon="📊"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'DashboardTab' })} />
 
-      {/* اعتماد التحصيلات (تبقى كما هي لأنها ليست Tab) */}
-      <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'CashierTab' })
-}>
-        <Text style={{ color:'#fff', padding:15 }}>💼 اعتماد التحصيلات</Text>
-      </TouchableOpacity>
+        <Item route="InvoicesTab" label="الفواتير" icon="🧾"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'InvoicesTab' })} />
 
-      {/* باقي الشاشات نحولها إلى Tabs مخفية */}
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'InventoryTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>📦 المخزون</Text>
-      </TouchableOpacity>
+        <Item route="CollectionsTab" label="التحصيلات" icon="💰"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'CollectionsTab' })} />
 
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'POSTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>🏪 نقاط البيع</Text>
-      </TouchableOpacity>
+        <Item route="Cashier" label="اعتماد التحصيلات" icon="💼"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'CashierTab' })} />
 
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'WalletsTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>👜 المحافظ</Text>
-      </TouchableOpacity>
+        <Item route="InventoryTab" label="المخزون" icon="📦"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'InventoryTab' })} />
 
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'ReportsTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>📈 الاستعلامات</Text>
-      </TouchableOpacity>
+        <Item route="POSTab" label="نقاط البيع" icon="🏪"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'POSTab' })} />
 
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'AdminTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>⚙️ الإدارة</Text>
-      </TouchableOpacity>
+        <Item route="WalletsTab" label="المحافظ" icon="👜"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'WalletsTab' })} />
 
-      <TouchableOpacity onPress={() =>
-        navigation.navigate('MainTabs', { screen: 'SettingsTab' })
-      }>
-        <Text style={{ color:'#fff', padding:15 }}>🔧 الإعدادات</Text>
-      </TouchableOpacity>
+        <Item route="ReportsTab" label="الاستعلامات" icon="📈"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'ReportsTab' })} />
 
-      {/* تسجيل الخروج */}
-      <TouchableOpacity onPress={logout}>
-        <Text style={{ color:'red', padding:15 }}>🚪 تسجيل الخروج</Text>
-      </TouchableOpacity>
+        <Item route="AdminTab" label="الإدارة" icon="⚙️"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'AdminTab' })} />
+
+        <Item route="SettingsTab" label="الإعدادات" icon="🔧"
+          onPress={() => navigation.navigate('MainTabs', { screen: 'SettingsTab' })} />
+
+      </View>
+
+      {/* 🔻 تسجيل الخروج */}
+      <View style={{
+        borderTopWidth:1,
+        borderTopColor:'#1e293b',
+        padding:10
+      }}>
+        <Item
+          label="تسجيل الخروج"
+          icon="🚪"
+          danger
+          onPress={logout}
+        />
+      </View>
 
     </View>
   );

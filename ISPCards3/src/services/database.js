@@ -72,6 +72,7 @@ export const getSyncQueueCount = async () => {
 };
 
 const createTables = async () => {
+
   await execSQL(`
     CREATE TABLE IF NOT EXISTS sync_meta (
       key TEXT PRIMARY KEY NOT NULL,
@@ -91,6 +92,7 @@ const createTables = async () => {
     )
   `);
 
+  // ================= USERS =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY NOT NULL,
@@ -98,13 +100,14 @@ const createTables = async () => {
       username TEXT,
       role TEXT,
       phone TEXT,
-      is_active INTEGER DEFAULT 1,
       password_hash TEXT,
+      active INTEGER DEFAULT 1,
       created_at TEXT,
       synced INTEGER DEFAULT 0
     )
   `);
 
+  // ================= POS =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS pos_customers (
       id TEXT PRIMARY KEY NOT NULL,
@@ -123,18 +126,19 @@ const createTables = async () => {
     )
   `);
 
+  // ================= CATEGORIES =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS card_categories (
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT,
       price REAL DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
       active INTEGER DEFAULT 1,
       created_at TEXT,
       synced INTEGER DEFAULT 0
     )
   `);
 
+  // ================= BATCHES =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS batches (
       id TEXT PRIMARY KEY NOT NULL,
@@ -151,6 +155,7 @@ const createTables = async () => {
     )
   `);
 
+  // ================= INVOICES =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS invoices (
       id TEXT PRIMARY KEY NOT NULL,
@@ -170,6 +175,7 @@ const createTables = async () => {
     )
   `);
 
+  // ================= ITEMS =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS invoice_items (
       id TEXT PRIMARY KEY NOT NULL,
@@ -187,6 +193,7 @@ const createTables = async () => {
     )
   `);
 
+  // ================= COLLECTIONS =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS collections (
       id TEXT PRIMARY KEY NOT NULL,
@@ -201,12 +208,14 @@ const createTables = async () => {
       approved_at TEXT,
       rejection_reason TEXT,
       collection_date TEXT,
+      notes TEXT,
       active INTEGER DEFAULT 1,
       created_at TEXT,
       synced INTEGER DEFAULT 0
     )
   `);
 
+  // ================= WALLET =================
   await execSQL(`
     CREATE TABLE IF NOT EXISTS agent_wallets (
       id TEXT PRIMARY KEY NOT NULL,
@@ -225,7 +234,50 @@ const createTables = async () => {
   `);
 };
 
+
+// 🔥 First Run Reset (DEV)
+const resetDatabaseOnce = async () => {
+  try {
+    await execSQL(`
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `);
+
+    const r = await execSQL(
+      "SELECT value FROM app_config WHERE key='db_initialized'"
+    );
+
+    const initialized = r.rows._array[0]?.value === '1';
+
+    if (!initialized) {
+      console.log("🔥 FIRST RUN → RESET DB");
+
+      // ❌ حذف الجداول مرة واحدة فقط
+      await execSQL("DROP TABLE IF EXISTS users");
+      await execSQL("DROP TABLE IF EXISTS pos_customers");
+      await execSQL("DROP TABLE IF EXISTS card_categories");
+      await execSQL("DROP TABLE IF EXISTS batches");
+      await execSQL("DROP TABLE IF EXISTS invoices");
+      await execSQL("DROP TABLE IF EXISTS invoice_items");
+      await execSQL("DROP TABLE IF EXISTS collections");
+      await execSQL("DROP TABLE IF EXISTS agent_wallets");
+      await execSQL("DROP TABLE IF EXISTS sync_queue");
+      await execSQL("DROP TABLE IF EXISTS sync_meta");
+
+      await execSQL(
+        "INSERT OR REPLACE INTO app_config (key,value) VALUES ('db_initialized','1')"
+      );
+    }
+
+  } catch (e) {
+    console.log("RESET ERROR:", e);
+  }
+};
+
 export const initDatabase = async () => {
+await resetDatabaseOnce(); // 🔥 أهم سطر
   await createTables();
   await execSQL(`INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('last_pull', '2000-01-01T00:00:00Z')`);
   await execSQL(`UPDATE sync_queue SET attempts = 0 WHERE COALESCE(attempts,0) >= 5`);
@@ -233,7 +285,17 @@ export const initDatabase = async () => {
 };
 
 export const getLocalInvoices = async (filters = {}) => {
-  let sql = `SELECT * FROM invoices WHERE 1=1`;
+  let sql = `
+SELECT 
+  i.*,
+  u.name as agent_name,
+  p.name as pos_name
+FROM invoices i
+LEFT JOIN users u ON u.id = i.agent_id
+LEFT JOIN pos_customers p ON p.id = i.pos_id
+WHERE 1=1
+`;
+
   const params = [];
 
   if (filters.status) {
@@ -351,7 +413,19 @@ export const softDeleteInvoice = async (id) => {
 };
 
 export const getLocalCollections = async (filters = {}) => {
-  let sql = `SELECT * FROM collections WHERE 1=1`;
+  let sql = `
+SELECT 
+  c.*,
+  u.name as agent_name,
+  p.name as pos_name,
+  i.invoice_number
+FROM collections c
+LEFT JOIN users u ON u.id = c.agent_id
+LEFT JOIN pos_customers p ON p.id = c.pos_id
+LEFT JOIN invoices i ON i.id = c.invoice_id
+WHERE 1=1
+`;
+
   const params = [];
 
   if (filters.status) {
@@ -535,3 +609,23 @@ export const updateUser = async (id, data) => {
   notifyDataChanged('users');
   return true;
 };
+
+// ================= FILTERED BATCHES BY AGENT =================
+export const getBatchesByAgent = async (agentId) => {
+  const r = await execSQL(`
+    SELECT 
+      b.id,
+      b.batch_number,
+      c.name as category_name,
+      (aw.total_cards - aw.sold_cards) as available
+    FROM agent_wallets aw
+    JOIN batches b ON b.id = aw.batch_id
+    LEFT JOIN card_categories c ON c.id = b.category_id
+    WHERE aw.agent_id = ?
+    AND (aw.total_cards - aw.sold_cards) > 0
+    ORDER BY b.created_at DESC
+  `, [agentId]);
+
+  return r.rows._array || [];
+};
+

@@ -68,7 +68,10 @@ export function NewInvoiceScreen({ navigation }) {
     type: 'credit', invoice_date: todayISO(), notes: '', discount: '0',
   });
   const [items, setItems] = useState([]);
-  const [newItem, setNewItem] = useState({ category_id:'', wallet_id:'', unit_price:'', quantity:'' });
+
+  // ✅ إضافة batch_id فقط
+  const [newItem, setNewItem] = useState({ category_id:'', wallet_id:'', batch_id:'', unit_price:'', quantity:'' });
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -101,8 +104,15 @@ export function NewInvoiceScreen({ navigation }) {
       ...f, category_id: catId,
       unit_price: String(cat?.price || ''),
       wallet_id: catWallets.length === 1 ? catWallets[0].id : '',
+      batch_id: '' // ✅ مهم
     }));
   };
+
+  // ✅ تعديل الفلترة (مهم جداً)
+  const filteredWallets = wallets.filter(w =>
+    w.category_id === newItem.category_id &&
+    (!form.agent_id || w.agent_id === form.agent_id)
+  );
 
   const itemTotal = () => (parseInt(newItem.quantity)||0) * (parseFloat(newItem.unit_price)||0);
   const subtotal = () => items.reduce((s,i) => s + i.total, 0);
@@ -115,20 +125,26 @@ export function NewInvoiceScreen({ navigation }) {
     }
     const qty = parseInt(newItem.quantity) || 0;
     if (qty <= 0) { Alert.alert('خطأ', 'الكمية يجب أن تكون أكبر من صفر'); return; }
+
     const wallet = wallets.find(w => w.id === newItem.wallet_id);
+
     if (wallet && qty > wallet.remaining_cards) {
       Alert.alert('خطأ', `المتاح في المحفظة: ${wallet.remaining_cards} ورقة فقط`); return;
     }
+
     const cat = categories.find(c => c.id === newItem.category_id);
+
     setItems(prev => [...prev, {
       ...newItem,
       cat_name: cat?.name || '—',
+      batch_number: wallet?.batches?.batch_number || '', // ✅ جديد
       quantity: qty,
       unit_price: parseFloat(newItem.unit_price),
       total: itemTotal(),
       id: Date.now().toString(),
     }]);
-    setNewItem({ category_id:'', wallet_id:'', unit_price:'', quantity:'' });
+
+    setNewItem({ category_id:'', wallet_id:'', batch_id:'', unit_price:'', quantity:'' });
   };
 
   const removeItem = (id) => setItems(prev => prev.filter(i => i.id !== id));
@@ -141,30 +157,36 @@ export function NewInvoiceScreen({ navigation }) {
       const total = subtotal();
       const disc = discount();
       const { id, invoice_number } = await createLocalInvoice({ ...form, total_amount: total, discount: disc });
+
       for (const item of items) {
         const wallet = wallets.find(w => w.id === item.wallet_id);
         const usedCards = wallet ? (wallet.from_card + wallet.sold_cards - 1) : 0;
         const fromCard = usedCards + 1;
         const toCard = fromCard + item.quantity - 1;
+
         await addInvoiceItem(id, {
           category_id: item.category_id,
-          batch_id: wallet?.batch_id || '',
+          batch_id: wallet?.batch_id || '', // ✅ محفوظ
           wallet_id: item.wallet_id || '',
-          from_card: fromCard, to_card: toCard,
+          from_card: fromCard,
+          to_card: toCard,
           unit_price: item.unit_price,
           quantity: item.quantity,
         });
-        // تحديث sold_cards في Supabase
+
         if (item.wallet_id && wallet) {
           await supabase.from('agent_wallets')
             .update({ sold_cards: (wallet.sold_cards||0) + item.quantity })
             .eq('id', item.wallet_id);
         }
       }
+
       setSaving(false);
+
       Alert.alert('✅ تم', `الفاتورة: ${invoice_number}\nالإجمالي: ${formatCurrency(grandTotal())}`, [
         { text: 'موافق', onPress: () => navigation.goBack() }
       ]);
+
     } catch(e) {
       setSaving(false);
       Alert.alert('خطأ', e.message);
@@ -172,8 +194,6 @@ export function NewInvoiceScreen({ navigation }) {
   };
 
   if (dataLoading) return <Loading />;
-
-  const filteredWallets = wallets.filter(w => w.category_id === newItem.category_id);
 
   return (
     <KeyboardAvoidingView style={{ flex:1 }} behavior={Platform.OS==='ios'?'padding':undefined}>
@@ -190,11 +210,13 @@ export function NewInvoiceScreen({ navigation }) {
             options={pos.map(p => ({ value:p.id, label:p.name }))}
             value={form.pos_id} onChange={v => setForm({...form, pos_id:v})}
             placeholder="اختر العميل..."/>
+
           {user?.role !== 'agent' && (
             <Picker label="المندوب *"
               options={agents.map(a => ({ value:a.id, label:a.name }))}
               value={form.agent_id} onChange={v => setForm({...form, agent_id:v})}/>
           )}
+
           <Row style={{ gap:spacing.md }}>
             <View style={{ flex:1 }}>
               <Picker label="النوع"
@@ -203,97 +225,80 @@ export function NewInvoiceScreen({ navigation }) {
             </View>
             <View style={{ flex:1 }}>
               <Input label="التاريخ" value={form.invoice_date}
-                onChangeText={v => setForm({...form, invoice_date:v})} placeholder="YYYY-MM-DD"/>
+                onChangeText={v => setForm({...form, invoice_date:v})}/>
             </View>
           </Row>
+
           <Input label="ملاحظات" value={form.notes}
-            onChangeText={v => setForm({...form, notes:v})} placeholder="اختياري..." multiline/>
+            onChangeText={v => setForm({...form, notes:v})} multiline/>
         </View>
 
         {/* البنود */}
         <View style={st.section}>
           <Text style={st.sectionTitle}>📋 البنود</Text>
 
-          {items.length > 0 && (
-            <View style={st.tableHeader}>
-              <Text style={[st.thCell,{flex:2}]}>الفئة</Text>
-              <Text style={[st.thCell,{flex:1}]}>الكمية</Text>
-              <Text style={[st.thCell,{flex:1}]}>السعر</Text>
-              <Text style={[st.thCell,{flex:1}]}>الإجمالي</Text>
-              <Text style={[st.thCell,{width:28}]}> </Text>
-            </View>
-          )}
-
-          {items.map((item, i) => (
-            <View key={item.id} style={[st.tableRow, i%2===0 && {backgroundColor:colors.card2}]}>
-              <Text style={[st.tdCell,{flex:2,color:colors.cyan,fontWeight:'600'}]}>{item.cat_name}</Text>
-              <Text style={[st.tdCell,{flex:1}]}>{item.quantity}</Text>
-              <Text style={[st.tdCell,{flex:1}]}>{formatCurrency(item.unit_price)}</Text>
-              <Text style={[st.tdCell,{flex:1,color:colors.green,fontWeight:'700'}]}>{formatCurrency(item.total)}</Text>
-              <TouchableOpacity style={{width:28,alignItems:'center'}} onPress={() => removeItem(item.id)}>
-                <Text style={{color:colors.red,fontSize:15}}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-
-          {/* إضافة بند */}
           <View style={st.addItemBox}>
             <Text style={st.addItemTitle}>+ إضافة بند</Text>
+
             <Picker label="الفئة *"
               options={categories.map(c => ({ value:c.id, label:`${c.name} — ${formatCurrency(c.price)}` }))}
-              value={newItem.category_id} onChange={onSelectCategory}
-              placeholder="اختر الفئة..."/>
+              value={newItem.category_id} onChange={onSelectCategory}/>
+
+            {/* ✅ الدفعة */}
             {filteredWallets.length > 0 && (
-              <Picker label="المحفظة"
-                options={filteredWallets.map(w => ({ value:w.id, label:`${w.batches?.batch_number||'—'} • متبقي: ${w.remaining_cards}` }))}
-                value={newItem.wallet_id} onChange={v => setNewItem({...newItem, wallet_id:v})}/>
+              <Picker label="الدفعة"
+                options={filteredWallets.map(w => ({
+                  value:w.id,
+                  label:`${w.batches?.batch_number||'—'} • متبقي: ${w.remaining_cards}`
+                }))}
+                value={newItem.wallet_id}
+                onChange={v => {
+                  const selected = filteredWallets.find(x => x.id === v);
+                  setNewItem({
+                    ...newItem,
+                    wallet_id: v,
+                    batch_id: selected?.batch_id || ''
+                  });
+                }}
+              />
             )}
+
             <Row style={{ gap:spacing.sm }}>
               <View style={{ flex:1 }}>
                 <Input label="عدد الأوراق *" value={newItem.quantity}
-                  onChangeText={v => setNewItem({...newItem, quantity:v})} keyboardType="numeric" placeholder="0"/>
+                  onChangeText={v => setNewItem({...newItem, quantity:v})}/>
               </View>
               <View style={{ flex:1 }}>
                 <Input label="سعر الورقة *" value={newItem.unit_price}
-                  onChangeText={v => setNewItem({...newItem, unit_price:v})} keyboardType="numeric" placeholder="0"/>
+                  onChangeText={v => setNewItem({...newItem, unit_price:v})}/>
               </View>
             </Row>
-            {newItem.quantity && newItem.unit_price && itemTotal() > 0 && (
-              <View style={st.preview}>
-                <Text style={{color:colors.t3,fontSize:fontSize.xs}}>إجمالي البند</Text>
-                <Text style={{color:colors.green,fontWeight:'800',fontSize:fontSize.xl}}>{formatCurrency(itemTotal())}</Text>
-              </View>
-            )}
-            <Btn label="✅ إضافة البند" variant="success" size="sm" onPress={addItem}/>
+
+            <Btn label="✅ إضافة البند" onPress={addItem}/>
           </View>
 
           {/* المجاميع */}
           {items.length > 0 && (
             <View style={st.totalsBox}>
-              <Row style={{justifyContent:'space-between',marginBottom:spacing.sm}}>
-                <Text style={{color:colors.t2}}>المجموع الفرعي</Text>
-                <Text style={{color:colors.t1,fontWeight:'700'}}>{formatCurrency(subtotal())}</Text>
+              <Row style={{justifyContent:'space-between'}}>
+                <Text>المجموع</Text>
+                <Text>{formatCurrency(subtotal())}</Text>
               </Row>
-              <Row style={{alignItems:'center',marginBottom:spacing.sm}}>
-                <Text style={{color:colors.t2,flex:1}}>الخصم (ر.ي)</Text>
-                <View style={{width:140}}>
-                  <Input value={form.discount} onChangeText={v => setForm({...form,discount:v})}
-                    keyboardType="numeric" placeholder="0" style={{marginBottom:0}}/>
-                </View>
-              </Row>
-              <Row style={{justifyContent:'space-between',paddingTop:spacing.sm,borderTopWidth:1,borderTopColor:colors.border2}}>
-                <Text style={{fontSize:fontSize.lg,fontWeight:'700',color:colors.t1}}>الإجمالي الصافي</Text>
-                <Text style={{fontSize:24,fontWeight:'800',color:colors.green}}>{formatCurrency(grandTotal())}</Text>
-              </Row>
+
+              <Input value={form.discount}
+                onChangeText={v => setForm({...form,discount:v})}
+                placeholder="خصم"/>
+
+              <Text>الإجمالي: {formatCurrency(grandTotal())}</Text>
             </View>
           )}
         </View>
 
         <Row style={st.actions}>
-          <Btn label="إلغاء" variant="outline" style={{flex:1}} onPress={() => navigation.goBack()}/>
-          <Btn label={saving?'جاري الحفظ...':'💾 حفظ الفاتورة'} variant="primary" style={{flex:2}}
-            onPress={save} disabled={saving || items.length===0}/>
+          <Btn label="إلغاء" onPress={() => navigation.goBack()}/>
+          <Btn label="💾 حفظ الفاتورة" onPress={save}/>
         </Row>
+
       </ScrollView>
     </KeyboardAvoidingView>
   );
