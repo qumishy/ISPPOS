@@ -9,12 +9,12 @@ import {
 import { colors, spacing, radius, fontSize } from '../theme';
 import { supabase } from '../services/supabase';
 import {
-  getLocalInvoices, getLocalCollections,
-  approveLocalCollection, rejectLocalCollection,
+  getLocalInvoices, getLocalCollections, getLocalWallets,
+  deleteLocalCollection,
+  subscribeDataChanges,
 } from '../services/database';
 import { formatCurrency, formatDateShort, creditPercent, creditColor } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, KpiCard, Row, ProgressBar } from '../components/UI';
-import SyncBar from '../components/SyncBar';
 import { useAuth } from '../services/AuthContext';
 
 // ══════════════════════════════════════════════════
@@ -28,15 +28,25 @@ export function InvoicesScreen({ navigation }) {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('all');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     const filters = tab!=='all' ? {status:tab} : {};
     if (user?.role==='agent') filters.agent_id = user.id;
     const data = await getLocalInvoices(filters);
     setInvoices(data);
-    setLoading(false); setRefreshing(false);
+    if (!quiet) setLoading(false);
+    setRefreshing(false);
   }, [tab, user]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => {
+    setLoading(true);
+    load();
+    const unsub = subscribeDataChanges((e) => {
+      if (e.type === 'invoices' || e.type === 'all' || e.type === 'sync_queue') {
+        load(true);
+      }
+    });
+    return unsub;
+  }, [load]);
 
   const filtered = invoices.filter(inv =>
     !search || inv.invoice_number?.includes(search) || inv.pos_name.includes(search)
@@ -46,7 +56,6 @@ export function InvoicesScreen({ navigation }) {
 
   return (
     <View style={s.screen}>
-      <SyncBar />
       <View style={s.summary}>
         <View style={s.sumItem}><Text style={s.sumLabel}>الإجمالي</Text><Text style={[s.sumVal,{color:colors.cyan}]}>{formatCurrency(total)}</Text></View>
         <View style={s.sumDiv}/>
@@ -101,7 +110,7 @@ export function InvoicesScreen({ navigation }) {
 // التحصيلات — SQLite المحلي
 // ══════════════════════════════════════════════════
 export function CollectionsScreen({ navigation }) {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
 
   const [cols, setCols] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -109,11 +118,11 @@ export function CollectionsScreen({ navigation }) {
   const [tab, setTab] = useState('pending');
   const [search, setSearch] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     try {
-      setLoading(true);
+      if (!quiet) setLoading(true);
 
-      await syncCollections();
+      if (!quiet) await syncCollections();
 
       const data = await getLocalCollections();
       setCols(data);
@@ -121,27 +130,29 @@ export function CollectionsScreen({ navigation }) {
     } catch (e) {
       console.log("LOAD ERROR:", e);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
+  useEffect(() => {
+    load();
+    const unsub = subscribeDataChanges((e) => {
+      if (e.type === 'collections' || e.type === 'all' || e.type === 'sync_queue') {
+        load(true);
+      }
+    });
+    return unsub;
+  }, [load]);
 
-  const handleApprove = (id, amount) =>
-    Alert.alert('اعتماد التحصيل', `هل تؤكد استلام ${formatCurrency(amount)}؟`, [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: '✅ نعم اعتماد', onPress: async () => { await approveLocalCollection(id); load(); } },
-    ]);
+  const handlePrint = (id) => {
+    Alert.alert('طباعة', 'جاري تجهيز الطباعة...');
+  };
 
-  const handleReject = (id) =>
-    Alert.alert('رفض التحصيل', 'هل تريد رفض هذا الإشعار؟', [
+  const handleDelete = (id) =>
+    Alert.alert('حذف الإشعار', 'هل أنت متأكد من حذف هذا السند نهائياً؟', [
       { text: 'إلغاء', style: 'cancel' },
-      { text: '❌ رفض', style: 'destructive', onPress: async () => { await rejectLocalCollection(id, 'مرفوض'); load(); } },
+      { text: '🗑️ تأكيد الحذف', style: 'destructive', onPress: async () => { await deleteLocalCollection(id); load(); } },
     ]);
 
   const pending = cols.filter(c => c.status === 'pending');
@@ -161,8 +172,6 @@ export function CollectionsScreen({ navigation }) {
 
   return (
     <View style={s.screen}>
-      <SyncBar />
-
       {/* KPI */}
       <View style={s.kpiRow}>
         <KpiCard value={pending.length} label="معلق" color={colors.orange} />
@@ -170,7 +179,7 @@ export function CollectionsScreen({ navigation }) {
         <KpiCard value={formatCurrency(totalApproved)} label="محصّل" color={colors.green} />
       </View>
 
-      {/* Tabs + Search */}
+      {/* Tabs */}
       <View style={s.tabs}>
         {[
           { k: 'pending', l: `معلقة (${pending.length})` },
@@ -181,15 +190,16 @@ export function CollectionsScreen({ navigation }) {
             <Text style={[s.tabTxt, tab === t.k && s.tabTxtAct]}>{t.l}</Text>
           </TouchableOpacity>
         ))}
+      </View>
 
-        <View style={s.searchRow}>
+      {/* Search & Add */}
+      <View style={s.searchRow}>
         <View style={s.searchBox}>
           <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
           <TextInput style={s.searchInput} value={search} onChangeText={setSearch}
-            placeholder="بحث..." placeholderTextColor={colors.t3}/>
+            placeholder="بحث بالرقم أو الإسم..." placeholderTextColor={colors.t3}/>
         </View>
         <Btn label="+ سند قبض" variant="primary" size="sm" onPress={()=>navigation.navigate('NewCollection')}/>
-      </View>
       </View>
 
       {/* Content */}
@@ -246,24 +256,28 @@ export function CollectionsScreen({ navigation }) {
                   )}
                 </View>
 
-                {col.status === 'pending' && can('canApproveCollection') && (
-                  <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                {!!col.notes && (
+                  <Text style={{fontSize: 11, color: colors.t3, marginTop: 4, paddingHorizontal: 2}}>📝 ملاحظات: {col.notes}</Text>
+                )}
+
+                <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm }}>
+                  <Btn
+                    label="🖨️ طباعة"
+                    variant="primary"
+                    size="sm"
+                    style={{ flex: 1 }}
+                    onPress={() => handlePrint(col.id)}
+                  />
+                  {user?.role === 'admin' && (
                     <Btn
-                      label="✅ اعتماد"
-                      variant="success"
-                      size="sm"
-                      style={{ flex: 1 }}
-                      onPress={() => handleApprove(col.id, col.amount)}
-                    />
-                    <Btn
-                      label="❌ رفض"
+                      label="🗑️ حذف"
                       variant="danger"
                       size="sm"
                       style={{ flex: 1 }}
-                      onPress={() => handleReject(col.id)}
+                      onPress={() => handleDelete(col.id)}
                     />
-                  </View>
-                )}
+                  )}
+                </View>
 
               </View>
             ))}
@@ -280,6 +294,7 @@ export function InventoryScreen({ navigation }) {
   const [cats, setCats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -301,9 +316,18 @@ export function InventoryScreen({ navigation }) {
     total: batches.filter(b=>b.category_id===cat.id).reduce((s,b)=>s+(b.available_cards||0),0),
   }));
 
+  const filteredBatches = batches.filter(b => !search || b.serial_number?.includes(search) || b.batch_number?.includes(search));
+
   if (loading) return <Loading/>;
   return (
     <View style={s.screen}>
+      <View style={s.searchRow}>
+        <View style={s.searchBox}>
+          <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="بحث برقم الدفعة..." placeholderTextColor={colors.t3}/>
+        </View>
+        <Btn label="+ دفعة" variant="primary" size="sm" onPress={()=>navigation.navigate('AddBatch')}/>
+      </View>
       <ScrollView contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}>
         <View style={s.catGrid}>
@@ -316,13 +340,9 @@ export function InventoryScreen({ navigation }) {
             </View>
           ))}
         </View>
-        <Row style={{justifyContent:'space-between',alignItems:'center',marginBottom:spacing.md}}>
-          <Text style={{fontSize:fontSize.xl,fontWeight:'800',color:colors.t1}}>📋 الدفعات</Text>
-          <Btn label="+ دفعة" variant="primary" size="sm" onPress={()=>navigation.navigate('AddBatch')}/>
-        </Row>
-        {batches.length===0
-          ? <Empty icon="📦" title="لا توجد دفعات" action="+ دفعة جديدة" onAction={()=>navigation.navigate('AddBatch')}/>
-          : batches.map(batch=>{
+        {filteredBatches.length===0
+          ? <Empty icon="📦" title="لا توجد دفعات متطابقة" action="+ دفعة جديدة" onAction={()=>navigation.navigate('AddBatch')}/>
+          : filteredBatches.map(batch=>{
             const cat = cats.find(c=>c.id===batch.category_id);
             const catIdx = cats.findIndex(c=>c.id===batch.category_id);
             const col = catColors[catIdx%catColors.length]||colors.blue;
@@ -330,7 +350,7 @@ export function InventoryScreen({ navigation }) {
             return (
               <View key={batch.id} style={s.batchCard}>
                 <Row style={{marginBottom:spacing.sm}}>
-                  <Text style={[s.batchNum,{flex:1}]}>{batch.batch_number}</Text>
+                  <Text style={[s.batchNum,{flex:1}]}>{batch.serial_number}</Text>
                   <View style={[s.catChip,{backgroundColor:col+'22'}]}><Text style={[s.catChipTxt,{color:col}]}>{cat?.name||batch.card_categories?.name||'—'}</Text></View>
                   <Badge status={batch.status}/>
                 </Row>
@@ -445,33 +465,46 @@ export function WalletsScreen({ navigation }) {
   const [wallets, setWallets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (quiet = false) => {
     try {
-      let q = supabase.from('agent_wallets')
-        .select('*,users(name),card_categories(name,price),batches(batch_number,serial_number)')
-        .order('created_at',{ascending:false});
-      if (user?.role==='agent') q = q.eq('agent_id',user.id);
-      const { data } = await q;
+      if (!quiet) setLoading(true);
+      const data = await getLocalWallets(user?.role==='agent' ? user.id : null);
       setWallets((data||[]).map(w=>({...w, remaining_cards:(w.total_cards||0)-(w.sold_cards||0)})));
     } catch(e) {}
-    setLoading(false); setRefreshing(false);
+    if (!quiet) setLoading(false);
+    setRefreshing(false);
   }, [user]);
-  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    load();
+    const unsub = subscribeDataChanges((e) => {
+      if (e.type === 'agent_wallets' || e.type === 'all' || e.type === 'sync_queue') {
+        load(true);
+      }
+    });
+    return unsub;
+  }, [load]);
+
+  const filteredWallets = wallets.filter(w=>!search||(w.users?.name||'').includes(search)||(w.batches?.serial_number||'').includes(search)||(w.card_categories?.name||'').includes(search));
 
   return (
     <View style={s.screen}>
-      {can('canManageWallets')&&(
-        <View style={{padding:spacing.md,paddingBottom:0}}>
-          <Btn label="+ توزيع أوراق على مندوب" variant="primary"
-            style={{justifyContent:'center'}} onPress={()=>navigation.navigate('AssignWallet')}/>
+      <View style={s.searchRow}>
+        <View style={s.searchBox}>
+          <Text style={{fontSize:13,color:colors.t3}}>🔍</Text>
+          <TextInput style={s.searchInput} value={search} onChangeText={setSearch} placeholder="بحث بمندوب أو دفعة..." placeholderTextColor={colors.t3}/>
         </View>
-      )}
-      {loading ? <Loading/> : wallets.length===0
-        ? <Empty icon="👜" title="لا توجد محافظ"
+        {can('canManageWallets') && (
+          <Btn label="+ توزيع أوراق" variant="primary" size="sm" onPress={()=>navigation.navigate('AssignWallet')}/>
+        )}
+      </View>
+      {loading ? <Loading/> : filteredWallets.length===0
+        ? <Empty icon="👜" title="لا توجد محافظ متطابقة"
             action={can('canManageWallets')?"+ توزيع أوراق":null}
             onAction={()=>navigation.navigate('AssignWallet')}/>
-        : <FlatList data={wallets} keyExtractor={i=>i.id}
+        : <FlatList data={filteredWallets} keyExtractor={i=>i.id}
             contentContainerStyle={{padding:spacing.md,paddingBottom:90}}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={()=>{setRefreshing(true);load();}} tintColor={colors.blue}/>}
             renderItem={({item:w})=>{
@@ -483,7 +516,7 @@ export function WalletsScreen({ navigation }) {
                   <Row style={{marginBottom:spacing.sm}}>
                     <View style={{flex:1}}>
                       <Text style={{fontSize:fontSize.lg,fontWeight:'700',color:colors.t1}}>{w.card_categories?.name||'—'}</Text>
-                      <Text style={{fontSize:fontSize.xs,color:colors.t3}}>{w.users?.name||'—'} • {w.batches?.batch_number||'—'}</Text>
+                      <Text style={{fontSize:fontSize.xs,color:colors.t3}}>{w.users?.name||'—'} • {w.batches?.serial_number||'—'}</Text>
                     </View>
                     {rem===0
                       ? <Badge status="depleted" label="نفدت"/>

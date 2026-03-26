@@ -506,6 +506,13 @@ export const rejectLocalCollection = async (id, reason = 'مرفوض') => {
   return true;
 };
 
+export const deleteLocalCollection = async (id) => {
+  await execSQL('UPDATE collections SET active=0, synced=0 WHERE id=?', [id]);
+  await addToSyncQueue('collections', 'UPDATE', { active: 0 }, id);
+  notifyDataChanged('collections');
+  return true;
+};
+
 export const createAgentWallet = async (data) => {
   const id = data.id || uuidv4();
   const payload = {
@@ -616,6 +623,7 @@ export const getBatchesByAgent = async (agentId) => {
     SELECT 
       b.id,
       b.batch_number,
+      b.serial_number,
       c.name as category_name,
       (aw.total_cards - aw.sold_cards) as available
     FROM agent_wallets aw
@@ -629,3 +637,140 @@ export const getBatchesByAgent = async (agentId) => {
   return r.rows._array || [];
 };
 
+export const isRecordInSyncQueue = async (id) => {
+  const r = await execSQL(`SELECT id FROM sync_queue WHERE record_id=? LIMIT 1`, [id]);
+  return (r.rows._array || []).length > 0;
+};
+
+export const getFailedSyncCount = async () => {
+  try {
+    const r = await execSQL(`SELECT COUNT(*) as count FROM sync_queue WHERE attempts >= 5`);
+    return r.rows._array?.[0]?.count || 0;
+  } catch (e) {
+    return 0;
+  }
+};
+
+export const resetFailedSyncItems = async () => {
+  await execSQL(`UPDATE sync_queue SET attempts = 0 WHERE attempts >= 5`);
+  notifyDataChanged('sync_queue');
+};
+
+export const getLocalWallets = async (agentId) => {
+  let sql = `
+SELECT 
+  aw.*,
+  u.name as user_name,
+  c.name as category_name,
+  b.batch_number as batch_number,
+  b.serial_number as batch_serial
+FROM agent_wallets aw
+LEFT JOIN users u ON u.id = aw.agent_id
+LEFT JOIN card_categories c ON c.id = aw.category_id
+LEFT JOIN batches b ON b.id = aw.batch_id
+WHERE 1=1
+`;
+  const params = [];
+  if (agentId) {
+    sql += ` AND aw.agent_id = ?`;
+    params.push(agentId);
+  }
+  sql += ` ORDER BY aw.created_at DESC`;
+
+  const r = await execSQL(sql, params);
+  
+  return (r.rows._array || []).map(row => ({
+    ...row,
+    users: { name: row.user_name },
+    card_categories: { name: row.category_name },
+    batches: { batch_number: row.batch_number, serial_number: row.batch_serial }
+  }));
+};
+
+export const createLocalAgentWallet = async (data) => {
+  const id = uuidv4();
+  const created_at = new Date().toISOString();
+  
+  const payload = {
+    id,
+    agent_id: data.agent_id,
+    batch_id: data.batch_id,
+    category_id: data.category_id,
+    total_cards: data.total_cards,
+    sold_cards: 0,
+    issued_by: data.issued_by,
+    notes: data.notes || '',
+    created_at,
+    synced: 0
+  };
+
+  await execSQL(
+    `INSERT INTO agent_wallets (id, agent_id, batch_id, category_id, total_cards, sold_cards, issued_by, notes, created_at, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.id, payload.agent_id, payload.batch_id, payload.category_id, payload.total_cards, payload.sold_cards, payload.issued_by, payload.notes, payload.created_at, payload.synced]
+  );
+  
+  await addToSyncQueue('agent_wallets', 'INSERT', payload, id);
+  notifyDataChanged('agent_wallets');
+
+  const batchQuery = await execSQL(`SELECT available_cards FROM batches WHERE id = ?`, [payload.batch_id]);
+  if (batchQuery.rows._array.length > 0) {
+    const currentAvailable = batchQuery.rows._array[0].available_cards;
+    const newAvailable = Math.max(0, currentAvailable - payload.total_cards);
+    await execSQL(`UPDATE batches SET available_cards = ?, synced = 0 WHERE id = ?`, [newAvailable, payload.batch_id]);
+    await addToSyncQueue('batches', 'UPDATE', { available_cards: newAvailable }, payload.batch_id);
+    notifyDataChanged('batches');
+  }
+};
+
+export const createLocalBatch = async (data) => {
+  const id = uuidv4();
+  const created_at = data.received_date || new Date().toISOString();
+  
+  const payload = {
+    id,
+    batch_number: data.batch_number,
+    category_id: data.category_id,
+    serial_number: data.serial_number,
+    total_cards: data.total_cards,
+    available_cards: data.total_cards,
+    received_date: created_at,
+    status: 'active',
+    synced: 0
+  };
+
+  await execSQL(
+    `INSERT INTO batches (id, batch_number, category_id, serial_number, total_cards, available_cards, received_date, status, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.id, payload.batch_number, payload.category_id, payload.serial_number, payload.total_cards, payload.available_cards, payload.received_date, payload.status, payload.synced]
+  );
+  
+  await addToSyncQueue('batches', 'INSERT', payload, id);
+  notifyDataChanged('batches');
+};
+
+export const createLocalPOS = async (data) => {
+  const id = uuidv4();
+  const payload = {
+    id,
+    name: data.name,
+    owner_name: data.owner_name,
+    phone: data.phone,
+    city: data.city,
+    credit_limit: data.credit_limit,
+    credit_used: 0,
+    is_blocked: 0,
+    assigned_agent_id: data.assigned_agent_id,
+    active: 1,
+    synced: 0
+  };
+
+  await execSQL(
+    `INSERT INTO pos_customers (id, name, owner_name, phone, city, credit_limit, credit_used, is_blocked, assigned_agent_id, active, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.id, payload.name, payload.owner_name, payload.phone, payload.city, payload.credit_limit, payload.credit_used, payload.is_blocked, payload.assigned_agent_id, payload.active, payload.synced]
+  );
+  
+  await addToSyncQueue('pos_customers', 'INSERT', payload, id);
+  notifyDataChanged('pos_customers');
+};

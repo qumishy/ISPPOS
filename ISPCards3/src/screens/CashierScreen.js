@@ -76,6 +76,11 @@ export default function CashierScreen() {
                 <View style={s.gi}><Text style={s.gl}>الطريقة</Text><Text style={s.gv}>{methodLabel(col.method)}</Text></View>
                 {col.invoice?.invoice_number&&<View style={s.gi}><Text style={s.gl}>الفاتورة</Text><Text style={[s.gv,{color:colors.blue}]}>{col.invoice.invoice_number}</Text></View>}
               </View>
+
+              {!!col.notes && (
+                <Text style={{fontSize: 11, color: colors.t3, marginTop: spacing.xs, paddingHorizontal: 2}}>📝 ملاحظات: {col.notes}</Text>
+              )}
+
               {col.status==='rejected'&&col.rejection_reason&&(
                 <Text style={{fontSize:fontSize.xs,color:colors.red,marginTop:spacing.xs}}>سبب الرفض: {col.rejection_reason}</Text>
               )}

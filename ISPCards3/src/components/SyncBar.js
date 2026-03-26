@@ -3,31 +3,33 @@ import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'rea
 import { useSync } from '../hooks/useSync';
 
 export default function SyncBar() {
-  const { online, pending, syncing, runSync } = useSync();
+  const { online, pending, syncing, failed, runSync, retryFailed } = useSync();
 
-  const bg = !online ? '#7f1d1d' : pending > 0 ? '#92400e' : '#065f46';
+  const bg = !online ? '#7f1d1d' : failed > 0 ? '#b91c1c' : pending > 0 ? '#92400e' : '#065f46';
   const label = !online
     ? 'أوفلاين'
     : syncing
       ? 'جاري المزامنة...'
-      : pending > 0
-        ? `${pending} بانتظار الرفع`
-        : 'تمت المزامنة';
+      : failed > 0
+        ? `${failed} عمليات فشلت`
+        : pending > 0
+          ? `${pending} بانتظار الرفع`
+          : 'تمت المزامنة';
 
   return (
     <TouchableOpacity
       style={[s.wrap, { backgroundColor: bg }]}
-      onPress={runSync}
+      onPress={failed > 0 ? retryFailed : runSync}
       activeOpacity={0.85}
     >
       <View style={s.row}>
         {syncing ? (
           <ActivityIndicator color="#fff" size="small" />
         ) : (
-          <Text style={s.icon}>{online ? '☁️' : '📴'}</Text>
+          <Text style={s.icon}>{online ? (failed > 0 ? '⚠️' : '☁️') : '📴'}</Text>
         )}
         <Text style={s.text}>{label}</Text>
-        <Text style={s.action}>اضغط للمزامنة</Text>
+        <Text style={s.action}>{failed > 0 ? 'اضغط لإعادة المحاولة' : 'اضغط للمزامنة'}</Text>
       </View>
     </TouchableOpacity>
   );

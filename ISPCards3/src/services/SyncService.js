@@ -1,6 +1,6 @@
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from './supabase';
-import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged } from './database';
+import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged, isRecordInSyncQueue } from './database';
 
 let _isOnline = false;
 let _isSyncing = false;
@@ -215,9 +215,8 @@ async function pullRemoteChanges() {
       const { data, error } = await supabase
         .from(t.name)
         .select(t.fields)
-        // 🔥 مؤقتاً نلغي الفلترة
-// .gte('created_at', lastPull)
-        .limit(500);
+        .gte('created_at', lastPull)
+        .limit(1000);
 
       if (error) {
         console.log(`[Sync] pull error ${t.name}: ${error.message}`);
@@ -227,6 +226,11 @@ async function pullRemoteChanges() {
       if (!data || data.length === 0) continue;
 
       for (const row of data) {
+        const inQueue = await isRecordInSyncQueue(row.id);
+        if (inQueue) {
+          console.log(`[Sync] Skipping pull overwrite for ${row.id} as it is pending push`);
+          continue;
+        }
 
   //      
   const clean = { ...row };

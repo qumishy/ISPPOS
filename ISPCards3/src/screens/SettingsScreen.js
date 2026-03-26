@@ -17,8 +17,6 @@ const defaultSettings = {
   dateFormat: 'DD/MM/YYYY',
   language: 'ar',
   rtl: true,
-  darkMode: true,
-  showSyncBar: true,
   defaultInvoiceType: 'credit',
   notifications: true,
   autoSync: true,
@@ -147,16 +145,6 @@ export default function SettingsScreen() {
       {/* ══ إعدادات العرض ══ */}
       <Text style={s.sectionTitle}>🎨 إعدادات العرض</Text>
       <View style={s.section}>
-        <Row style={s.row}>
-          <Text style={s.rowLabel}>الوضع الداكن</Text>
-          <Switch value={settings.darkMode} onValueChange={()=>toggle('darkMode')}
-            trackColor={{false:colors.border2,true:colors.blue+'66'}} thumbColor={settings.darkMode?colors.blue:colors.t3}/>
-        </Row>
-        <Row style={s.row}>
-          <Text style={s.rowLabel}>شريط حالة المزامنة</Text>
-          <Switch value={settings.showSyncBar} onValueChange={()=>toggle('showSyncBar')}
-            trackColor={{false:colors.border2,true:colors.blue+'66'}} thumbColor={settings.showSyncBar?colors.blue:colors.t3}/>
-        </Row>
         <View style={s.row}>
           <Text style={[s.rowLabel,{marginBottom:spacing.sm}]}>العملة</Text>
           <Row style={{gap:spacing.sm}}>
