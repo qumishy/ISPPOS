@@ -1,6 +1,6 @@
 import SyncScreen from '../screens/SyncScreen';
 import React, { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, ActivityIndicator, TouchableOpacity, Image } from 'react-native';
 
 import { NavigationContainer, DrawerActions } from '@react-navigation/native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
@@ -256,12 +256,20 @@ function CustomDrawer({ navigation, state }) {
         marginBottom: 10,
         alignItems: 'flex-end'
       }}>
-        <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>
-          👋 أهلاً بك
-        </Text>
-        <Text style={{ color: '#94a3b8', fontSize: 13 }}>
-          نظام إدارة الشبكة
-        </Text>
+        <View style={{ flexDirection: 'row-reverse', alignItems: 'center', width: '100%', gap: 12 }}>
+          <Image 
+            source={require('../../assets/icon.png')} 
+            style={{ width: 45, height: 45, borderRadius: 10, resizeMode: 'contain' }} 
+          />
+          <View style={{ flex: 1, alignItems: 'flex-end' }}>
+            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>
+              👋 أهلاً بك
+            </Text>
+            <Text style={{ color: '#cbd5e1', fontSize: 14 }}>
+              Smart POS Net
+            </Text>
+          </View>
+        </View>
       </View>
 
       {/* 🔷 MENU */}

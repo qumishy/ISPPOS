@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform,
-  ScrollView, ActivityIndicator,
+  ScrollView, ActivityIndicator, Image,
 } from 'react-native';
 import { useAuth } from '../services/AuthContext';
 import { colors, spacing, radius, fontSize } from '../theme';
@@ -36,10 +36,8 @@ export default function LoginScreen() {
 
         {/* Logo */}
         <View style={styles.logoWrap}>
-          <View style={styles.logoIcon}>
-            <Text style={{ fontSize: 36 }}>🌐</Text>
-          </View>
-          <Text style={styles.logoTitle}>نظام إدارة الكروت</Text>
+          <Image source={require('../../assets/icon.png')} style={{ width: 100, height: 100, borderRadius: 20, marginBottom: spacing.md, resizeMode: 'contain' }} />
+          <Text style={styles.logoTitle}>Smart POS Net</Text>
           <Text style={styles.logoSub}>تسجيل الدخول</Text>
         </View>
 

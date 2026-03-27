@@ -87,8 +87,8 @@ export function NewInvoiceScreen({ navigation }) {
           getLocalWallets(agentId || undefined)
         ]);
         setPos(posR.filter(p => !p.is_blocked));
-        setAgents(agentR.filter(a => a.role === 'agent' && a.is_active));
-        setCategories(catR.filter(c => c.is_active));
+        setAgents(agentR.filter(a => a.role === 'agent' && a.active));
+        setCategories(catR.filter(c => c.active));
         const w = walR.map(x => ({ ...x, remaining_cards: (x.total_cards || 0) - (x.sold_cards || 0) }));
         setWallets(w.filter(x => x.remaining_cards > 0));
 
@@ -586,7 +586,7 @@ export function NewCollectionScreen({ navigation }) {
         // ✅ تحميل الفواتير من SQLite (النظام الصحيح)
         const invRows = await getLocalInvoices();
 
-        setAgents(agentR.filter(a => a.role === 'agent' && a.is_active));
+        setAgents(agentR.filter(a => a.role === 'agent' && a.active));
         setPos(posR);
         setInvoices(invRows || []);
         setAllInvoices(invRows || []);
@@ -701,9 +701,9 @@ export function AssignWalletScreen({ navigation }) {
           getLocalBatches(),
           getLocalCategories(),
         ]);
-        setAgents(aR.filter(a => a.role === 'agent' && a.is_active));
+        setAgents(aR.filter(a => a.role === 'agent' && a.active));
         setBatches(bR.filter(b => b.available_cards > 0));
-        setCats(cR.filter(c => c.is_active));
+        setCats(cR.filter(c => c.active));
       } catch (e) { }
       setDataLoading(false);
     }
@@ -810,7 +810,7 @@ export function AddBatchScreen({ navigation }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    getLocalCategories().then((res) => { setCats(res.filter(c => c.is_active)); setDataLoading(false); });
+    getLocalCategories().then((res) => { setCats(res.filter(c => c.active)); setDataLoading(false); });
   }, []);
 
   const addItem = () => {
@@ -919,7 +919,7 @@ export function NewPOSScreen({ navigation }) {
   const [agents, setAgents] = useState([]);
   const [form, setForm] = useState({ name: '', owner_name: '', phone: '', governorate: 'صنعاء', district: '', area: '', credit_limit: '500000', assigned_agent_id: '' });
   const [saving, setSaving] = useState(false);
-  useEffect(() => { getLocalUsers().then((res) => setAgents(res.filter(a => a.role === 'agent' && a.is_active))); }, []);
+  useEffect(() => { getLocalUsers().then((res) => setAgents(res.filter(a => a.role === 'agent' && a.active))); }, []);
   const save = async () => {
     if (!form.name) { Alert.alert('تنبيه', 'يرجى إدخال اسم نقطة البيع'); return; }
     setSaving(true);
@@ -977,7 +977,7 @@ export function EditPOSScreen({ route, navigation }) {
       ]);
       const p = posAll.find(x => x.id === id);
       if (p) setForm({ name: p.name || '', owner_name: p.owner_name || '', phone: p.phone || '', city: p.city || '', credit_limit: String(p.credit_limit || 500000), assigned_agent_id: p.assigned_agent_id || '' });
-      setAgents(aR.filter(a => a.role === 'agent' && a.is_active));
+      setAgents(aR.filter(a => a.role === 'agent' && a.active));
     }
     load();
   }, [id]);
