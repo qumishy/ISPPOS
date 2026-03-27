@@ -1,2 +1,14 @@
-../ISPCards3_backup_20260322_193849/
-../ISPCards3_backup_20260322_193849/
+node_modules/
+.expo/
+dist/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+eas.json
+.vscode/
+android/
+ios/

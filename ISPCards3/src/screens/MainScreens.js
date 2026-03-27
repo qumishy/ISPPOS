@@ -10,8 +10,8 @@ import { colors, spacing, radius, fontSize } from '../theme';
 import { supabase } from '../services/supabase';
 import {
   getLocalInvoices, getLocalCollections, getLocalWallets,
-  deleteLocalCollection,
-  subscribeDataChanges,
+  deleteLocalCollection, getLocalBatches, getLocalCategories, getLocalUsers, getLocalPOS, updateLocalPOS,
+  toggleLocalPOSBlock, subscribeDataChanges,
 } from '../services/database';
 import { formatCurrency, formatDateShort, creditPercent, creditColor } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, KpiCard, Row, ProgressBar } from '../components/UI';
@@ -299,11 +299,11 @@ export function InventoryScreen({ navigation }) {
   const load = useCallback(async () => {
     try {
       const [bR, cR] = await Promise.all([
-        supabase.from('batches').select('*,card_categories(name,price)').order('created_at',{ascending:false}),
-        supabase.from('card_categories').select('*').eq('is_active',true).order('price'),
+        getLocalBatches(),
+        getLocalCategories()
       ]);
-      setBatches(bR.data||[]);
-      setCats(cR.data||[]);
+      setBatches(bR||[]);
+      setCats(cR||[]);
     } catch(e) {}
     setLoading(false); setRefreshing(false);
   }, []);
@@ -388,7 +388,7 @@ export function POSScreen({ navigation }) {
 
   const load = useCallback(async () => {
     try {
-      const { data } = await supabase.from('pos_customers').select('*').order('name');
+      const data = await getLocalPOS();
       setPos(data||[]);
     } catch(e) {}
     setLoading(false); setRefreshing(false);
@@ -400,7 +400,7 @@ export function POSScreen({ navigation }) {
     blocked?`رفع الحجب عن "${name}"؟`:`حجب "${name}"؟`,
     [{text:'إلغاء',style:'cancel'},{text:blocked?'رفع الحجب':'حجب',style:blocked?'default':'destructive',
       onPress:async()=>{
-        await supabase.from('pos_customers').update({is_blocked:!blocked}).eq('id',id);
+        await toggleLocalPOSBlock(id, !blocked);
         load();
       }}]
   );

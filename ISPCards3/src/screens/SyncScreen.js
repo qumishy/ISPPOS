@@ -38,8 +38,12 @@ export default function SyncScreen({ navigation }) {
       }, 500);
 
     } catch (e) {
-      setMsg('فشل المزامنة ❌');
-      console.log(e);
+      setMsg('وضع الأوفلاين 📡');
+      console.log('Sync failed (offline):', e);
+      // الدخول للتطبيق في وضع عدم الاتصال
+      setTimeout(() => {
+        navigation.replace('MainApp');
+      }, 1000);
     }
   };
 

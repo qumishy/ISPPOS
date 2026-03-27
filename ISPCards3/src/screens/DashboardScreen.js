@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, Dimensions, Animated, Easing } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getLocalInvoices, getLocalCollections } from '../services/database';
+import { getLocalInvoices, getLocalCollections, getLocalBatches, getLocalUsers, getLocalPOS } from '../services/database';
 import { supabase } from '../services/supabase';
 import { colors, spacing, radius, fontSize } from '../theme';
 import { LineChart, PieChart } from 'react-native-chart-kit';
@@ -101,28 +101,28 @@ export default function DashboardScreen({ navigation }) {
 
       setStats({ totalSales, totalCollected, totalPending, invoicesCount, collectionEfficiency: efficiency });
 
-      // 2. Load extra metrics from Supabase
-      const [posRes, batchRes, usersRes] = await Promise.all([
-        supabase.from('pos_customers').select('credit_used, credit_limit').eq('active', true),
-        supabase.from('batches').select('serial_number, total_cards, available_cards').eq('status', 'active').order('created_at', { ascending: false }),
-        supabase.from('users').select('id, name').eq('role', 'agent')
+      // 2. Load extra metrics from SQLite
+      const [posDataAll, batchDataAll, usersDataAll] = await Promise.all([
+        getLocalPOS(),
+        getLocalBatches(),
+        getLocalUsers()
       ]);
 
       // POS Health
-      const posData = posRes.data || [];
+      const posData = posDataAll.filter(p => p.active !== false);
       const totalColUsed = posData.reduce((s,p) => s + Number(p.credit_used||0), 0);
       const totalColLimit = posData.reduce((s,p) => s + Number(p.credit_limit||0), 0);
       setPosHealth({ used: totalColUsed, limit: totalColLimit || 1 });
 
       // Inventory Alerts (Last 3 batches)
-      const batchData = batchRes.data || [];
+      const batchData = batchDataAll.filter(b => b.status === 'active');
       const totalInv = batchData.reduce((s,b) => s + Number(b.available_cards||0), 0);
       const latestBatches = batchData.slice(0, 3);
       setInventory({ total: totalInv, latestBatches });
 
       // 3. User mapping for charts & Top Agents
       let usersMap = {};
-      (usersRes.data || []).forEach(u => { usersMap[u.id] = u.name; });
+      usersDataAll.filter(u => u.role === 'agent').forEach(u => { usersMap[u.id] = u.name; });
 
       const byAgentSales = {};
       invoices.forEach(inv => {

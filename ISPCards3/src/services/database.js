@@ -656,6 +656,29 @@ export const resetFailedSyncItems = async () => {
   notifyDataChanged('sync_queue');
 };
 
+export const updateLocalPOS = async (id, data) => {
+  await execSQL(
+    `UPDATE pos_customers SET name=?, owner_name=?, phone=?, city=?, credit_limit=?, assigned_agent_id=?, synced=0 WHERE id=?`,
+    [data.name, data.owner_name, data.phone, data.city, data.credit_limit, data.assigned_agent_id, id]
+  );
+  await addToSyncQueue('pos_customers', 'UPDATE', data, id);
+  notifyDataChanged('pos_customers');
+};
+
+export const toggleLocalPOSBlock = async (id, blocked) => {
+  await execSQL(`UPDATE pos_customers SET is_blocked=?, synced=0 WHERE id=?`, [blocked ? 1 : 0, id]);
+  await addToSyncQueue('pos_customers', 'UPDATE', { is_blocked: blocked }, id);
+  notifyDataChanged('pos_customers');
+};
+
+export const updateLocalWalletCards = async (walletId, qtySold) => {
+  await execSQL(`UPDATE agent_wallets SET sold_cards = sold_cards + ?, synced = 0 WHERE id = ?`, [qtySold, walletId]);
+  const r = await execSQL(`SELECT sold_cards FROM agent_wallets WHERE id=?`, [walletId]);
+  const currentSold = r.rows._array?.[0]?.sold_cards;
+  await addToSyncQueue('agent_wallets', 'UPDATE', { sold_cards: currentSold }, walletId);
+  notifyDataChanged('agent_wallets');
+};
+
 export const getLocalWallets = async (agentId) => {
   let sql = `
 SELECT 

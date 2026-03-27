@@ -41,7 +41,7 @@ const Stack = createStackNavigator();
 function MenuButton({ navigation }) {
   return (
     <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
-      <Text style={{ fontSize:22, color:'#fff', marginLeft:10 }}>☰</Text>
+      <Text style={{ fontSize: 22, color: '#fff', marginLeft: 10 }}>☰</Text>
     </TouchableOpacity>
   );
 }
@@ -49,8 +49,8 @@ function MenuButton({ navigation }) {
 function Header(title, navigation) {
   return {
     title,
-    headerStyle:{ backgroundColor:'#0f172a' },
-    headerTintColor:'#fff',
+    headerStyle: { backgroundColor: '#0f172a' },
+    headerTintColor: '#fff',
     headerLeft: () => <MenuButton navigation={navigation} />,
   };
 }
@@ -148,10 +148,10 @@ function SettingsStack({ navigation }) {
 
 function TabIcon({ emoji, label, focused }) {
   return (
-    <View style={{ alignItems:'center' }}>
-      <Text style={{ fontSize:18 }}>{emoji}</Text>
+    <View style={{ alignItems: 'center' }}>
+      <Text style={{ fontSize: 18 }}>{emoji}</Text>
       <Text style={{
-        fontSize:11,
+        fontSize: 11,
         color: focused ? '#3b82f6' : '#aaa'
       }}>
         {label}
@@ -164,8 +164,8 @@ function BottomTabs() {
   return (
     <Tab.Navigator
       screenOptions={{
-        headerShown:false,
-        tabBarStyle:{ backgroundColor:'#0f172a', height:60 },
+        headerShown: false,
+        tabBarStyle: { backgroundColor: '#0f172a', height: 60 },
       }}
     >
 
@@ -173,7 +173,7 @@ function BottomTabs() {
         name="DashboardTab"
         component={DashboardStack}
         options={{
-          tabBarIcon: ({focused}) => <TabIcon emoji="📊" label="الرئيسية" focused={focused} />
+          tabBarIcon: ({ focused }) => <TabIcon emoji="📊" label="الرئيسية" focused={focused} />
         }}
       />
 
@@ -181,7 +181,7 @@ function BottomTabs() {
         name="InvoicesTab"
         component={InvoicesStack}
         options={{
-          tabBarIcon: ({focused}) => <TabIcon emoji="🧾" label="الفواتير" focused={focused} />
+          tabBarIcon: ({ focused }) => <TabIcon emoji="🧾" label="الفواتير" focused={focused} />
         }}
       />
 
@@ -189,7 +189,7 @@ function BottomTabs() {
         name="CollectionsTab"
         component={CollectionsStack}
         options={{
-          tabBarIcon: ({focused}) => <TabIcon emoji="💰" label="التحصيلات" focused={focused} />
+          tabBarIcon: ({ focused }) => <TabIcon emoji="💰" label="التحصيلات" focused={focused} />
         }}
       />
 
@@ -197,8 +197,8 @@ function BottomTabs() {
       <Tab.Screen name="InventoryTab" component={InventoryStack} options={{ tabBarButton: () => null }} />
       <Tab.Screen name="POSTab" component={POSStack} options={{ tabBarButton: () => null }} />
       <Tab.Screen name="WalletsTab" component={WalletsStack} options={{ tabBarButton: () => null }} />
-<Drawer.Screen name="CashierTab" component={CashierStack}
-options={{ tabBarButton: () => null }} />
+      <Drawer.Screen name="CashierTab" component={CashierStack}
+        options={{ tabBarButton: () => null }} />
 
       <Tab.Screen name="ReportsTab" component={ReportsStack} options={{ tabBarButton: () => null }} />
       <Tab.Screen name="AdminTab" component={AdminStack} options={{ tabBarButton: () => null }} />
@@ -245,27 +245,27 @@ function CustomDrawer({ navigation, state }) {
   };
 
   return (
-    <View style={{ flex:1, backgroundColor:'#0f172a', paddingTop:40 }}>
+    <View style={{ flex: 1, backgroundColor: '#0f172a', paddingTop: 40 }}>
 
       {/* 🔷 HEADER */}
       <View style={{
-        paddingHorizontal:16,
-        paddingBottom:20,
-        borderBottomWidth:1,
-        borderBottomColor:'#1e293b',
-        marginBottom:10,
-        alignItems:'flex-end'
+        paddingHorizontal: 16,
+        paddingBottom: 20,
+        borderBottomWidth: 1,
+        borderBottomColor: '#1e293b',
+        marginBottom: 10,
+        alignItems: 'flex-end'
       }}>
-        <Text style={{ color:'#fff', fontSize:18, fontWeight:'700' }}>
+        <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>
           👋 أهلاً بك
         </Text>
-        <Text style={{ color:'#94a3b8', fontSize:13 }}>
+        <Text style={{ color: '#94a3b8', fontSize: 13 }}>
           نظام إدارة الشبكة
         </Text>
       </View>
 
       {/* 🔷 MENU */}
-      <View style={{ paddingHorizontal:10, flex:1 }}>
+      <View style={{ paddingHorizontal: 10, flex: 1 }}>
 
         <Item route="DashboardTab" label="الرئيسية" icon="📊"
           onPress={() => navigation.navigate('MainTabs', { screen: 'DashboardTab' })} />
@@ -301,9 +301,9 @@ function CustomDrawer({ navigation, state }) {
 
       {/* 🔻 تسجيل الخروج */}
       <View style={{
-        borderTopWidth:1,
-        borderTopColor:'#1e293b',
-        padding:10
+        borderTopWidth: 1,
+        borderTopColor: '#1e293b',
+        padding: 10
       }}>
         <Item
           label="تسجيل الخروج"
@@ -323,13 +323,13 @@ function MainDrawer() {
   return (
     <Drawer.Navigator
       drawerContent={(props) => <CustomDrawer {...props} />}
-      screenOptions={{ headerShown:false, drawerPosition:'right' }}
+      screenOptions={{ headerShown: false, drawerPosition: 'right' }}
     >
       {/* الشاشة الوحيدة داخل Drawer */}
       <Drawer.Screen name="MainTabs" component={BottomTabs} />
 
       {/* فقط شاشة مستقلة */}
-      
+
     </Drawer.Navigator>
   );
 }
@@ -345,23 +345,23 @@ export default function AppNavigator() {
   }, []);
 
   if (loading || !ready) {
-    return <ActivityIndicator style={{flex:1}} />;
+    return <ActivityIndicator style={{ flex: 1 }} />;
   }
 
   return (
-  <NavigationContainer>
-    <Stack.Navigator screenOptions={{ headerShown:false }}>
+    <NavigationContainer>
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
 
-      {!user ? (
-        <Stack.Screen name="Login" component={LoginScreen} />
-      ) : (
-        <>
-          <Stack.Screen name="Sync" component={SyncScreen} />
-          <Stack.Screen name="MainApp" component={MainDrawer} />
-        </>
-      )}
+        {!user ? (
+          <Stack.Screen name="Login" component={LoginScreen} />
+        ) : (
+          <>
+            <Stack.Screen name="Sync" component={SyncScreen} />
+            <Stack.Screen name="MainApp" component={MainDrawer} />
+          </>
+        )}
 
-    </Stack.Navigator>
-  </NavigationContainer>
-);
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
 }
