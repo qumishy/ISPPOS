@@ -63,3 +63,118 @@ export const YEMEN_REGIONS = {
 };
 export const GOVERNORATES = Object.keys(YEMEN_REGIONS);
 export const getDistricts = (gov) => YEMEN_REGIONS[gov] || [];
+
+export const generateSupplyReceiptHTML = (supply, colsDetails, userName, agentNameStr) => {
+  const typeStr = supply.type === 'voucher' ? 'سند قبض مباشر' : supply.type === 'deposit' ? 'إيداع نقدي' : 'أخرى';
+  
+  // Calculate dynamic date descriptions based on actual collections linked
+  const dates = [...new Set((colsDetails || []).map(c => c.collection_date?.split('T')[0]).filter(Boolean))].sort();
+  let dateText = '';
+  if (dates.length === 1) dateText = `تاريخ ${dates[0]}`;
+  else if (dates.length > 1) dateText = `الفترة (${dates[0]} م إلى ${dates[dates.length - 1]} م)`;
+
+  let titleDesc = '';
+  if (supply.agent_id && dateText) titleDesc = `إيرادات المندوب ${agentNameStr} لـ ${dateText}`;
+  else if (supply.agent_id && !dateText) titleDesc = `إيرادات المندوب ${agentNameStr}`;
+  else if (!supply.agent_id && dateText) titleDesc = `إيرادات عامة لـ ${dateText}`;
+  else titleDesc = 'إيراد تحصيلات مناديب متعدين';
+
+  let tableRows = '';
+  if (colsDetails && colsDetails.length > 0) {
+    colsDetails.forEach((c, idx) => {
+      const net = Number(c.net_amount) || 0;
+      const isFull = (Number(c.approved_amount) || 0) >= (net - 0.1) && net > 0;
+      tableRows += `
+        <tr>
+          <td>${idx + 1}</td>
+          <td>${c.collection_number}</td>
+          <td>${c.invoice_number}</td>
+          <td>${c.agent_name || '—'}</td>
+          <td>${c.pos_name || '—'}</td>
+          <td>${c.items_desc || '—'}</td>
+          <td>${formatCurrency(net)}</td>
+          <td>${isFull ? 'مسددة بالكامل' : 'تسديد جزئي'}</td>
+          <td style="font-weight: bold;">${formatCurrency(c.collection_amount)}</td>
+        </tr>
+      `;
+    });
+  } else {
+    tableRows = `<tr><td colspan="9" style="text-align: center; padding: 20px;">لم يتم العثور على تحصيلات مرتبطة بهذا التوريد.</td></tr>`;
+  }
+
+  return `
+    <html dir="rtl">
+      <head>
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, sans-serif; padding: 20px; color: #333; }
+          .receipt-box { padding: 10px; }
+          .header { text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 15px; margin-bottom: 20px; }
+          .title { font-size: 24px; font-weight: 900; color: #1e3a8a; }
+          .subtitle { font-size: 16px; color: #64748b; margin-top: 5px; font-weight: bold; }
+          .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 5px; }
+          .label { font-weight: bold; color: #64748b; }
+          .value { font-weight: 900; color: #1e40af; }
+          table { width: 100%; border-collapse: collapse; margin-top: 25px; font-size: 11px; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: center; }
+          th { background-color: #f1f5f9; color: #1e3a8a; font-weight: bold; }
+          .footer { margin-top: 30px; text-align: center; font-size: 12px; color: #94a3b8; }
+          .signature-box { display: flex; justify-content: space-around; margin-top: 50px; font-weight: bold; }
+          .sign-line { border-top: 1px solid #333; width: 200px; text-align: center; padding-top: 5px; margin-top: 40px; }
+        </style>
+      </head>
+      <body>
+        <div class="receipt-box">
+          <div class="header">
+            <div class="title">سند قيد محاسبي</div>
+            <div class="subtitle">(${titleDesc})</div>
+            <div style="font-size: 14px; margin-top: 10px;">رقم النظام: ${supply.supply_number}</div>
+          </div>
+          <div class="row"><span class="label">التاريخ:</span> <span class="value">${supply.created_at}</span></div>
+          <div class="row"><span class="label">اسم المحاسب (المُنشيء):</span> <span class="value">${userName}</span></div>
+          <div class="row"><span class="label">إيراد عن المندوبين:</span> <span class="value">${agentNameStr}</span></div>
+          <div class="row"><span class="label">نوع التوريد:</span> <span class="value">${typeStr}</span></div>
+          <div class="row"><span class="label">حالة التوريد المستندي:</span> <span class="value">${supply.status === 'approved' ? 'معتمد ✅' : supply.status === 'pending' ? 'قيد المراجعة ⏳' : 'مرفوض ❌'}</span></div>
+          <div class="row"><span class="label">ملاحظات التوريد:</span> <span class="value">${supply.notes || '—'}</span></div>
+          
+          <div style="margin-top: 20px; text-align: left;">
+             <span style="font-size: 14px; color: #64748b;">المبلغ الصافي المورد:</span>
+             <span style="font-size: 22px; font-weight: 900; color: #1e3a8a; margin-right: 15px;">${formatCurrency(supply.amount)}</span>
+          </div>
+
+          <h3 style="margin-top: 25px; color: #1e3a8a; font-size: 16px; border-bottom: 2px solid #1e3a8a; display: inline-block;">كشف تفصيلي بالتحصيلات</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>م</th>
+                <th>رقم التحصيل</th>
+                <th>رقم الفاتورة</th>
+                <th>المندوب</th>
+                <th>نقطة البيع</th>
+                <th>تفاصيل الفاتورة</th>
+                <th>إجمالي الفاتورة</th>
+                <th>حالة السداد</th>
+                <th>المبلغ المحصل</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+
+          <div class="signature-box">
+             <div>
+               <div>توقيع المحاسب</div>
+               <div class="sign-line">الاسم: ${userName}</div>
+             </div>
+             <div>
+               <div>اعتماد الإدارة الماليّة</div>
+               <div class="sign-line">الختم/التوقيع</div>
+             </div>
+          </div>
+
+          <div class="footer">تعهد مالي وصادر عبر نظام ISP Cards System v3</div>
+        </div>
+      </body>
+    </html>
+  `;
+};

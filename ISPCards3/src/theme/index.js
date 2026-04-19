@@ -1,10 +1,48 @@
-export const colors = {
-  bg: '#0a0f1e', bg2: '#0d1528', card: '#111827', card2: '#161f35',
-  hover: '#1a2540', border: '#1e293b', border2: '#2a3a55',
-  blue: '#3b82f6', cyan: '#06b6d4', green: '#10b981',
-  orange: '#f59e0b', red: '#ef4444', purple: '#8b5cf6', pink: '#ec4899',
-  t1: '#f1f5f9', t2: '#94a3b8', t3: '#475569',
+// ═══════════════════════════════════════════════════════
+//  Smart POS Net — Theme Barrel (للتوافق مع الكود القديم)
+//  استيراد الثيم الجديد من ThemeContext
+// ═══════════════════════════════════════════════════════
+
+// ── Re-export from new files
+export { darkColors as colors, lightColors } from './colors';
+export { spacing, radius, fontSize } from './ThemeContext';
+export { useTheme, ThemeProvider } from './ThemeContext';
+
+// ── Static dark shadow (للاستخدام الثابت في ملفات غير ديناميكية)
+export const shadow = {
+  sm: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  md: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.20,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  lg: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  blue: {
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  green: {
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
+  },
 };
-export const spacing = { xs:4, sm:8, md:12, lg:16, xl:20, xxl:24 };
-export const radius = { sm:8, md:12, lg:16, xl:20, full:999 };
-export const fontSize = { xs:10, sm:11, md:12, lg:13, xl:15, xxl:18, h:22 };

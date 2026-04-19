@@ -17,8 +17,13 @@
     "@react-navigation/stack": "^6.4.1",
     "@supabase/supabase-js": "^2.99.3",
     "expo": "~50.0.0",
+    "expo-constants": "~15.4.5",
+    "expo-device": "~5.9.4",
+    "expo-document-picker": "~11.10.1",
     "expo-file-system": "~16.0.9",
     "expo-font": "~11.10.3",
+    "expo-image-picker": "~14.7.1",
+    "expo-notifications": "^0.27.8",
     "expo-print": "~12.8.1",
     "expo-secure-store": "~12.8.1",
     "expo-sharing": "~11.10.0",
@@ -35,6 +40,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
+    "@expo/ngrok": "^4.1.3",
     "babel-preset-expo": "~10.0.0"
   }
 }

@@ -1,213 +1,348 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
-  StyleSheet, TextInput,
+  TextInput, Animated, Easing, ScrollView,
 } from 'react-native';
-import { colors, spacing, radius, fontSize } from '../theme';
+import { useTheme } from '../theme';
 import { statusLabel, statusColor } from '../utils/helpers';
+import { makeStyles } from '../styles/ui.styles';
 
-// ── Card ─────────────────────────────────────────
-export function Card({ children, style, onPress }) {
-  if (onPress) {
-    return (
-      <TouchableOpacity style={[styles.card, style]} onPress={onPress} activeOpacity={0.8}>
-        {children}
-      </TouchableOpacity>
-    );
-  }
-  return <View style={[styles.card, style]}>{children}</View>;
-}
+// ══════════════════════════════════════════════════════
+//  BASIC COMPONENTS
+// ══════════════════════════════════════════════════════
 
-export function CardHeader({ title, subtitle, right }) {
+export function Card({ children, style, header, footer, title, sub }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   return (
-    <View style={styles.cardHeader}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.cardTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.cardSub}>{subtitle}</Text> : null}
-      </View>
-      {right}
+    <View style={[s.card, style]}>
+      {(header || title) && (
+        <View style={s.cardHeader}>
+          {header || (
+            <View>
+              <Text style={s.cardTitle}>{title}</Text>
+              {sub && <Text style={s.cardSub}>{sub}</Text>}
+            </View>
+          )}
+        </View>
+      )}
+      {children}
+      {footer && <View style={s.divider}>{footer}</View>}
     </View>
   );
 }
 
-// ── Badge ─────────────────────────────────────────
-export function Badge({ status, label }) {
-  const col = statusColor(status);
-  const lbl = label || statusLabel(status);
+export function Badge({ status, label, color, style }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const c = color || statusColor(status);
+  const l = label || statusLabel(status);
   return (
-    <View style={[styles.badge, { backgroundColor: col + '22', borderColor: col + '44' }]}>
-      <View style={[styles.badgeDot, { backgroundColor: col }]} />
-      <Text style={[styles.badgeText, { color: col }]}>{lbl}</Text>
+    <View style={[s.badge, { borderColor: c + '40', backgroundColor: c + '12' }, style]}>
+      <View style={[s.badgeDot, { backgroundColor: c }]} />
+      <Text style={[s.badgeText, { color: c }]}>{l}</Text>
     </View>
   );
 }
 
-// ── Button ────────────────────────────────────────
-export function Btn({ label, onPress, variant = 'primary', size = 'md', icon, disabled, style }) {
-  const bg = {
-    primary: colors.blue, success: colors.green,
-    danger: colors.red, outline: 'transparent', ghost: 'transparent',
-  }[variant];
-  const tc = (variant === 'outline' || variant === 'ghost') ? colors.t2 : '#fff';
-  const border = variant === 'outline' ? colors.border2 : 'transparent';
-  const pad = size === 'sm' ? { paddingVertical: 6, paddingHorizontal: 12 }
-    : size === 'xs' ? { paddingVertical: 4, paddingHorizontal: 8 }
-    : { paddingVertical: 10, paddingHorizontal: 18 };
-  const fs = size === 'sm' || size === 'xs' ? fontSize.sm : fontSize.md;
+export function Btn({ label, onPress, variant='primary', size='md', icon, style, disabled, loading }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  
+  const variants = {
+    primary: { bg: colors.blue,   b: colors.blueG,  t: '#fff' },
+    success: { bg: colors.green,  b: colors.greenL, t: '#fff' },
+    danger:  { bg: colors.red,    b: colors.redL,   t: '#fff' },
+    outline: { bg: 'transparent', b: colors.border2, t: colors.t1 },
+    ghost:   { bg: 'transparent', b: 'transparent',  t: colors.blue },
+  };
+  const v = variants[variant] || variants.primary;
+  
+  const sizes = {
+    sm: { h: 36, p: spacing.md, f: fontSize.sm },
+    md: { h: 48, p: spacing.xl, f: fontSize.lg },
+    lg: { h: 56, p: spacing.xxl, f: fontSize.xl },
+  };
+  const sz = sizes[size] || sizes.md;
 
   return (
     <TouchableOpacity
-      style={[styles.btn, { backgroundColor: bg, borderColor: border, borderWidth: 1, ...pad }, style]}
-      onPress={onPress} disabled={disabled} activeOpacity={0.8}
+      activeOpacity={0.8}
+      onPress={onPress}
+      disabled={disabled || loading}
+      style={[
+        s.btn, 
+        { height: sz.h, paddingHorizontal: sz.p, backgroundColor: v.bg, borderColor: v.b },
+        variant === 'primary' && shadow.blue,
+        disabled && s.btnDisabled,
+        style
+      ]}
     >
-      {icon ? <Text style={{ fontSize: fs + 2, marginLeft: 4 }}>{icon}</Text> : null}
-      <Text style={[styles.btnText, { color: tc, fontSize: fs }]}>{label}</Text>
+      {loading ? (
+        <ActivityIndicator color={v.t} size="small" />
+      ) : (
+        <>
+          {icon && <Text style={{ fontSize: sz.f + 2 }}>{icon}</Text>}
+          <Text style={[s.btnText, { color: v.t, fontSize: sz.f }]}>{label}</Text>
+        </>
+      )}
     </TouchableOpacity>
   );
 }
 
-// ── Input ─────────────────────────────────────────
-export function Input({ label, value, onChangeText, placeholder, keyboardType, multiline, style }) {
+export function Input({ label, value, onChangeText, placeholder, icon, secureTextEntry, keyboardType, multiline, style, error }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const [isFocused, setIsFocused] = React.useState(false);
+
   return (
-    <View style={[{ marginBottom: spacing.md }, style]}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
-      <TextInput
-        style={[styles.input, multiline && { height: 80, textAlignVertical: 'top' }]}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.t3}
-        keyboardType={keyboardType || 'default'}
-        multiline={multiline}
-      />
+    <View style={s.inputWrap}>
+      {label && <Text style={[s.label, isFocused && { color: colors.blue }]}>{label}</Text>}
+      <View style={[
+        s.inputContainer,
+        multiline && { height: undefined, minHeight: 100 },
+        isFocused && { borderColor: colors.blue, backgroundColor: colors.bg },
+        error && { borderColor: colors.red },
+        style
+      ]}>
+        <TextInput
+          style={[s.input, multiline && { height: 100, textAlignVertical: 'top' }, multiline && style && { height: style.height }]}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          placeholderTextColor={colors.t3}
+          secureTextEntry={secureTextEntry}
+          keyboardType={keyboardType}
+          multiline={multiline}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+        />
+        {icon && <Text style={{ fontSize: 18, marginLeft: spacing.sm }}>{icon}</Text>}
+      </View>
+      {error && <Text style={s.inputError}>{error}</Text>}
     </View>
   );
 }
 
-// ── Loading ───────────────────────────────────────
-export function Loading({ text = 'جاري التحميل...' }) {
+export function Picker({ label, options, value, onChange, placeholder, loading: pLoading }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const [isFocused, setIsFocused] = React.useState(false);
+  const selected = options?.find(o => String(o.value) === String(value));
+  const [open, setOpen] = React.useState(false);
+
+  // Styles can be part of ui.styles or inline for simplicity if they are specific
   return (
-    <View style={styles.loading}>
-      <ActivityIndicator color={colors.blue} size="large" />
-      <Text style={styles.loadingText}>{text}</Text>
+    <View style={{ marginBottom: spacing.md }}>
+      {label && <Text style={{ fontSize: fontSize.sm, fontWeight: '700', color: colors.t2, marginBottom: 6, textAlign: 'right' }}>{label}</Text>}
+      <TouchableOpacity
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          backgroundColor: colors.bg2,
+          borderWidth: 1,
+          borderColor: open ? colors.blue : colors.border,
+          borderRadius: radius.md,
+          paddingHorizontal: spacing.md,
+          height: 50,
+        }}
+        onPress={() => !pLoading && setOpen(!open)}
+        activeOpacity={0.8}
+      >
+        {pLoading ? (
+          <ActivityIndicator size="small" color={colors.blue} style={{ flex: 1 }} />
+        ) : (
+          <Text style={{ fontSize: fontSize.md, color: selected ? colors.t1 : colors.t3, textAlign: 'right', flex: 1 }}>
+            {selected ? selected.label : (placeholder || 'اختر...')}
+          </Text>
+        )}
+        <Text style={{ color: colors.t3, marginLeft: 10 }}>{open ? '▲' : '▼'}</Text>
+      </TouchableOpacity>
+      {open && (
+        <View style={{
+          marginTop: 4,
+          backgroundColor: colors.card,
+          borderRadius: radius.md,
+          borderWidth: 1,
+          borderColor: colors.border,
+          ...shadow.md,
+          overflow: 'hidden',
+          zIndex: 1000,
+        }}>
+          <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>
+            {options.length === 0 ? (
+              <Text style={{ color: colors.t3, textAlign: 'center', padding: spacing.md }}>لا توجد خيارات</Text>
+            ) : (
+              options.map(opt => (
+                <TouchableOpacity
+                  key={String(opt.value)}
+                  style={{
+                    padding: spacing.md,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.border,
+                    backgroundColor: String(value) === String(opt.value) ? colors.blue + '10' : 'transparent',
+                  }}
+                  onPress={() => { onChange(opt.value); setOpen(false); }}
+                >
+                  <Text style={{
+                    fontSize: fontSize.md,
+                    color: String(value) === String(opt.value) ? colors.blue : colors.t2,
+                    textAlign: 'right',
+                    fontWeight: String(value) === String(opt.value) ? '700' : '400',
+                  }}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </ScrollView>
+        </View>
+      )}
     </View>
   );
 }
 
-// ── Empty State ───────────────────────────────────
-export function Empty({ icon = '📭', title, sub, action, onAction }) {
-  return (
-    <View style={styles.empty}>
-      <Text style={styles.emptyIcon}>{icon}</Text>
-      <Text style={styles.emptyTitle}>{title}</Text>
-      {sub ? <Text style={styles.emptySub}>{sub}</Text> : null}
-      {action ? <Btn label={action} onPress={onAction} style={{ marginTop: spacing.lg }} /> : null}
-    </View>
-  );
-}
 
-// ── Section Header ────────────────────────────────
-export function SectionHeader({ title, right }) {
-  return (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {right}
-    </View>
-  );
-}
-
-// ── Progress Bar ──────────────────────────────────
-export function ProgressBar({ percent, color = colors.blue, height = 5 }) {
-  return (
-    <View style={[styles.progressTrack, { height }]}>
-      <View style={[styles.progressFill, {
-        width: percent + '%', backgroundColor: color, height,
-      }]} />
-    </View>
-  );
-}
-
-// ── Divider ───────────────────────────────────────
-export function Divider() {
-  return <View style={styles.divider} />;
-}
-
-// ── Row ───────────────────────────────────────────
 export function Row({ children, style }) {
   return <View style={[{ flexDirection: 'row', alignItems: 'center' }, style]}>{children}</View>;
 }
 
-// ── KPI Card ──────────────────────────────────────
-export function KpiCard({ value, label, color = colors.t1, style }) {
+export function Loading({ label = 'جاري التحميل...' }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   return (
-    <View style={[styles.kpiCard, style]}>
-      <Text style={[styles.kpiValue, { color }]}>{value}</Text>
-      <Text style={styles.kpiLabel}>{label}</Text>
+    <View style={s.loading}>
+      <View style={s.loadingSpinWrap}>
+        <ActivityIndicator color={colors.blue} size="large" />
+        <View style={s.loadingGlow} />
+      </View>
+      <Text style={s.loadingText}>{label}</Text>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.card,
-    borderWidth: 1, borderColor: colors.border,
-    borderRadius: radius.lg, marginBottom: spacing.md,
-  },
-  cardHeader: {
-    flexDirection: 'row', alignItems: 'center',
-    padding: spacing.lg, paddingBottom: spacing.md,
-    borderBottomWidth: 1, borderBottomColor: colors.border,
-  },
-  cardTitle: { fontSize: fontSize.lg, fontWeight: '700', color: colors.t1 },
-  cardSub: { fontSize: fontSize.xs, color: colors.t3, marginTop: 2 },
+export function Empty({ icon = '📂', title = 'لا توجد بيانات', sub, action, onAction }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  return (
+    <View style={s.empty}>
+      <Text style={s.emptyIcon}>{icon}</Text>
+      <Text style={s.emptyTitle}>{title}</Text>
+      {sub && <Text style={s.emptySub}>{sub}</Text>}
+      {action && <Btn label={action} variant="outline" size="sm" onPress={onAction} style={{ marginTop: 10 }} />}
+    </View>
+  );
+}
 
-  badge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingVertical: 3, paddingHorizontal: 8,
-    borderRadius: radius.full, borderWidth: 1,
-    alignSelf: 'flex-start',
-  },
-  badgeDot: { width: 5, height: 5, borderRadius: 3 },
-  badgeText: { fontSize: fontSize.xs, fontWeight: '700' },
+export function SectionHeader({ title, icon, action, onAction, style }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  return (
+    <View style={[s.sectionHeader, style]}>
+      <View style={s.sectionTitleWrap}>
+        <View style={{ width: 4, height: 20, backgroundColor: colors.blue, borderRadius: 2 }} />
+        {icon && <Text style={{ fontSize: 18 }}>{icon}</Text>}
+        <Text style={s.sectionTitle}>{title}</Text>
+      </View>
+      {action && (
+        <TouchableOpacity onPress={onAction}>
+          <Text style={{ color: colors.blue, fontWeight: '700', fontSize: fontSize.sm }}>{action}</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
 
-  btn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    borderRadius: radius.sm, gap: 4,
-  },
-  btnText: { fontWeight: '700' },
+export function ProgressBar({ percent = 0, color, height = 8, showLabel = false }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const p = Math.min(Math.max(percent, 0), 100);
+  const c = color || colors.blue;
+  return (
+    <View style={{ width: '100%', marginVertical: 4 }}>
+      {showLabel && (
+        <Row style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+          <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>{p.toFixed(0)}%</Text>
+        </Row>
+      )}
+      <View style={[s.progressTrack, { height, borderRadius: height / 2 }]}>
+        <View style={[s.progressFill, { width: `${p}%`, height, backgroundColor: c, borderRadius: height / 2 }]} />
+      </View>
+    </View>
+  );
+}
 
-  label: { fontSize: fontSize.sm, fontWeight: '700', color: colors.t2, marginBottom: 5 },
-  input: {
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.border2,
-    borderRadius: radius.sm, padding: spacing.md,
-    color: colors.t1, fontSize: fontSize.md,
-    textAlign: 'right',
-  },
+export function KpiCard({ value, label, color, icon, style }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  return (
+    <View style={[s.kpiCard, style]}>
+      {icon && <Text style={{ fontSize: 20, marginBottom: 5 }}>{icon}</Text>}
+      <Text style={[s.kpiValue, { color: color || colors.t1 }]}>{value}</Text>
+      <Text style={s.kpiLabel}>{label}</Text>
+    </View>
+  );
+}
 
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xxl },
-  loadingText: { color: colors.t3, fontSize: fontSize.md },
+export function Avatar({ name, size = 40, color, style }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const bg = color || colors.blue;
+  const initial = name ? name.charAt(0).toUpperCase() : '?';
+  return (
+    <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bg + '15' }, style]}>
+      <Text style={[s.avatarTxt, { color: bg, fontSize: size * 0.4 }]}>{initial}</Text>
+    </View>
+  );
+}
 
-  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40 },
-  emptyIcon: { fontSize: 44, marginBottom: spacing.md },
-  emptyTitle: { fontSize: fontSize.xl, fontWeight: '700', color: colors.t2, marginBottom: spacing.sm, textAlign: 'center' },
-  emptySub: { fontSize: fontSize.sm, color: colors.t3, textAlign: 'center' },
-
-  sectionHeader: {
-    flexDirection: 'row', alignItems: 'center',
-    marginBottom: spacing.sm, marginTop: spacing.sm,
-  },
-  sectionTitle: { fontSize: fontSize.lg, fontWeight: '800', color: colors.t1, flex: 1 },
-
-  progressTrack: { backgroundColor: colors.border, borderRadius: 3, overflow: 'hidden' },
-  progressFill: { borderRadius: 3 },
-
-  divider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.sm },
-
-  kpiCard: {
-    flex: 1, backgroundColor: colors.card,
-    borderRadius: radius.md, padding: spacing.md,
-    alignItems: 'center', borderWidth: 1, borderColor: colors.border,
-  },
-  kpiValue: { fontSize: fontSize.xxl, fontWeight: '800' },
-  kpiLabel: { fontSize: fontSize.xs, color: colors.t3, marginTop: 3, textAlign: 'center' },
-});
+export function ScreenHeader({ kpis, tabs, activeTab, onTabSelect, search, onSearch, searchPlaceholder = 'بحث...', action, onAction }) {
+  const { colors, spacing, radius, fontSize, shadow } = useTheme();
+  const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  return (
+    <View style={s.shWrapper}>
+      {kpis && kpis.length > 0 && (
+        <View style={s.shKpiStrip}>
+          {kpis.map((kpi, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <View style={s.shKpiDivider} />}
+              <View style={s.shKpiItem}>
+                <Text style={[s.shKpiVal, { color: kpi.color || colors.t1 }]} numberOfLines={1} adjustsFontSizeToFit>{kpi.value}</Text>
+                <Text style={s.shKpiLabel}>{kpi.label}</Text>
+              </View>
+            </React.Fragment>
+          ))}
+        </View>
+      )}
+      {tabs && tabs.length > 0 && (
+        <View style={s.shTabBar}>
+          {tabs.map(tab => {
+            const active = activeTab === tab.k;
+            return (
+              <TouchableOpacity key={tab.k} style={[s.shTab, active && s.shTabActive]} onPress={() => onTabSelect && onTabSelect(tab.k)} activeOpacity={0.75}>
+                {tab.icon ? <Text style={{ fontSize: 11 }}>{tab.icon}</Text> : null}
+                <Text style={[s.shTabTxt, active && s.shTabTxtActive]}>{tab.l}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+      {(onSearch || action) && (
+        <View style={s.shToolbar}>
+          {onSearch && (
+            <View style={s.shSearchBox}>
+              <Text style={{ fontSize: 13, color: colors.t3 }}>🔍</Text>
+              <TextInput style={s.shSearchInput} value={search} onChangeText={onSearch} placeholder={searchPlaceholder} placeholderTextColor={colors.t3} />
+              {!!search && <TouchableOpacity onPress={() => onSearch('')}><Text style={{ color: colors.t3, fontSize: 13 }}>✕</Text></TouchableOpacity>}
+            </View>
+          )}
+          {action && (
+            <TouchableOpacity style={s.shActionBtn} onPress={onAction} activeOpacity={0.82}>
+              <Text style={s.shActionTxt}>{action}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}

@@ -1,76 +1,146 @@
 import SyncScreen from '../screens/SyncScreen';
-import React, { useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, TouchableOpacity, Image } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import {
+  View, Text, ActivityIndicator, TouchableOpacity,
+  Image, ScrollView, Animated, StyleSheet, StatusBar,
+} from 'react-native';
 
-import { NavigationContainer, DrawerActions } from '@react-navigation/native';
+import { NavigationContainer, DrawerActions, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
 
-import { useAuth } from '../services/AuthContext';
-import { initDatabase } from '../services/database';
+import { useAuth, ROLE_PERMISSIONS } from '../services/AuthContext';
+import { useTheme } from '../theme';
 
 /* Screens */
-import LoginScreen from '../screens/LoginScreen';
+import LoginScreen    from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
-import AdminScreen from '../screens/AdminScreen';
-import CashierScreen from '../screens/CashierScreen';
-import ReportsScreen from '../screens/ReportsScreen';
+import AdminScreen    from '../screens/AdminScreen';
+import PermissionsScreen from '../screens/PermissionsScreen';
+import CashierScreen  from '../screens/CashierScreen';
+import ReportsScreen  from '../screens/ReportsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
-import InvoicesScreen from '../screens/InvoicesScreen';
-import CollectionsScreen from '../screens/CollectionsScreen';
-import InventoryScreen from '../screens/InventoryScreen';
-import POSScreen from '../screens/POSScreen';
-import WalletsScreen from '../screens/WalletsScreen';
+import { getLocalNotificationsBox, subscribeDataChanges } from '../services/database';
 
-import InvoiceDetailScreen from '../screens/InvoiceDetailScreen';
-import NewInvoiceScreen from '../screens/NewInvoiceScreen';
+import InvoicesScreen      from '../screens/InvoicesListScreen';
+import CollectionsScreen   from '../screens/CollectionsListScreen';
+import InventoryScreen     from '../screens/InventoryListScreen';
+import POSScreen           from '../screens/POSListScreen';
+import WalletsScreen       from '../screens/WalletsListScreen';
+import SuppliesScreen      from '../screens/SuppliesListScreen';
+import WalletDetailScreen  from '../screens/WalletDetailScreen';
+import NotificationsScreen from '../screens/NotificationsListScreen';
+
+import NewInvoiceScreen   from '../screens/NewInvoiceScreen';
 import NewCollectionScreen from '../screens/NewCollectionScreen';
-import AddBatchScreen from '../screens/AddBatchScreen';
-import NewPOSScreen from '../screens/NewPOSScreen';
-import EditPOSScreen from '../screens/EditPOSScreen';
-import AssignWalletScreen from '../screens/AssignWalletScreen';
+import AssignWalletScreen  from '../screens/AssignWalletScreen';
+import AddBatchScreen     from '../screens/AddBatchScreen';
+import NewPOSScreen       from '../screens/NewPOSScreen';
+import EditPOSScreen      from '../screens/EditPOSScreen';
+import AboutScreen        from '../screens/AboutScreen';
+import NewSupplyScreen    from '../screens/NewSupplyScreen';
+import InvoiceDetailScreen from '../screens/InvoiceDetailScreen';
 
 const Drawer = createDrawerNavigator();
-const Tab = createBottomTabNavigator();
-const Stack = createStackNavigator();
+const Tab    = createBottomTabNavigator();
+const Stack  = createStackNavigator();
 
-/* ================= HEADER ================= */
+// ── تخصيص ألوان الملاحة (أزرق داكن يشبه لون الأزرار) ──
+const navColors = {
+  bg:      '#1E3A8A', // Blue 900
+  bg2:     '#1E40AF', // Blue 800
+  card:    '#2563EB', // Blue 600
+  border:  'rgba(255,255,255,0.15)',
+  t1:      '#FFFFFF',
+  t2:      '#BFDBFE',
+  t3:      '#93C5FD',
+  blue:    '#60A5FA',
+  red:     '#EF4444',
+  green:   '#10B981',
+};
 
+// ══════════════════════════════════════════════════════════════
+//  HEADER
+// ══════════════════════════════════════════════════════════════
 function MenuButton({ navigation }) {
+  const scale = useRef(new Animated.Value(1)).current;
   return (
-    <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())}>
-      <Text style={{ fontSize: 22, color: '#fff', marginLeft: 10 }}>☰</Text>
+    <Animated.View style={{ transform: [{ scale }], marginLeft: 14 }}>
+      <TouchableOpacity
+        onPress={() => navigation.dispatch(DrawerActions.openDrawer())}
+        style={[h.menuBtn, { backgroundColor: 'rgba(255,255,255,0.08)', borderColor: 'rgba(255,255,255,0.15)' }]}
+        activeOpacity={0.7}
+      >
+        <View style={h.menuLine} />
+        <View style={[h.menuLine, { width: 14 }]} />
+        <View style={[h.menuLine, { width: 18 }]} />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+function NotificationBell({ navigation }) {
+  const { user } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+     const check = async () => {
+         const notifs = await getLocalNotificationsBox(user?.id);
+         setUnreadCount(notifs.filter(n => !n.is_read).length);
+     };
+     check();
+     const unsub = subscribeDataChanges(e => {
+        if(e.type === 'notifications') check();
+     });
+     return unsub;
+  }, [user?.id]);
+
+  return (
+    <TouchableOpacity onPress={() => navigation.navigate('Notifications')} style={{ marginRight: 15, position: 'relative' }}>
+       <Text style={{ fontSize: 20 }}>🔔</Text>
+       {unreadCount > 0 && (
+         <View style={{ position: 'absolute', top: -5, left: -5, backgroundColor: '#EF4444', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+         </View>
+       )}
     </TouchableOpacity>
   );
 }
 
-function Header(title, navigation) {
+function HeaderOptions(title, navigation) {
   return {
     title,
-    headerStyle: { backgroundColor: '#0f172a' },
-    headerTintColor: '#fff',
+    headerStyle: {
+      backgroundColor: navColors.bg,
+      borderBottomWidth: 0,
+      height: 64,
+    },
+    headerTintColor: navColors.t1,
+    headerTitleStyle: { fontWeight: '900', fontSize: 17, letterSpacing: -0.4 },
     headerLeft: () => <MenuButton navigation={navigation} />,
+    headerRight: () => <NotificationBell navigation={navigation} />,
   };
 }
 
-/* ================= STACKS (بدون تغيير) ================= */
-
+// ══════════════════════════════════════════════════════════════
+//  STACKS
+// ══════════════════════════════════════════════════════════════
 function DashboardStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="DashboardMain" component={DashboardScreen} options={Header('الرئيسية', navigation)} />
+      <Stack.Screen name="DashboardMain" component={DashboardScreen} options={HeaderOptions('الرئيسية', navigation)} />
     </Stack.Navigator>
   );
 }
-
 function InvoicesStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="InvoicesMain" component={InvoicesScreen} options={Header('الفواتير', navigation)} />
-      <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} options={Header('تفاصيل الفاتورة', navigation)} />
-      <Stack.Screen name="NewInvoice" component={NewInvoiceScreen} options={Header('فاتورة جديدة', navigation)} />
+      <Stack.Screen name="InvoicesMain" component={InvoicesScreen} options={HeaderOptions('الفواتير', navigation)} />
+      <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} options={{ title: 'تفاصيل الفاتورة' }} />
+      <Stack.Screen name="NewInvoice" component={NewInvoiceScreen} options={{ title: 'فاتورة جديدة' }} />
+      <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={{ title: 'إضافة تحصيل' }} />
     </Stack.Navigator>
   );
 }
@@ -78,298 +148,264 @@ function InvoicesStack({ navigation }) {
 function CollectionsStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="CollectionsMain" component={CollectionsScreen} options={Header('التحصيلات', navigation)} />
-      <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={Header('إضافة تحصيل', navigation)} />
+      <Stack.Screen name="CollectionsMain" component={CollectionsScreen} options={HeaderOptions('التحصيلات', navigation)} />
+      <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={{ title: 'إضافة تحصيل' }} />
     </Stack.Navigator>
   );
 }
-
 function InventoryStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="InventoryMain" component={InventoryScreen} options={Header('المخزون', navigation)} />
-      <Stack.Screen name="AddBatch" component={AddBatchScreen} options={Header('إضافة دفعة', navigation)} />
+      <Stack.Screen name="InventoryMain" component={InventoryScreen} options={HeaderOptions('المخزون', navigation)} />
+      <Stack.Screen name="AddBatch" component={AddBatchScreen} options={{ title: 'إضافة دفعة' }} />
     </Stack.Navigator>
   );
 }
-
 function POSStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="POSMain" component={POSScreen} options={Header('نقاط البيع', navigation)} />
-      <Stack.Screen name="NewPOS" component={NewPOSScreen} options={Header('إضافة نقطة', navigation)} />
-      <Stack.Screen name="EditPOS" component={EditPOSScreen} options={Header('تعديل نقطة', navigation)} />
+      <Stack.Screen name="POSMain" component={POSScreen} options={HeaderOptions('نقاط البيع', navigation)} />
+      <Stack.Screen name="NewPOS" component={NewPOSScreen} options={{ title: 'إضافة نقطة' }} />
+      <Stack.Screen name="EditPOS" component={EditPOSScreen} options={{ title: 'تعديل نقطة' }} />
     </Stack.Navigator>
   );
 }
-
 function WalletsStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="WalletsMain" component={WalletsScreen} options={Header('المحافظ', navigation)} />
-      <Stack.Screen name="AssignWallet" component={AssignWalletScreen} options={Header('توزيع أوراق', navigation)} />
+      <Stack.Screen name="WalletsMain" component={WalletsScreen} options={HeaderOptions('المحافظ', navigation)} />
+      <Stack.Screen name="AssignWallet" component={AssignWalletScreen} options={{ title: 'توزيع أوراق' }} />
+      <Stack.Screen name="WalletDetail" component={WalletDetailScreen} options={{ title: 'حركة المحفظة' }} />
     </Stack.Navigator>
   );
 }
-
 function ReportsStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="ReportsMain" component={ReportsScreen} options={Header('الاستعلامات', navigation)} />
+      <Stack.Screen name="ReportsMain" component={ReportsScreen} options={HeaderOptions('الاستعلامات', navigation)} />
     </Stack.Navigator>
   );
 }
-
 function AdminStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="AdminMain" component={AdminScreen} options={Header('الإدارة', navigation)} />
+      <Stack.Screen name="AdminMain" component={AdminScreen} options={HeaderOptions('الإدارة', navigation)} />
     </Stack.Navigator>
   );
 }
-
+function PermissionsStack({ navigation }) {
+  return (
+    <Stack.Navigator>
+      <Stack.Screen name="PermissionsMain" component={PermissionsScreen} options={HeaderOptions('إدارة الصلاحيات', navigation)} />
+    </Stack.Navigator>
+  );
+}
 function CashierStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="CashierMain" component={CashierScreen} options={Header('إعتماد التحصيلات', navigation)} />
+      <Stack.Screen name="CashierMain" component={CashierScreen} options={HeaderOptions('اعتماد التحصيلات', navigation)} />
     </Stack.Navigator>
   );
 }
-
 function SettingsStack({ navigation }) {
   return (
     <Stack.Navigator>
-      <Stack.Screen name="SettingsMain" component={SettingsScreen} options={Header('الإعدادات', navigation)} />
+      <Stack.Screen name="SettingsMain" component={SettingsScreen} options={HeaderOptions('الإعدادات العامة', navigation)} />
+    </Stack.Navigator>
+  );
+}
+function SuppliesStack({ navigation }) {
+  return (
+    <Stack.Navigator>
+      <Stack.Screen name="SuppliesMain" component={SuppliesScreen} options={HeaderOptions('التوريدات المالية', navigation)} />
+      <Stack.Screen name="NewSupply" component={NewSupplyScreen} options={{ title: 'توريد جديد' }} />
     </Stack.Navigator>
   );
 }
 
-/* ================= TABS (تم التعديل هنا فقط) ================= */
 
-function TabIcon({ emoji, label, focused }) {
+// ══════════════════════════════════════════════════════════════
+//  BOTTOM TABS
+// ══════════════════════════════════════════════════════════════
+function AnimatedTabIcon({ emoji, label, focused }) {
+  const scale = useRef(new Animated.Value(focused ? 1.1 : 1)).current;
+  useEffect(() => { Animated.spring(scale, { toValue: focused ? 1.12 : 1, useNativeDriver: true }).start(); }, [focused]);
   return (
-    <View style={{ alignItems: 'center' }}>
-      <Text style={{ fontSize: 18 }}>{emoji}</Text>
-      <Text style={{
-        fontSize: 11,
-        color: focused ? '#3b82f6' : '#aaa'
-      }}>
-        {label}
-      </Text>
+    <View style={t.tabIconWrap}>
+      <Animated.View style={[t.tabPill, { backgroundColor: focused ? 'rgba(255,255,255,0.15)' : 'transparent', transform: [{ scale }] }]}>
+        <Text style={{ fontSize: 18 }}>{emoji}</Text>
+      </Animated.View>
+      <Text style={[t.tabLabel, { color: focused ? '#FFF' : navColors.t2, fontWeight: focused ? '900' : '600' }]}>{label}</Text>
     </View>
   );
 }
 
 function BottomTabs() {
+  const { user, canAccess } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
+  const tabs = [
+    { name: 'DashboardTab',   component: DashboardStack,   emoji: '🏠', label: 'الرئيسية', visible: canAccess('Dashboard')  },
+    { name: 'InvoicesTab',    component: InvoicesStack,    emoji: '🧾', label: 'الفواتير', visible: canAccess('Invoices') },
+    { name: 'CollectionsTab', component: CollectionsStack, emoji: '💰', label: 'التحصيل', visible: canAccess('Collections') },
+    { name: 'CashierTab',     component: CashierStack,     emoji: '✅', label: 'الاعتماد', visible: !isAdmin && canAccess('CashierApproval') },
+    { name: 'WalletsTab',     component: WalletsStack,     emoji: '👜', label: 'المحافظ', visible: canAccess('Wallets') },
+    
+    // Hidden from bottom tab bar, accessed via drawer only:
+    { name: 'InventoryTab',   component: InventoryStack,   emoji: '📦', label: '',         visible: false },
+    { name: 'POSTab',         component: POSStack,         emoji: '🏪', label: '',         visible: false },
+    { name: 'ReportsTab',     component: ReportsStack,     emoji: '📊', label: '',         visible: false },
+    { name: 'AdminTab',       component: AdminStack,       emoji: '⚙️', label: '',         visible: false },
+    { name: 'PermissionsTab', component: PermissionsStack, emoji: '🔐', label: '',         visible: false },
+    { name: 'SuppliesTab',    component: SuppliesStack,    emoji: '💵', label: 'الإيرادات',     visible: canAccess('Supplies') },
+    { name: 'SettingsTab',    component: SettingsStack,    emoji: '⚙️', label: '',         visible: false },
+  ];
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
-        tabBarStyle: { backgroundColor: '#0f172a', height: 60 },
+        tabBarStyle: {
+          backgroundColor: navColors.bg,
+          borderTopWidth: 1, borderTopColor: navColors.border,
+          height: 72, paddingBottom: 12, paddingTop: 8,
+        },
+        tabBarShowLabel: false,
       }}
     >
-
-      <Tab.Screen
-        name="DashboardTab"
-        component={DashboardStack}
-        options={{
-          tabBarIcon: ({ focused }) => <TabIcon emoji="📊" label="الرئيسية" focused={focused} />
-        }}
-      />
-
-      <Tab.Screen
-        name="InvoicesTab"
-        component={InvoicesStack}
-        options={{
-          tabBarIcon: ({ focused }) => <TabIcon emoji="🧾" label="الفواتير" focused={focused} />
-        }}
-      />
-
-      <Tab.Screen
-        name="CollectionsTab"
-        component={CollectionsStack}
-        options={{
-          tabBarIcon: ({ focused }) => <TabIcon emoji="💰" label="التحصيلات" focused={focused} />
-        }}
-      />
-
-      {/* Tabs مخفية */}
-      <Tab.Screen name="InventoryTab" component={InventoryStack} options={{ tabBarButton: () => null }} />
-      <Tab.Screen name="POSTab" component={POSStack} options={{ tabBarButton: () => null }} />
-      <Tab.Screen name="WalletsTab" component={WalletsStack} options={{ tabBarButton: () => null }} />
-      <Drawer.Screen name="CashierTab" component={CashierStack}
-        options={{ tabBarButton: () => null }} />
-
-      <Tab.Screen name="ReportsTab" component={ReportsStack} options={{ tabBarButton: () => null }} />
-      <Tab.Screen name="AdminTab" component={AdminStack} options={{ tabBarButton: () => null }} />
-      <Tab.Screen name="SettingsTab" component={SettingsStack} options={{ tabBarButton: () => null }} />
-
+      {tabs.map(item => (
+        <Tab.Screen key={item.name} name={item.name} component={item.component}
+          options={item.visible ? { tabBarIcon: ({ focused }) => <AnimatedTabIcon emoji={item.emoji} label={item.label} focused={focused} /> } : { tabBarButton: () => null }}
+        />
+      ))}
     </Tab.Navigator>
   );
 }
 
-/* ================= DRAWER ================= */
+// ══════════════════════════════════════════════════════════════
+//  CUSTOM DRAWER
+// ══════════════════════════════════════════════════════════════
 function CustomDrawer({ navigation, state }) {
-  const { logout } = useAuth();
-
+  const { user, logout, canAccess } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const currentRoute = state?.routeNames[state.index];
+  const allItems = [
+    { route: 'DashboardTab', label: 'الرئيسية', icon: '🏠', permission: 'Dashboard' },
+    { route: 'InvoicesTab', label: 'الفواتير', icon: '🧾', permission: 'Invoices' },
+    { route: 'CollectionsTab', label: 'التحصيلات', icon: '💰', permission: 'Collections' },
+    { route: 'CashierTab', label: 'اعتماد التحصيل', icon: '✅', permission: 'CashierApproval', hideForAdmin: true },
+    { route: 'InventoryTab', label: 'المخزون', icon: '📦', permission: 'Inventory' },
+    { route: 'POSTab', label: 'نقاط البيع', icon: '🏪', permission: 'POS' },
+    { route: 'WalletsTab', label: 'المحافظ', icon: '👜', permission: 'Wallets' },
+    { route: 'SuppliesTab', label: 'التوريدات المالية', icon: '💵', permission: 'Supplies' },
+    { route: 'ReportsTab', label: 'الاستعلامات', icon: '📊', permission: 'Reports' },
+    { route: 'AdminTab', label: 'الإدارة', icon: '⚙️', permission: 'Admin' },
+    { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: '🔐', permission: 'Admin' }, 
+    { route: 'About', label: 'اتصل بنا', icon: '📞', permission: 'About' },
+    { route: 'SettingsTab', label: 'الإعدادات العامة', icon: '⚙️', permission: 'Settings' },
+  ];
 
-  const Item = ({ route, label, icon, onPress, danger }) => {
-    const active = currentRoute === route;
-
-    return (
-      <TouchableOpacity
-        onPress={onPress}
-        style={{
-          flexDirection: 'row-reverse', // 👈 عربي RTL
-          alignItems: 'center',
-          paddingVertical: 14,
-          paddingHorizontal: 16,
-          borderRadius: 12,
-          marginBottom: 6,
-          backgroundColor: active ? '#1e293b' : 'transparent',
-        }}
-      >
-        <Text style={{ fontSize: 18, marginLeft: 10 }}>{icon}</Text>
-
-        <Text style={{
-          color: danger ? '#ef4444' : active ? '#3b82f6' : '#fff',
-          fontSize: 15,
-          fontWeight: active ? '700' : '500',
-          textAlign: 'right'
-        }}>
-          {label}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
+  const items = allItems.filter(i => {
+    if (isAdmin && i.hideForAdmin) return false;
+    return canAccess(i.permission);
+  });
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#0f172a', paddingTop: 40 }}>
-
-      {/* 🔷 HEADER */}
-      <View style={{
-        paddingHorizontal: 16,
-        paddingBottom: 20,
-        borderBottomWidth: 1,
-        borderBottomColor: '#1e293b',
-        marginBottom: 10,
-        alignItems: 'flex-end'
-      }}>
-        <View style={{ flexDirection: 'row-reverse', alignItems: 'center', width: '100%', gap: 12 }}>
-          <Image 
-            source={require('../../assets/icon.png')} 
-            style={{ width: 45, height: 45, borderRadius: 10, resizeMode: 'contain' }} 
-          />
+    <View style={[d.screen, { backgroundColor: navColors.bg }]}>
+      <StatusBar barStyle="light-content" backgroundColor={navColors.bg} />
+      <View style={[d.header, { backgroundColor: navColors.bg2 }]}>
+        <View style={d.userRow}>
+          <View style={d.userAvatar}><Text style={{ fontSize: 22 }}>👤</Text></View>
           <View style={{ flex: 1, alignItems: 'flex-end' }}>
-            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>
-              👋 أهلاً بك
-            </Text>
-            <Text style={{ color: '#cbd5e1', fontSize: 14 }}>
-              Smart POS Net
-            </Text>
+            <Text style={[d.userName, { color: navColors.t1 }]}>{user?.name || 'مستخدم'}</Text>
+            <View style={{ backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 10, paddingVertical: 2, borderRadius: 12, marginTop: 4 }}>
+              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{ROLE_PERMISSIONS[user?.role]?.label || user?.role}</Text>
+            </View>
           </View>
         </View>
       </View>
-
-      {/* 🔷 MENU */}
-      <View style={{ paddingHorizontal: 10, flex: 1 }}>
-
-        <Item route="DashboardTab" label="الرئيسية" icon="📊"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'DashboardTab' })} />
-
-        <Item route="InvoicesTab" label="الفواتير" icon="🧾"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'InvoicesTab' })} />
-
-        <Item route="CollectionsTab" label="التحصيلات" icon="💰"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'CollectionsTab' })} />
-
-        <Item route="Cashier" label="اعتماد التحصيلات" icon="💼"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'CashierTab' })} />
-
-        <Item route="InventoryTab" label="المخزون" icon="📦"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'InventoryTab' })} />
-
-        <Item route="POSTab" label="نقاط البيع" icon="🏪"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'POSTab' })} />
-
-        <Item route="WalletsTab" label="المحافظ" icon="👜"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'WalletsTab' })} />
-
-        <Item route="ReportsTab" label="الاستعلامات" icon="📈"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'ReportsTab' })} />
-
-        <Item route="AdminTab" label="الإدارة" icon="⚙️"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'AdminTab' })} />
-
-        <Item route="SettingsTab" label="الإعدادات" icon="🔧"
-          onPress={() => navigation.navigate('MainTabs', { screen: 'SettingsTab' })} />
-
+      <ScrollView contentContainerStyle={{ paddingVertical: 12 }}>
+        {items.map((item, i) => {
+          const active = currentRoute === item.route;
+          return (
+            <TouchableOpacity 
+              key={i} 
+              style={[d.item, active && { backgroundColor: 'rgba(255,255,255,0.12)' }]} 
+              onPress={() => { 
+                navigation.dispatch(DrawerActions.closeDrawer()); 
+                if (item.route === 'About' || item.route === 'Notifications') {
+                  navigation.navigate(item.route);
+                } else {
+                  navigation.navigate('MainTabs', { screen: item.route }); 
+                }
+              }}
+            >
+              <View style={[d.itemIcon, { backgroundColor: active ? 'rgba(255,255,255,0.1)' : 'transparent' }]}>
+                <Text style={{ fontSize: 18 }}>{item.icon}</Text>
+              </View>
+              <Text style={[d.itemLabel, { color: active ? '#FFF' : navColors.t2, fontWeight: active ? '900' : '600' }]}>{item.label}</Text>
+              {active && <View style={d.activeBar} />}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+      <View style={{ padding: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.05)' }}>
+        <TouchableOpacity style={d.logoutBtn} onPress={logout}>
+          <Text style={{ color: '#FF9E9E', fontWeight: '900', fontSize: 15 }}>🚪 تسجيل الخروج</Text>
+        </TouchableOpacity>
       </View>
-
-      {/* 🔻 تسجيل الخروج */}
-      <View style={{
-        borderTopWidth: 1,
-        borderTopColor: '#1e293b',
-        padding: 10
-      }}>
-        <Item
-          label="تسجيل الخروج"
-          icon="🚪"
-          danger
-          onPress={logout}
-        />
-      </View>
-
     </View>
   );
 }
 
-/* ================= MAIN ================= */
-
 function MainDrawer() {
   return (
-    <Drawer.Navigator
-      drawerContent={(props) => <CustomDrawer {...props} />}
-      screenOptions={{ headerShown: false, drawerPosition: 'right' }}
-    >
-      {/* الشاشة الوحيدة داخل Drawer */}
+    <Drawer.Navigator drawerContent={(props) => <CustomDrawer {...props} />} screenOptions={{ headerShown: false, drawerPosition: 'right' }}>
       <Drawer.Screen name="MainTabs" component={BottomTabs} />
-
-      {/* فقط شاشة مستقلة */}
-
     </Drawer.Navigator>
   );
 }
 
-/* ================= APP ================= */
-
 export default function AppNavigator() {
   const { user, loading } = useAuth();
-  const [ready, setReady] = useState(false);
+  const { isDark } = useTheme();
 
-  useEffect(() => {
-    initDatabase().then(() => setReady(true));
-  }, []);
-
-  if (loading || !ready) {
-    return <ActivityIndicator style={{ flex: 1 }} />;
-  }
-
+  if (loading) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: navColors.bg }}><ActivityIndicator size="large" color="#FFF" /></View>;
   return (
-    <NavigationContainer>
+    <NavigationContainer theme={isDark ? DarkTheme : DefaultTheme}>
+      <StatusBar barStyle="light-content" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : (
           <>
-            <Stack.Screen name="Sync" component={SyncScreen} />
             <Stack.Screen name="MainApp" component={MainDrawer} />
+            <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'اتصل بنا', headerTintColor: '#FFF', headerStyle: { backgroundColor: navColors.bg } }} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ headerShown: true, title: 'الإشعارات الذكية', headerTintColor: '#FFF', headerStyle: { backgroundColor: navColors.bg } }} />
           </>
         )}
-
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
+
+const h = StyleSheet.create({
+  menuBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', gap: 4.5 },
+  menuLine: { height: 2.5, width: 22, borderRadius: 2, backgroundColor: '#FFF' },
+});
+const t = StyleSheet.create({
+  tabIconWrap: { alignItems: 'center', gap: 3 },
+  tabPill: { width: 48, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  tabLabel: { fontSize: 10, letterSpacing: -0.2 },
+});
+const d = StyleSheet.create({
+  screen: { flex: 1 },
+  header: { padding: 24, paddingTop: 64 },
+  userRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: 16 },
+  userAvatar: { width: 52, height: 52, borderRadius: 16, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.1)' },
+  userName: { fontSize: 18, fontWeight: '900', letterSpacing: -0.5 },
+  item: { flexDirection: 'row-reverse', alignItems: 'center', padding: 14, marginHorizontal: 12, marginVertical: 2, borderRadius: 14, position: 'relative' },
+  itemIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginLeft: 12 },
+  itemLabel: { flex: 1, textAlign: 'right', fontSize: 15 },
+  activeBar: { position: 'absolute', right: 0, width: 4, height: '60%', borderRadius: 2, backgroundColor: '#FFF' },
+  logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: 'rgba(255, 255, 255, 0.08)', padding: 16, borderRadius: 14 },
+});

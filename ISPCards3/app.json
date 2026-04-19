@@ -6,34 +6,34 @@
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "backgroundColor": "#121212",
     "splash": {
-      "image": "./assets/icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0a0f1e"
+      "backgroundColor": "#121212",
+      "resizeMode": "contain"
     },
     "android": {
       "package": "com.ispcards.app",
       "permissions": [],
       "minSdkVersion": 24,
-      "targetSdkVersion": 34,
-      "splash": {
-        "image": "./assets/icon.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#0a0f1e"
-      }
+      "targetSdkVersion": 34
     },
     "plugins": [
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      "expo-notifications"
     ],
     "extra": {
       "eas": {
-        "projectId": "cc7690c3-514b-4517-934f-fcce62031947"
+        "projectId": "646d2fcc-0ecb-472b-abdb-2011179d1af0"
       }
+    },
+    "notification": {
+      "icon": "./assets/icon.png",
+      "color": "#2563eb"
     },
     "ios": {
       "bundleIdentifier": "com.ispcards.app"
     },
-    "owner": "alqum"
+    "owner": "mokafehs-organization"
   }
 }

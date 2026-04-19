@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
-import { isOnline } from './SyncService';
+import { isOnline, setCurrentUser } from './SyncService';
+import { registerForPushNotificationsAsync } from './NotificationService';
+import { getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS } from './database';
 
 const AuthContext = createContext(null);
 
@@ -20,7 +22,7 @@ export const ROLE_PERMISSIONS = {
     label:'محاسب / مدير صندوق',
     canViewDashboard:true, canViewInvoices:true, canCreateInvoice:false,
     canViewCollections:true, canApproveCollection:true, canCreateCollection:false,
-    canViewInventory:true, canManageInventory:false,
+    canViewInventory:false, canManageInventory:false,
     canViewPOS:true, canManagePOS:false,
     canViewReports:true, canViewAdmin:false,
     canManageUsers:false, canManageSettings:false, canManageWallets:true,
@@ -41,11 +43,32 @@ export const ROLE_PERMISSIONS = {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [permissions, setPermissions] = useState({});
+
+  const reloadPermissions = async (userData) => {
+    if (!userData) return;
+    try {
+      const perms = await getEffectiveUserPermissions(userData.id, userData.role);
+      setPermissions(perms);
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (user) {
+      reloadPermissions(user);
+    } else {
+      setPermissions({});
+    }
+  }, [user]);
 
   useEffect(() => {
     AsyncStorage.getItem('isp_user').then(stored => {
       if (stored) {
-        try { setUser(JSON.parse(stored)); } catch (e) {}
+        try {
+          const parsed = JSON.parse(stored);
+          setUser(parsed);
+          setCurrentUser(parsed);
+        } catch (e) {}
       }
       setLoading(false);
     });
@@ -70,6 +93,7 @@ export function AuthProvider({ children }) {
 
     await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
     setUser(userData);
+    setCurrentUser(userData);
     return { success: true };
   };
 
@@ -101,6 +125,15 @@ export function AuthProvider({ children }) {
         if (data.password_hash !== password) {
           return { success:false, error:'كلمة المرور غير صحيحة' };
         }
+        
+        // جلب Expo Push Token وتحديثه في قاعدة البيانات
+        try {
+          const token = await registerForPushNotificationsAsync();
+          if (token) {
+            await supabase.from('users').update({ push_token: token }).eq('id', data.id);
+          }
+        } catch(e) { console.log('Error saving push token', e); }
+
         return await saveUserSession(data);
       }
 
@@ -126,8 +159,24 @@ export function AuthProvider({ children }) {
     return ROLE_PERMISSIONS[user.role]?.[permission] || false;
   };
 
+  // Dynamic permission checker
+  const canAccess = (screen, action = 'can_view') => {
+    if (!user || user.role === 'admin') return true; 
+
+    // If fully loaded from SQLite, use it:
+    if (permissions && Object.keys(permissions).length > 0) {
+      if (!permissions[screen]) return false;
+      return permissions[screen][action];
+    }
+
+    // Instant fallback immediately on login to prevent UI flashing (missing tabs!)
+    const defaultPerms = DEFAULT_ROLE_PERMISSIONS[user.role] || {};
+    if (!defaultPerms[screen]) return false;
+    return defaultPerms[screen][action];
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, can, online: isOnline() }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, can, canAccess, permissions, online: isOnline() }}>
       {children}
     </AuthContext.Provider>
   );

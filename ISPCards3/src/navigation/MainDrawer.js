@@ -67,7 +67,7 @@ export default function MainDrawer() {
       )}
 
       {WalletsScreen && (
-        <Drawer.Screen name="Wallets" component={WalletsScreen} />
+        <Drawer.Screen name="Wallets" component={WalletsScreen} options={{ title: 'شاشة المحافظ والعهد' }} />
       )}
 
       <Drawer.Screen name="Reports" component={ReportsScreen} />
