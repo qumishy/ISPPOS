@@ -11,8 +11,21 @@ export default function App() {
 
   useEffect(() => {
     // 🔔 تأخير بسيط لضمان تهيئة المحركات الأصلية (Native Modules)
-    const timer = setTimeout(() => {
-      registerForPushNotificationsAsync().catch(err => console.log('Notification Init Error:', err));
+    const timer = setTimeout(async () => {
+      try {
+        const token = await registerForPushNotificationsAsync();
+        if (token) {
+          const stored = await AsyncStorage.getItem('isp_user');
+          if (stored) {
+            const userData = JSON.parse(stored);
+            const { supabase } = require('./src/services/supabase');
+            await supabase.from('users').update({ push_token: token }).eq('id', userData.id);
+            console.log('[App] Push Token Synced to Supabase');
+          }
+        }
+      } catch (err) {
+        console.log('Notification Init Error:', err);
+      }
     }, 2000);
 
     const init = async () => {

@@ -23,6 +23,7 @@ import ReportsScreen  from '../screens/ReportsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
 import { getLocalNotificationsBox, subscribeDataChanges } from '../services/database';
+import { setupNotificationListeners } from '../services/NotificationService';
 
 import InvoicesScreen      from '../screens/InvoicesListScreen';
 import CollectionsScreen   from '../screens/CollectionsListScreen';
@@ -368,10 +369,18 @@ function MainDrawer() {
 export default function AppNavigator() {
   const { user, loading } = useAuth();
   const { isDark } = useTheme();
+  const navigationRef = useRef();
+
+  useEffect(() => {
+    if (user) {
+      const cleanup = setupNotificationListeners(navigationRef);
+      return cleanup;
+    }
+  }, [user]);
 
   if (loading) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: navColors.bg }}><ActivityIndicator size="large" color="#FFF" /></View>;
   return (
-    <NavigationContainer theme={isDark ? DarkTheme : DefaultTheme}>
+    <NavigationContainer ref={navigationRef} theme={isDark ? DarkTheme : DefaultTheme}>
       <StatusBar barStyle="light-content" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!user ? (
