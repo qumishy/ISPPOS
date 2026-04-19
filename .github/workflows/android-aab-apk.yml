@@ -9,10 +9,15 @@ jobs:
   build:
     name: Build Android
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ISPCards3
     
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          sparse-checkout: .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -77,5 +82,5 @@ jobs:
         with:
           name: android-builds
           path: |
-            ${{ steps.aab-path.outputs.path }}
-            app-universal-release.apk
+            ISPCards3/${{ steps.aab-path.outputs.path }}
+            ISPCards3/app-universal-release.apk
