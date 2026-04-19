@@ -10,5 +10,5 @@ npm-debug.*
 *.orig.*
 eas.json
 .vscode/
-android/
-ios/
+# android/
+# ios/
