@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, Alert, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, Alert, RefreshControl, Modal, TextInput } from 'react-native';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
 import { getLocalCollections, approveLocalCollection } from '../services/database';
-import { formatCurrency, formatDateShort } from '../utils/helpers';
+import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, Row, ScreenHeader } from '../components/UI';
 import { makeStyles } from '../styles/cashier.styles';
 
 export default function CashierScreen() {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
-  const { user } = useAuth();
+  const { user, projectId } = useAuth();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
   const [tab, setTab] = useState('pending');
@@ -17,9 +17,19 @@ export default function CashierScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [showApproveModal, setShowApproveModal] = useState(false);
+  const [approvingId, setApprovingId] = useState(null);
+  const [approvingAmount, setApprovingAmount] = useState(0);
+  const [approveNotes, setApproveNotes] = useState('');
 
   const load = useCallback(async () => {
-    let data = await getLocalCollections();
+    if (!projectId) {
+      setCols([]);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    let data = await getLocalCollections({ project_id: projectId });
     // Hide supplied collections from the Cashier Approval screen entirely, for all roles
     data = data.filter(c => !c.supply_id || String(c.supply_id).trim() === '');
     
@@ -29,7 +39,7 @@ export default function CashierScreen() {
     }
 
     setCols(data); setLoading(false); setRefreshing(false);
-  }, [user]);
+  }, [user, projectId]);
   useEffect(() => { load(); }, [load]);
 
   const pending  = cols.filter(c => c.status === 'pending');
@@ -40,14 +50,26 @@ export default function CashierScreen() {
   const totalPending  = pending.reduce((s, c) => s + (c.amount || 0), 0);
   const totalApproved = approved.reduce((s, c) => s + (c.amount || 0), 0);
 
-  const handleApprove = (id, amount) => Alert.alert(
-    'اعتماد التحصيل',
-    `هل أنت متأكد من الاعتماد؟\nالمبلغ: ${formatCurrency(amount)}`,
-    [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: '✅ نعم اعتماد', onPress: async () => { await approveLocalCollection(id, '', user?.id || null); load(); } },
-    ]
-  );
+  const handleApprove = (id, amount) => {
+    setApprovingId(id);
+    setApprovingAmount(Number(amount || 0));
+    setApproveNotes('');
+    setShowApproveModal(true);
+  };
+
+  const confirmApprove = async () => {
+    if (!approvingId) return;
+    try {
+      await approveLocalCollection(approvingId, approveNotes, user?.id || null);
+      setShowApproveModal(false);
+      setApprovingId(null);
+      setApprovingAmount(0);
+      setApproveNotes('');
+      load();
+    } catch (e) {
+      Alert.alert('خطأ', e?.message || 'تعذر اعتماد التحصيل');
+    }
+  };
   const methodLabel = m => ({ cash: 'نقدي 💵', transfer: 'تحويل 🏦', check: 'شيك 📝' }[m] || m);
 
   const filtered = display.filter(col => !search || Object.values(col).some(v => String(v).toLowerCase().includes(search.toLowerCase())));
@@ -56,6 +78,27 @@ export default function CashierScreen() {
 
   return (
     <View style={s.screen}>
+      <Modal visible={showApproveModal} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}>
+          <View style={{ backgroundColor: colors.card, padding: 18, borderRadius: radius.lg }}>
+            <Text style={{ fontSize: 17, fontWeight: '900', color: colors.t1, marginBottom: 8 }}>✅ اعتماد التحصيل</Text>
+            <Text style={{ fontSize: 12, color: colors.t3, marginBottom: 10 }}>المبلغ: {formatCurrency(approvingAmount)}</Text>
+            <TextInput
+              style={{ backgroundColor: colors.bg2, padding: 12, borderRadius: radius.md, minHeight: 78, color: colors.t1, textAlignVertical: 'top' }}
+              placeholder="ملاحظات الاعتماد (اختياري)"
+              placeholderTextColor={colors.t3}
+              value={approveNotes}
+              onChangeText={setApproveNotes}
+              multiline
+            />
+            <Row style={{ gap: spacing.sm, marginTop: spacing.md }}>
+              <Btn label="إلغاء" variant="outline" style={{ flex: 1 }} onPress={() => setShowApproveModal(false)} />
+              <Btn label="تأكيد الاعتماد" variant="success" style={{ flex: 1.4 }} onPress={confirmApprove} />
+            </Row>
+          </View>
+        </View>
+      </Modal>
+
       <ScreenHeader
         kpis={[
           { label: 'قبوض معلقة',    value: pending.length,            color: colors.orange },
@@ -80,6 +123,11 @@ export default function CashierScreen() {
           ? <Empty icon={tab === 'pending' ? '✅' : '💰'} title={tab === 'pending' ? 'لا توجد قبوض معلقة' : 'لا توجد تحصيلات'} />
           : filtered.map(col => (
             <View key={col.id} style={s.card}>
+              {(() => {
+                const paymentMeta = invoicePaymentStatusMeta(col.inv_payment_status);
+                const approvalMeta = invoiceApprovalStatusMeta(col.inv_approval_status);
+                return (
+                  <>
               <Row style={s.cardTop}>
                 <Text style={s.num}>{col.collection_number}</Text>
                 <Text style={s.date}>{formatDateShort(col.collection_date)}</Text>
@@ -99,6 +147,12 @@ export default function CashierScreen() {
                   </View>
                 )}
               </View>
+              {!!col.invoice_number && (
+                <Row style={{ gap: spacing.xs, marginTop: spacing.xs }}>
+                  <Badge status={col.inv_payment_status} label={paymentMeta.label} color={paymentMeta.color} />
+                  <Badge status={col.inv_approval_status} label={approvalMeta.label} color={approvalMeta.color} />
+                </Row>
+              )}
               {!!col.notes && <Text style={s.notes}>📝 ملاحظات: {col.notes}</Text>}
               {col.status === 'rejected' && col.rejection_reason && <Text style={s.rejection}>سبب الرفض: {col.rejection_reason}</Text>}
               {col.status === 'pending' && (
@@ -106,6 +160,9 @@ export default function CashierScreen() {
                   <Btn label="✅ اعتماد" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleApprove(col.id, col.amount)} />
                 </Row>
               )}
+                  </>
+                );
+              })()}
             </View>
           ))
         }

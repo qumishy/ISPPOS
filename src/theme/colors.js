@@ -1,83 +1,100 @@
 // ═══════════════════════════════════════════════════════
-//  Smart POS Net — Color Palettes (Dark & Light)
+//  Smart POS Net — Bespoke ERP Color Identity
 // ═══════════════════════════════════════════════════════
 
-// ── Brand accents (ثابتة في كلا الوضعين)
+// ── Brand accents (Corporate, Reliable, High-end)
 const brand = {
-  blue:    '#2563EB',
-  blueL:   '#3B82F6',
-  blueG:   '#1D4ED8',
-  cyan:    '#0891B2',
-  cyanL:   '#06B6D4',
-  green:   '#059669',
-  greenL:  '#10B981',
-  orange:  '#D97706',
-  orangeL: '#F59E0B',
-  red:     '#DC2626',
-  redL:    '#EF4444',
-  purple:  '#7C3AED',
-  purpleL: '#8B5CF6',
-  pink:    '#DB2777',
-  pinkL:   '#EC4899',
-  teal:    '#0D9488',
-  indigo:  '#4F46E5',
+  indigo: '#4338CA',      // Primary Action - Deep Indigo
+  indigoL: '#6366F1',
+  
+  emerald: '#059669',     // Success - Calm Emerald
+  emeraldL: '#10B981',
+  
+  amber: '#D97706',       // Warning - Deep Amber
+  amberL: '#F59E0B',
+  
+  rose: '#E11D48',        // Danger - Professional Rose
+  roseL: '#F43F5E',
+  
+  cyan: '#0891b2',
+  cyanL: '#06b6d4',
 
-  // Gradients
-  gradBlue:   ['#1D4ED8', '#2563EB', '#3B82F6'],
-  gradGreen:  ['#059669', '#10B981', '#34D399'],
-  gradOrange: ['#D97706', '#F59E0B', '#FCD34D'],
-  gradPurple: ['#7C3AED', '#8B5CF6', '#A78BFA'],
+  purple: '#7e22ce',
+  purpleL: '#a855f7',
 };
 
-// ── Dark Theme (الوضع الافتراضي — Navy Deep)
+// ── Dark Theme (Obsidian & Ink)
 export const darkColors = {
   ...brand,
 
-  // Backgrounds
-  bg:    '#070d1a',
-  bg2:   '#0c1424',
-  bg3:   '#0f192d',
+  // Semantic
+  primary: brand.indigoL,
+  success: brand.emeraldL,
+  warning: brand.amberL,
+  danger: brand.roseL,
 
-  // Card surfaces
-  card:  '#111d35',
-  card2: '#162244',
-  card3: '#1a2a52',
-  glass: 'rgba(17, 29, 53, 0.85)',
+  blue: brand.indigoL,
+  green: brand.emeraldL,
+  cyan: brand.cyanL,
+  purple: brand.purpleL,
 
-  // Borders
-  border:  '#1c2e50',
-  border2: '#243760',
-  border3: '#2d4680',
+  // Backgrounds — Deep Obsidian
+  bg: '#0F172A',     // Screen background (darkest)
+  bg2: '#1E293B',    // Slight accent
+  bg3: '#334155',
 
-  // Text hierarchy
-  t1: '#F1F5F9',   // Primary
-  t2: '#94A3B8',   // Secondary
-  t3: '#475569',   // Muted
-  t4: '#2D3F60',   // Ghost
+  // Card surfaces — Slightly lighter than background
+  card: '#1E293B',   // Nav and cards
+  card2: '#334155',
+  card3: '#475569',
+  glass: 'rgba(30, 41, 59, 0.85)',
+
+  // Borders — Subtle High-end lines
+  border: '#334155',
+  border2: '#475569',
+  border3: '#64748B',
+
+  // Text hierarchy (Always light text on dark background)
+  t1: '#F8FAFC',
+  t2: '#E2E8F0',
+  t3: '#CBD5E1',
+  t4: '#94A3B8',
 };
 
+// ── Light Theme (Clean Snow & Corporate Slate)
 export const lightColors = {
   ...brand,
 
-  // Backgrounds — Pearl / Soft Slate (Darker than pure white)
-  bg:    '#E2E8F0', // Slate 200
-  bg2:   '#F1F5F9', // Slate 100
-  bg3:   '#CBD5E1', // Slate 300
+  // Semantic
+  primary: brand.indigo,
+  success: brand.emerald,
+  warning: brand.amber,
+  danger: brand.rose,
 
-  // Card surfaces — Very light gray/pearl
-  card:  '#F8FAFC',
-  card2: '#EDF2F7',
-  card3: '#E2E8F0',
-  glass: 'rgba(255,255,255,0.85)',
+  blue: brand.indigo,
+  green: brand.emerald,
+  cyan: brand.cyan,
+  purple: brand.purple,
 
-  // Borders — Soft slate
-  border:  '#CBD5E1',
-  border2: '#94A3B8',
-  border3: '#64748B',
+  // Backgrounds — slightly darker than cards
+  bg: '#F1F5F9',     // Screen background (slightly gray to contrast with white cards)
+  bg2: '#E2E8F0',
+  bg3: '#CBD5E1',
 
-  // Text hierarchy
-  t1: '#1E293B',   // Primary   — slate 800
-  t2: '#334155',   // Secondary — slate 700
-  t3: '#475569',   // Muted     — slate 600
-  t4: '#94A3B8',   // Ghost     — slate 400
+  // Card surfaces — Absolute White
+  card: '#FFFFFF',   // Components and Navs
+  card2: '#F8FAFC',
+  card3: '#F1F5F9',
+  glass: 'rgba(255, 255, 255, 0.95)',
+
+  // Borders — Crisp and barely there
+  border: '#E2E8F0',
+  border2: '#CBD5E1',
+  border3: '#94A3B8',
+
+  // Text hierarchy (Always dark text on light background)
+  t1: '#0F172A',
+  t2: '#334155',
+  t3: '#475569',
+  t4: '#64748B',
 };

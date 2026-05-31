@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Alert, Switch, LayoutAnimation, UIManager, Platform } from 'react-native';
 import { useTheme } from '../theme';
-import { supabase } from '../services/supabase';
 import { getLocalPermissions, saveLocalPermission, deleteLocalPermission, resetRolePermissionsToDefault } from '../services/permissionsService';
 import { getLocalUsers } from '../services/userService';
 import { Loading, Row, Avatar } from '../components/UI';
+import { Feather } from '@expo/vector-icons';
 import { makeStyles } from '../styles/admin.styles';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -12,29 +12,29 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 const SCREENS = [
-  { id: 'Dashboard', label: 'الرئيسية', icon: '🏠' },
-  { id: 'Invoices', label: 'الفواتير', icon: '🧾' },
-  { id: 'Collections', label: 'التحصيلات', icon: '💰' },
-  { id: 'CashierApproval', label: 'اعتماد التحصيل', icon: '✅' },
-  { id: 'Inventory', label: 'المخزون', icon: '📦' },
-  { id: 'POS', label: 'نقاط البيع', icon: '🏪' },
-  { id: 'Wallets', label: 'المحافظ', icon: '👜' },
-  { id: 'Supplies', label: 'التوريدات المالية', icon: '💵' },
-  { id: 'Reports', label: 'التقارير', icon: '📊' },
-  { id: 'Settings', label: 'الإعدادات العامة', icon: '⚙️' },
-  { id: 'Admin', label: 'الإدارة', icon: '👑' },
-  { id: 'About', label: 'اتصل بنا', icon: '📞' },
+  { id: 'Dashboard', label: 'الرئيسية', icon: 'home' },
+  { id: 'Invoices', label: 'الفواتير', icon: 'file-text' },
+  { id: 'Collections', label: 'التحصيلات', icon: 'pie-chart' },
+  { id: 'CashierApproval', label: 'اعتماد التحصيل', icon: 'check-circle' },
+  { id: 'Inventory', label: 'المخزون', icon: 'package' },
+  { id: 'POS', label: 'نقاط البيع', icon: 'shopping-bag' },
+  { id: 'Wallets', label: 'المحافظ', icon: 'briefcase' },
+  { id: 'Supplies', label: 'التوريدات المالية', icon: 'dollar-sign' },
+  { id: 'Reports', label: 'التقارير', icon: 'trending-up' },
+  { id: 'Settings', label: 'الإعدادات العامة', icon: 'settings' },
+  { id: 'Admin', label: 'الإدارة', icon: 'shield' },
+  { id: 'About', label: 'اتصل بنا', icon: 'phone' },
 ];
 
 const ROLES = [
-  { id: 'admin', label: 'المدير العام', icon: '👑', color: '#8b5cf6' },
-  { id: 'cashier', label: 'قسم الحسابات', icon: '💼', color: '#3b82f6' },
-  { id: 'agent', label: 'المندوبين', icon: '🚶‍♂️', color: '#10b981' },
+  { id: 'admin', label: 'المدير العام', icon: 'shield', color: '#8b5cf6' },
+  { id: 'cashier', label: 'قسم الحسابات', icon: 'briefcase', color: '#3b82f6' },
+  { id: 'agent', label: 'المندوبين', icon: 'users', color: '#10b981' },
 ];
 
 const TABS = [
-  { key: 'roles', label: 'صلاحيات الأدوار الأساسية', icon: '🛡️' },
-  { key: 'users', label: 'تخصيص المستخدمين', icon: '👤' },
+  { key: 'roles', label: 'صلاحيات الأدوار الأساسية', icon: 'shield' },
+  { key: 'users', label: 'تخصيص المستخدمين', icon: 'user' },
 ];
 
 export default function PermissionsScreen({ navigation }) {
@@ -51,7 +51,7 @@ export default function PermissionsScreen({ navigation }) {
         {TABS.map(t => (
           <TouchableOpacity key={t.key} style={[s.tab, tab === t.key && s.tabAct]} 
              onPress={() => { LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setTab(t.key); }}>
-            <Text style={{ fontSize: 16 }}>{t.icon}</Text>
+            <Feather name={t.icon} size={16} color={tab === t.key ? colors.primary : colors.t3} />
             <Text style={[s.tabTxt, tab === t.key && s.tabTxtAct]}>{t.label}</Text>
             {tab === t.key && <View style={s.tabIndicator} />}
           </TouchableOpacity>
@@ -85,7 +85,7 @@ function PermissionCard({ screen, perm, isOverridden, onToggle, onRemoveOverride
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: spacing.md }}>
         <Row style={{ gap: 10 }}>
           <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isOverridden ? colors.green + '22' : colors.blue + '15', justifyContent: 'center', alignItems: 'center' }}>
-            <Text style={{ fontSize: 18 }}>{screen.icon}</Text>
+            <Feather name={screen.icon} size={18} color={isOverridden ? colors.green : colors.blue} />
           </View>
           <View>
             <Text style={{ fontSize: 16, fontWeight: 'bold', color: isOverridden ? colors.green : colors.t1 }}>{screen.label}</Text>
@@ -117,9 +117,9 @@ function PermissionCard({ screen, perm, isOverridden, onToggle, onRemoveOverride
       {/* BODY PROPS */}
       {viewActive && (!allowOverride || isOverridden) && (
         <View style={{ flexDirection: 'row', padding: spacing.sm, paddingTop: 0, gap: 5 }}>
-          <SubSwitch label="إضافة ➕" value={displayPerm.can_add} onToggle={() => handleSubToggle('can_add')} color={colors.green} colors={colors} radius={radius} />
-          <SubSwitch label="تعديل ✏️" value={displayPerm.can_edit} onToggle={() => handleSubToggle('can_edit')} color={colors.orange} colors={colors} radius={radius} />
-          <SubSwitch label="حذف 🗑️" value={displayPerm.can_delete} onToggle={() => handleSubToggle('can_delete')} color={colors.red} colors={colors} radius={radius} />
+          <SubSwitch label="إضافة" value={displayPerm.can_add} onToggle={() => handleSubToggle('can_add')} color={colors.green} colors={colors} radius={radius} />
+          <SubSwitch label="تعديل" value={displayPerm.can_edit} onToggle={() => handleSubToggle('can_edit')} color={colors.orange} colors={colors} radius={radius} />
+          <SubSwitch label="حذف" value={displayPerm.can_delete} onToggle={() => handleSubToggle('can_delete')} color={colors.red} colors={colors} radius={radius} />
         </View>
       )}
     </View>
@@ -156,7 +156,7 @@ function RolePermissionsTab({ s }) {
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleResetDefaults = () => {
-    Alert.alert('استرجاع الافتراضي ⚠️', 'سيتم مسح كافة الصلاحيات وإعادة هذه الصفة لإعدادات المصنع المبرمجة للمشروع.', [
+    Alert.alert('استرجاع الافتراضي', 'سيتم مسح كافة الصلاحيات وإعادة هذه الصفة لإعدادات المصنع المبرمجة للمشروع.', [
       { text: 'إلغاء', style: 'cancel' },
       { text: 'نعم، استعادة', style: 'destructive', onPress: async () => {
         setLoading(true);
@@ -180,8 +180,9 @@ function RolePermissionsTab({ s }) {
       {/* Roles Header */}
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 15 }}>
         <Text style={{ fontSize: 16, fontWeight: '800', color: colors.t1, alignSelf:'flex-start' }}>اختر الدور المطلوب تعديله:</Text>
-        <TouchableOpacity onPress={handleResetDefaults} style={{ backgroundColor: colors.red + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.xl }}>
-          <Text style={{ color: colors.red, fontSize: 12, fontWeight: 'bold' }}>↩️ إعادة للافتراضي</Text>
+        <TouchableOpacity onPress={handleResetDefaults} style={{ backgroundColor: colors.red + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.xl, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Feather name="corner-up-left" size={12} color={colors.red} />
+          <Text style={{ color: colors.red, fontSize: 12, fontWeight: 'bold' }}>إعادة للافتراضي</Text>
         </TouchableOpacity>
       </View>
 
@@ -199,7 +200,7 @@ function RolePermissionsTab({ s }) {
                 borderColor: active ? role.color : colors.border
               }}
             >
-               <Text style={{ fontSize: 24, marginBottom: 5 }}>{role.icon}</Text>
+               <Feather name={role.icon} size={24} color={active ? '#FFF' : colors.t2} style={{ marginBottom: 5 }} />
                <Text style={{ color: active ? '#FFF' : colors.t2, fontSize: 13, fontWeight: active ? 'bold' : 'normal', textAlign: 'center' }}>
                  {role.label}
                </Text>
@@ -349,7 +350,7 @@ function UserPermissionsTab({ s }) {
       {selectedUser && (
         <View>
           <View style={{ backgroundColor: colors.orange + '15', padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: colors.orange + '30' }}>
-            <Text style={{ fontSize: 24 }}>⚠️</Text>
+            <Feather name="alert-triangle" size={24} color={colors.orange} />
             <Text style={{ color: colors.orange, lineHeight: 22, fontSize: 12, flex: 1, fontWeight: '600' }}>
               تعديلك هنا سيطغى (Override) على صفة المستخدم الأساسية وتعتبر كاستثناء مخصص له فقط. لإعادته لاحقاً لصلاحيات صفته استخدم (إلغاء التخصيص).
             </Text>

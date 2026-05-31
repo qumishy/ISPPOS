@@ -13,9 +13,11 @@ import {
 import { todayISO, formatCurrency, generateSupplyReceiptHTML } from '../utils/helpers';
 import { Input, Btn, Row, Picker } from '../components/UI';
 import { makeStyles } from '../styles/form.styles';
+import { useLoading } from '../services/LoadingContext';
 
 export default function NewSupplyScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, selectedPhase, projectId } = useAuth();
+  const { showLoading, hideLoading } = useLoading();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
@@ -36,10 +38,24 @@ export default function NewSupplyScreen({ navigation }) {
     });
   }, []);
 
+  // 🛡️ فحص حالة المرحلة: إذا كانت مغلقة لا يمكن الإضافة
+  if (selectedPhase?.status === 'closed') {
+    return (
+      <View style={[s.screen, { justifyContent: 'center', alignItems: 'center', padding: 30, backgroundColor: colors.bg }]}>
+        <Text style={{ fontSize: 60 }}>🔒</Text>
+        <Text style={{ fontSize: 22, fontWeight: '900', color: colors.red, textAlign: 'center', marginTop: 15 }}>المرحلة مغلقة</Text>
+        <Text style={{ color: colors.t3, textAlign: 'center', marginTop: 10, lineHeight: 22 }}>
+          عذراً، المرحلة الحالية ({selectedPhase.name}) مغلقة. لا يمكن إضافة توريدات جديدة حتى يتم تفعيل مرحلة جديدة.
+        </Text>
+        <Btn label="العودة" variant="outline" onPress={() => navigation.goBack()} style={{ marginTop: 25, width: '100%' }} />
+      </View>
+    );
+  }
+
   useEffect(() => {
     if (selectedAgent) {
-      const cashierId = user?.role === 'cashier' ? user.id : null;
-      getCollectionsForSupply(selectedAgent, dateFilter || null, cashierId).then(c => {
+      const approverOwnerId = (user?.role === 'cashier' || user?.role === 'admin') ? user.id : null;
+      getCollectionsForSupply(selectedAgent, dateFilter || null, approverOwnerId, selectedPhase?.id || null, projectId).then(c => {
          setCollections(c);
          const initialSel = {};
          c.forEach(x => initialSel[x.id] = true);
@@ -71,6 +87,7 @@ export default function NewSupplyScreen({ navigation }) {
   const totalAmount = collections.filter(c => selectedCols[c.id]).reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
 
   const handleSave = async () => {
+    if (saving) return;
     const selIds = collections.filter(c => selectedCols[c.id]).map(c => c.id);
     if (selIds.length === 0 || totalAmount <= 0) {
       Alert.alert('تنبيه', 'يجب تحديد تحصيلات معتمدة وتأكيدها. لا يمكن توريد مبلغ صفري.');
@@ -81,6 +98,7 @@ export default function NewSupplyScreen({ navigation }) {
       { text: 'إلغاء', style: 'cancel' },
       { text: 'تأكيد التوريد', onPress: async () => {
         setSaving(true);
+        showLoading('جاري حفظ التوريد محلياً...');
         try {
           const supply = await createLocalSupply({
             user_id: user.id,
@@ -89,10 +107,13 @@ export default function NewSupplyScreen({ navigation }) {
             notes: form.notes,
             type: form.type,
             created_at: form.created_at,
-            status: 'pending'
+            status: 'pending',
+            project_id: projectId,
+            phase_id: selectedPhase?.id,
           }, selIds);
 
           setSaving(false);
+          hideLoading();
           // الرجوع للخلف أولاً حتى لا تبقى الشاشة مرئية خلف رسالة النجاح
           navigation.goBack();
           // ثم عرض رسالة النجاح مع خيار الطباعة فقط (بدون "موافق" للرجوع مجدداً)
@@ -108,6 +129,7 @@ export default function NewSupplyScreen({ navigation }) {
           }, 300);
         } catch (e) {
           setSaving(false);
+          hideLoading();
           Alert.alert('خطأ', e.message);
         }
       }}
@@ -198,8 +220,8 @@ export default function NewSupplyScreen({ navigation }) {
           <Input label="ملاحظات المُحاسب" value={form.notes} onChangeText={v => setForm({ ...form, notes: v })} multiline style={{ height: 80, textAlignVertical: 'top' }} placeholder="أضف تفاصيل..." />
 
           <Row style={[s.actions, { marginTop: 20 }]}>
-            <Btn label="إلغاء" variant="outline" style={{ flex: 1 }} onPress={() => navigation.goBack()} />
-            <Btn label={saving ? 'جاري الحفظ...' : '✅ إنشاء التوريد'} variant="primary" style={{ flex: 2 }} onPress={handleSave} disabled={collections.length === 0 || saving} />
+            <Btn label="إلغاء" variant="outline" style={{ flex: 1 }} onPress={() => navigation.goBack()} disabled={saving} />
+            <Btn label={saving ? 'جاري الحفظ...' : 'إنشاء التوريد'} icon={saving ? undefined : "check"} variant="primary" style={{ flex: 2 }} onPress={handleSave} disabled={collections.length === 0 || saving} />
           </Row>
         </View>
       </ScrollView>

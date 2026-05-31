@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
 import { getLocalPOS, toggleLocalPOSBlock, subscribeDataChanges } from '../services/database';
+import { useAuth } from '../services/AuthContext';
 import { formatCurrency, creditPercent, creditColor } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, ProgressBar, Avatar, ScreenHeader } from '../components/UI';
 import { makeStyles } from '../styles/main.styles';
@@ -10,15 +12,23 @@ export default function POSScreen({ navigation }) {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
+  const { user, projectId } = useAuth();
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [expandedId, setExpandedId] = useState(null);
 
   const load = useCallback(async () => {
-    try { const d = await getLocalPOS(); setPos(d || []); } catch (e) { }
+    try { 
+      if (!projectId) return;
+      if (pos.length === 0) setLoading(true);
+      const d = await getLocalPOS(projectId); 
+      setPos(d || []); 
+    } catch (e) { }
     setLoading(false); setRefreshing(false);
-  }, []);
+  }, [pos.length, projectId]);
+
   
   useEffect(() => { 
     load(); 
@@ -47,7 +57,7 @@ export default function POSScreen({ navigation }) {
         onAction={() => navigation.navigate('POSTab', { screen: 'NewPOS' })}
       />
       {loading ? <Loading /> : filtered.length === 0
-        ? <Empty icon="🏪" title="لا توجد نقاط بيع" action="+ نقطة بيع جديدة" onAction={() => navigation.navigate('POSTab', { screen: 'NewPOS' })} />
+        ? <Empty icon="monitor" title="لا توجد نقاط بيع" action="نقطة بيع جديدة" onAction={() => navigation.navigate('POSTab', { screen: 'NewPOS' })} />
         : <FlatList
           data={filtered} keyExtractor={i => i.id}
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
@@ -56,7 +66,11 @@ export default function POSScreen({ navigation }) {
             const pct = creditPercent(p.credit_used, p.credit_limit);
             const col = creditColor(pct, p.is_blocked);
             return (
-              <TouchableOpacity style={[s.posCard, p.is_blocked && s.posBlocked]} activeOpacity={0.87} onPress={() => navigation.navigate('POSTab', { screen: 'EditPOS', params: { id: p.id } })}>
+              <TouchableOpacity 
+                style={[s.posCard, p.is_blocked && s.posBlocked]} 
+                activeOpacity={0.87} 
+                onPress={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              >
                 <View style={s.posCardTop}>
                   <Avatar name={p.name} color={p.is_blocked ? colors.red : col} size={48} />
                   <View style={{ flex: 1, marginRight: spacing.md }}>
@@ -71,10 +85,13 @@ export default function POSScreen({ navigation }) {
                   ))}
                 </View>
                 <ProgressBar percent={pct} color={col} height={5} />
-                <View style={s.posActions}>
-                  <Btn label="✏️ تعديل" variant="glass" size="xs" style={{ flex: 1 }} onPress={() => navigation.navigate('POSTab', { screen: 'EditPOS', params: { id: p.id } })} />
-                  <Btn label={p.is_blocked ? '✓ رفع الحجب' : '✗ حجب'} variant={p.is_blocked ? 'success' : 'danger'} size="xs" style={{ flex: 1 }} onPress={() => handleToggleBlock(p.id, p.name, p.is_blocked)} />
-                </View>
+                
+                {expandedId === p.id && (
+                  <View style={{ gap: 8, flexDirection: 'row', marginTop: 15, paddingTop: 15, borderTopWidth: 1, borderTopColor: colors.border2 }}>
+                    <Btn label="تعديل" icon="edit-2" variant="glass" size="sm" style={{ flex: 1 }} onPress={() => navigation.navigate('POSTab', { screen: 'EditPOS', params: { id: p.id } })} />
+                    <Btn label={p.is_blocked ? 'رفع الحجب' : 'حجب'} icon={p.is_blocked ? "unlock" : "lock"} variant={p.is_blocked ? 'success' : 'danger'} size="sm" style={{ flex: 1 }} onPress={() => handleToggleBlock(p.id, p.name, p.is_blocked)} />
+                  </View>
+                )}
               </TouchableOpacity>
             );
           }}

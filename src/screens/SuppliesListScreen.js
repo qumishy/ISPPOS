@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert, Modal, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../theme';
 import {
@@ -12,7 +13,7 @@ import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
 
 export default function SuppliesScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, selectedPhase, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
@@ -21,6 +22,8 @@ export default function SuppliesScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('pending');
+  const [expandedId, setExpandedId] = useState(null);
+  const [activePhase, setActivePhase] = useState(null);
 
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [approvingId, setApprovingId] = useState(null);
@@ -32,13 +35,19 @@ export default function SuppliesScreen({ navigation }) {
 
   const load = useCallback(async (quiet = false) => {
     try {
-      if (!quiet) setLoading(true);
-      const filters = user?.role === 'cashier' ? { user_id: user.id } : {};
+      if (!projectId) return;
+      if (!quiet && supplies.length === 0) setLoading(true);
+
+      const filters = user?.role === 'cashier' ? { user_id: user.id, status: 'pending' } : {};
+      if (selectedPhase) filters.phase_id = selectedPhase.id;
+      if (projectId) filters.project_id = projectId;
+
       const data = await getLocalSupplies(filters);
       setSupplies(data || []);
     } catch (e) { }
     finally { if (!quiet) setLoading(false); setRefreshing(false); }
-  }, [user]);
+  }, [user, selectedPhase, projectId, supplies.length]);
+
 
   useEffect(() => {
     load();
@@ -61,13 +70,13 @@ export default function SuppliesScreen({ navigation }) {
       setShowApproveModal(false);
       setApproveNotes('');
       load();
-    } catch(e) { Alert.alert('خطأ', e.message); }
+    } catch (e) { Alert.alert('خطأ', e.message); }
   };
 
   const handleReject = async (id) => {
     Alert.alert('رفض التوريد', 'هل أنت متأكد؟', [
       { text: 'إلغاء', style: 'cancel' },
-      { text: 'متأكد (رفض)', style: 'destructive', onPress: async () => { await rejectLocalSupply(id); load(); } }
+      { text: 'متأكد (رفض)', style: 'destructive', onPress: async () => { await rejectLocalSupply(id, user?.id || null); load(); } }
     ]);
   };
 
@@ -76,7 +85,7 @@ export default function SuppliesScreen({ navigation }) {
       const details = await getSupplyPrintDetails(sup.id);
       const html = generateSupplyReceiptHTML(sup, details, sup.user_name || 'غير معروف', sup.agent_name || 'عدة مناديب');
       await Print.printAsync({ html });
-    } catch(e) { Alert.alert('خطأ', e.message); }
+    } catch (e) { Alert.alert('خطأ', e.message); }
   };
 
   const openJournal = async (sup) => {
@@ -86,7 +95,7 @@ export default function SuppliesScreen({ navigation }) {
     try {
       const details = await getSupplyPrintDetails(sup.id);
       setJournalData({ supply: sup, collections: details || [] });
-    } catch(e) {
+    } catch (e) {
       Alert.alert('خطأ', 'فشل في جلب تفاصيل القيد المحاسبي');
     }
     setJournalLoading(false);
@@ -98,42 +107,58 @@ export default function SuppliesScreen({ navigation }) {
         kpis={[{ label: 'الإجمالي', value: formatCurrency(total), color: colors.green }, { label: 'العدد', value: activeList.length, color: colors.cyan }]}
         tabs={[{ k: 'pending', l: `قيد الإيراد (${pending.length})` }, { k: 'approved', l: `المعتمدة (${approved.length})` }, { k: 'rejected', l: `المرفوضة (${rejected.length})` }]}
         activeTab={tab} onTabSelect={setTab} search={search} onSearch={setSearch}
-        action="+ إيراد" onAction={() => navigation.push('NewSupply')}
+        action={selectedPhase?.status !== 'closed' ? "+ إيراد" : undefined}
+        onAction={selectedPhase?.status !== 'closed' ? () => navigation.push('NewSupply') : undefined}
       />
 
+      {selectedPhase?.status === 'closed' && (
+        <View style={{ backgroundColor: colors.danger + '15', padding: spacing.sm, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Feather name="lock" size={14} color={colors.danger} />
+          <Text style={{ fontSize: 12, color: colors.danger, fontWeight: 'bold' }}>عرض توريدات المرحلة المغلقة: {selectedPhase.name} (قراءة فقط)</Text>
+        </View>
+      )}
+
       {loading ? <Loading /> : filtered.length === 0
-        ? <Empty icon="💰" title="لا توجد توريدات" />
+        ? <Empty icon="archive" title="لا توجد توريدات" />
         : <FlatList
           data={filtered} keyExtractor={i => i.id}
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.blue} />}
           renderItem={({ item: sup }) => (
-            <View style={{ backgroundColor: colors.card, marginBottom: spacing.md, borderRadius: radius.md, ...shadow }}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setExpandedId(expandedId === sup.id ? null : sup.id)}
+              style={{ backgroundColor: colors.card, marginBottom: spacing.md, borderRadius: radius.md, ...shadow }}
+            >
               <View style={[s.invCard, { marginBottom: 0, paddingBottom: spacing.sm, elevation: 0, shadowOpacity: 0 }]}>
                 <View style={s.invCardLeft}>
                   <Text style={s.invNum}>{sup.supply_number}</Text>
-                  <Text style={s.invPos}>إيراد من: {sup.agent_name || '—'}</Text>
+                  <Text style={s.invPos}>👤 {sup.agent_name || 'عدة مناديب'}</Text>
                   <Text style={s.invMeta}>{sup.user_name} · {formatDateShort(sup.created_at)}</Text>
                 </View>
-              <View style={s.invCardRight}>
-                <Text style={[s.invAmt, { color: colors.green }]}>{formatCurrency(sup.amount)}</Text>
+                <View style={s.invCardRight}>
+                  <Text style={[s.invAmt, { color: colors.green }]}>{formatCurrency(sup.amount)}</Text>
+                  <Feather name={expandedId === sup.id ? "chevron-up" : "chevron-down"} size={20} color={colors.t3} style={{ marginTop: 8 }} />
+                </View>
               </View>
-            </View>
-            <View style={[s.colActions, { paddingVertical: 10, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.border2, marginTop: 4 }]}>
-              <Row style={{ gap: 10, marginBottom: 10 }}>
-                <Btn label="🖨️ طباعة" variant="glass" size="lg" style={{ flex: 1 }} onPress={() => handlePrint(sup)} />
-                <Btn label="🔍 تفاصيل القيد" variant="primary" size="lg" style={{ flex: 1 }} onPress={() => openJournal(sup)} />
-              </Row>
-              <Row style={{ gap: 10 }}>
-                {sup.status === 'pending' && user?.role === 'admin' && (
-                  <Btn label="✅ اعتماد الشيك/النقد" variant="success" size="lg" style={{ flex: 1 }} onPress={() => { setApprovingId(sup.id); setShowApproveModal(true); }} />
-                )}
-                {sup.status === 'pending' && user?.role === 'admin' && (
-                  <Btn label="❌ رفض" variant="danger" size="lg" style={{ flex: 1 }} onPress={() => handleReject(sup.id)} />
-                )}
-              </Row>
-            </View>
-          </View>
+              {expandedId === sup.id && (
+                <View style={[s.colActions, { paddingVertical: 10, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.border2, marginTop: 4 }]}>
+                  {sup.notes && <Text style={{ fontSize: 13, color: colors.t3, fontStyle: 'italic', marginBottom: 10 }}>{sup.notes}</Text>}
+                  <Row style={{ gap: 10, marginBottom: 10 }}>
+                    <Btn label="طباعة" icon="printer" variant="glass" size="sm" style={{ flex: 1 }} onPress={() => handlePrint(sup)} />
+                    <Btn label="تفاصيل القيد" icon="file-text" variant="primary" size="sm" style={{ flex: 1 }} onPress={() => openJournal(sup)} />
+                  </Row>
+                  <Row style={{ gap: 10 }}>
+                    {selectedPhase?.status !== 'closed' && sup.status === 'pending' && user?.role === 'admin' && (
+                      <Btn label="اعتماد" icon="check-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => { setApprovingId(sup.id); setShowApproveModal(true); }} />
+                    )}
+                    {selectedPhase?.status !== 'closed' && sup.status === 'pending' && user?.role === 'admin' && (
+                      <Btn label="رفض" icon="x-circle" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleReject(sup.id)} />
+                    )}
+                  </Row>
+                </View>
+              )}
+            </TouchableOpacity>
           )}
         />
       }
@@ -143,41 +168,44 @@ export default function SuppliesScreen({ navigation }) {
           <View style={[s.modalContent, { maxHeight: '85%', padding: 0 }]}>
             <View style={{ backgroundColor: colors.blue, padding: spacing.md, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg }}>
               <Row style={{ justifyContent: 'space-between' }}>
-                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFF' }}>🧾 كشف حساب (قيد التحصيلات)</Text>
+                <Row style={{ alignItems: 'center', gap: 8 }}>
+                  <Feather name="file-text" size={18} color="#FFF" />
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFF' }}>كشف حساب (قيد التحصيلات)</Text>
+                </Row>
                 <TouchableOpacity onPress={() => setShowJournalModal(false)}>
                   <Text style={{ fontSize: 20, color: '#FFF' }}>✕</Text>
                 </TouchableOpacity>
               </Row>
             </View>
-            
+
             {journalData?.supply && (
               <ScrollView style={{ padding: spacing.md }}>
                 <View style={{ backgroundColor: colors.bg2, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md }}>
-                   <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                     <Text style={{ color: colors.t2 }}>رقم الإيراد المحاسبي:</Text>
-                     <Text style={{ fontWeight: 'bold', color: colors.blue }}>{journalData.supply.supply_number}</Text>
-                   </Row>
-                   <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                     <Text style={{ color: colors.t2 }}>تاريخ القيد:</Text>
-                     <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{formatDateShort(journalData.supply.created_at)}</Text>
-                   </Row>
-                   <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                     <Text style={{ color: colors.t2 }}>اسم المحاسب:</Text>
-                     <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{journalData.supply.user_name}</Text>
-                   </Row>
-                   <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                     <Text style={{ color: colors.t2 }}>الجهة الموردة (المندوب):</Text>
-                     <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{journalData.supply.agent_name || '—'}</Text>
-                   </Row>
-                   <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: 8 }} />
-                   <Row style={{ justifyContent: 'space-between' }}>
-                     <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.t1 }}>إجمالي القيد:</Text>
-                     <Text style={{ fontSize: 20, fontWeight: '900', color: colors.green }}>{formatCurrency(journalData.supply.amount)}</Text>
-                   </Row>
+                  <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={{ color: colors.t2 }}>رقم الإيراد المحاسبي:</Text>
+                    <Text style={{ fontWeight: 'bold', color: colors.blue }}>{journalData.supply.supply_number}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={{ color: colors.t2 }}>تاريخ القيد:</Text>
+                    <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{formatDateShort(journalData.supply.created_at)}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={{ color: colors.t2 }}>اسم المحاسب:</Text>
+                    <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{journalData.supply.user_name}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={{ color: colors.t2 }}>الجهة الموردة (المندوب):</Text>
+                    <Text style={{ fontWeight: 'bold', color: colors.t1 }}>{journalData.supply.agent_name || '—'}</Text>
+                  </Row>
+                  <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: 8 }} />
+                  <Row style={{ justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.t1 }}>إجمالي القيد:</Text>
+                    <Text style={{ fontSize: 20, fontWeight: '900', color: colors.green }}>{formatCurrency(journalData.supply.amount)}</Text>
+                  </Row>
                 </View>
 
                 <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.t1, marginBottom: 10 }}>التحصيلات المرفقة بهذا الإيراد:</Text>
-                
+
                 {journalLoading ? <Loading /> : (
                   journalData?.collections?.length === 0 ? (
                     <Text style={{ color: colors.t3, textAlign: 'center', marginTop: 20 }}>لا توجد تحصيلات تفصيلية مسجلة.</Text>
@@ -189,7 +217,7 @@ export default function SuppliesScreen({ navigation }) {
                           <Text style={{ fontWeight: 'bold', color: colors.orange }}>{formatCurrency(col.amount)}</Text>
                         </Row>
                         <Row style={{ justifyContent: 'space-between' }}>
-                          <Text style={{ fontSize: 12, color: colors.t3 }}>طريقة الدفع: {col.method === 'cash' ? 'نقدي 💵' : col.method === 'transfer' ? 'تحويل 🏦' : 'شيك 📝'}</Text>
+                          <Text style={{ fontSize: 12, color: colors.t3 }}>طريقة الدفع: {col.method === 'cash' ? 'نقدي' : col.method === 'transfer' ? 'تحويل' : 'شيك'}</Text>
                           <Text style={{ fontSize: 12, color: colors.t3 }}>{formatDateShort(col.collection_date)}</Text>
                         </Row>
                       </View>
@@ -199,7 +227,7 @@ export default function SuppliesScreen({ navigation }) {
                 <View style={{ height: 30 }} />
               </ScrollView>
             )}
-            
+
             <View style={{ padding: spacing.md, borderTopWidth: 1, borderTopColor: colors.border2 }}>
               <Btn label="إغلاق التقرير" variant="outline" onPress={() => setShowJournalModal(false)} />
             </View>
@@ -214,7 +242,7 @@ export default function SuppliesScreen({ navigation }) {
             <Input label="ملاحظات" value={approveNotes} onChangeText={setApproveNotes} multiline style={{ height: 80 }} />
             <Row style={{ gap: 10, marginTop: 20 }}>
               <Btn label="إلغاء" variant="outline" style={{ flex: 1 }} onPress={() => setShowApproveModal(false)} />
-              <Btn label="✅ اعتماد" variant="primary" style={{ flex: 1.5 }} onPress={handleApprove} />
+              <Btn label="اعتماد" icon="check" variant="primary" style={{ flex: 1.5 }} onPress={handleApprove} />
             </Row>
           </KeyboardAvoidingView>
         </View>

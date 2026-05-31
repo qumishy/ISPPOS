@@ -93,33 +93,36 @@ android {
 
         buildConfigField("boolean", "REACT_NATIVE_UNSTABLE_USE_RUNTIME_SCHEDULER_ALWAYS", (findProperty("reactNative.unstable_useRuntimeSchedulerAlways") ?: true).toString())
     }
-    signingConfigs {
+     signingConfigs {
         debug {
             storeFile file('debug.keystore')
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+
         release {
-            if (System.getenv("ANDROID_KEYSTORE_BASE64")) {
-                storeFile file("release.keystore")
-                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")?.trim()
-                keyAlias System.getenv("ANDROID_KEY_ALIAS")?.trim()
-                keyPassword System.getenv("ANDROID_KEY_PASSWORD")?.trim()
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
             }
         }
     }
+
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
+
         release {
-            // Updated to use release signing if available
-            if (System.getenv("ANDROID_KEYSTORE_BASE64")) {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
                 signingConfig signingConfigs.release
             } else {
                 signingConfig signingConfigs.debug
             }
+
             shrinkResources (findProperty('android.enableShrinkResourcesInReleaseBuilds')?.toBoolean() ?: false)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"

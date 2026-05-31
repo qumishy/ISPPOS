@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════
 //  styles/form.styles.js
-//  أنماط شاشات النماذج والتفاصيل
+//  أنماط شاشات النماذج والتفاصيل — High-End ERP Edition
 // ═══════════════════════════════════════════════════════
 import { StyleSheet } from 'react-native';
 
@@ -9,25 +9,27 @@ export const makeStyles = (colors, spacing, radius, fontSize, shadow) =>
     screen: { flex: 1, backgroundColor: colors.bg },
     section: {
       backgroundColor: colors.card,
-      borderRadius: radius.lg,
-      padding: spacing.lg,
-      marginBottom: spacing.md,
+      borderRadius: radius.xl,
+      padding: spacing.xl,
+      marginBottom: spacing.lg,
       borderWidth: 1,
       borderColor: colors.border,
+      overflow: 'visible',
       ...shadow.sm,
     },
     sectionTitle: {
-      fontSize: fontSize.lg,
-      fontWeight: '800',
+      fontSize: fontSize.xl,
+      fontWeight: '900',
       color: colors.t1,
-      marginBottom: spacing.md,
+      marginBottom: spacing.lg,
       textAlign: 'right',
+      letterSpacing: -0.3,
     },
     label: {
       fontSize: fontSize.sm,
-      fontWeight: '700',
+      fontWeight: '800',
       color: colors.t2,
-      marginBottom: 6,
+      marginBottom: spacing.sm,
       textAlign: 'right',
     },
 
@@ -38,54 +40,54 @@ export const makeStyles = (colors, spacing, radius, fontSize, shadow) =>
       justifyContent: 'space-between',
       backgroundColor: colors.bg2,
       borderWidth: 1,
-      borderColor: colors.border,
+      borderColor: colors.border2,
       borderRadius: radius.md,
-      paddingHorizontal: spacing.md,
-      height: 50,
+      paddingHorizontal: spacing.lg,
+      height: 52,
     },
-    pickerTxt: { fontSize: fontSize.md, color: colors.t1, textAlign: 'right', flex: 1 },
+    pickerTxt: { fontSize: fontSize.lg, color: colors.t1, textAlign: 'right', flex: 1, fontWeight: '600' },
     dropdown: {
-      marginTop: 4,
+      marginTop: spacing.xs,
       backgroundColor: colors.card,
-      borderRadius: radius.md,
+      borderRadius: radius.lg,
       borderWidth: 1,
-      borderColor: colors.border,
-      ...shadow.md,
+      borderColor: colors.border2,
+      ...shadow.lg,
       overflow: 'hidden',
     },
     dropItem: {
-      padding: spacing.md,
+      padding: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,
     },
-    dropItemAct: { backgroundColor: colors.blue + '10' },
-    dropTxt: { fontSize: fontSize.md, color: colors.t2, textAlign: 'right' },
+    dropItemAct: { backgroundColor: colors.primary + '10' },
+    dropTxt: { fontSize: fontSize.lg, color: colors.t1, textAlign: 'right', fontWeight: '600' },
 
     // Invoice Specific
     invoiceHeader: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: spacing.lg,
-      paddingHorizontal: spacing.xs,
+      marginBottom: spacing.xl,
+      paddingHorizontal: spacing.sm,
     },
-    invoiceTitle: { fontSize: 24, fontWeight: '900', color: colors.t1 },
-    invoiceDate: { fontSize: fontSize.md, color: colors.t3, fontWeight: '600' },
+    invoiceTitle: { fontSize: fontSize.h, fontWeight: '900', color: colors.t1, letterSpacing: -0.5 },
+    invoiceDate: { fontSize: fontSize.md, color: colors.t3, fontWeight: '700' },
 
     addItemBox: {
       backgroundColor: colors.bg2,
-      borderRadius: radius.md,
-      padding: spacing.md,
+      borderRadius: radius.lg,
+      padding: spacing.xl,
       marginTop: spacing.sm,
-      borderWidth: 1,
+      borderWidth: 2,
       borderStyle: 'dashed',
-      borderColor: colors.blue + '50',
+      borderColor: colors.primary + '40',
+      alignItems: 'center'
     },
     addItemTitle: {
-      fontSize: fontSize.md,
-      fontWeight: '700',
-      color: colors.blue,
-      marginBottom: spacing.md,
+      fontSize: fontSize.lg,
+      fontWeight: '800',
+      color: colors.primary,
       textAlign: 'center',
     },
 
@@ -93,36 +95,36 @@ export const makeStyles = (colors, spacing, radius, fontSize, shadow) =>
     tableHeader: {
       flexDirection: 'row',
       backgroundColor: colors.bg2,
-      padding: spacing.sm,
-      borderRadius: radius.sm,
-      marginBottom: 2,
+      padding: spacing.md,
+      borderRadius: radius.md,
+      marginBottom: 4,
     },
-    thCell: { color: colors.t3, fontWeight: '700', fontSize: 11, textAlign: 'center' },
+    thCell: { color: colors.t3, fontWeight: '800', fontSize: fontSize.xs, textAlign: 'center' },
     tableRow: {
       flexDirection: 'row',
-      padding: spacing.md,
+      padding: spacing.lg,
       borderBottomWidth: 1,
       borderBottomColor: colors.border,
       alignItems: 'center',
     },
-    tdCell: { fontSize: fontSize.sm, color: colors.t1, textAlign: 'center' },
+    tdCell: { fontSize: fontSize.md, color: colors.t1, textAlign: 'center', fontWeight: '700' },
 
     totalsBox: {
-      marginTop: spacing.lg,
-      paddingTop: spacing.md,
+      marginTop: spacing.xl,
+      paddingTop: spacing.xl,
       borderTopWidth: 2,
       borderTopColor: colors.border,
     },
 
     // Info Box
     infoBox: {
-      backgroundColor: colors.blue + '08',
-      borderRadius: radius.md,
-      padding: spacing.md,
-      marginBottom: spacing.md,
+      backgroundColor: colors.primary + '08',
+      borderRadius: radius.lg,
+      padding: spacing.xl,
+      marginBottom: spacing.xl,
       borderWidth: 1,
-      borderColor: colors.blue + '20',
+      borderColor: colors.primary + '20',
     },
 
-    actions: { gap: spacing.md, marginTop: spacing.lg },
+    actions: { gap: spacing.md, marginTop: spacing.xl },
   });

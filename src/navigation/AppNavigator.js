@@ -1,4 +1,3 @@
-import SyncScreen from '../screens/SyncScreen';
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, ActivityIndicator, TouchableOpacity,
@@ -9,11 +8,14 @@ import { NavigationContainer, DrawerActions, DefaultTheme, DarkTheme } from '@re
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
+import { Feather } from '@expo/vector-icons';
 
 import { useAuth, ROLE_PERMISSIONS } from '../services/AuthContext';
 import { useTheme } from '../theme';
+import { LinearGradient } from 'expo-linear-gradient';
 
 /* Screens */
+import LicenseScreen  from '../screens/LicenseScreen';
 import LoginScreen    from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
 import AdminScreen    from '../screens/AdminScreen';
@@ -21,8 +23,10 @@ import PermissionsScreen from '../screens/PermissionsScreen';
 import CashierScreen  from '../screens/CashierScreen';
 import ReportsScreen  from '../screens/ReportsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import UpdatesScreen from '../screens/UpdatesScreen';
+import DiscountApprovalsScreen from '../screens/DiscountApprovalsScreen';
 
-import { getLocalNotificationsBox, subscribeDataChanges } from '../services/database';
+import { getLocalNotificationsBox, getPendingOfflineOperationsForUser, subscribeDataChanges } from '../services/database';
 import { setupNotificationListeners } from '../services/NotificationService';
 
 import InvoicesScreen      from '../screens/InvoicesListScreen';
@@ -33,6 +37,7 @@ import WalletsScreen       from '../screens/WalletsListScreen';
 import SuppliesScreen      from '../screens/SuppliesListScreen';
 import WalletDetailScreen  from '../screens/WalletDetailScreen';
 import NotificationsScreen from '../screens/NotificationsListScreen';
+import OperationsScreen from '../screens/OperationsScreen';
 
 import NewInvoiceScreen   from '../screens/NewInvoiceScreen';
 import NewCollectionScreen from '../screens/NewCollectionScreen';
@@ -43,239 +48,205 @@ import EditPOSScreen      from '../screens/EditPOSScreen';
 import AboutScreen        from '../screens/AboutScreen';
 import NewSupplyScreen    from '../screens/NewSupplyScreen';
 import InvoiceDetailScreen from '../screens/InvoiceDetailScreen';
+import BatchStockDetailScreen from '../screens/BatchStockDetailScreen';
 
 const Drawer = createDrawerNavigator();
 const Tab    = createBottomTabNavigator();
 const Stack  = createStackNavigator();
 
-// ── تخصيص ألوان الملاحة (أزرق داكن يشبه لون الأزرار) ──
-const navColors = {
-  bg:      '#1E3A8A', // Blue 900
-  bg2:     '#1E40AF', // Blue 800
-  card:    '#2563EB', // Blue 600
-  border:  'rgba(255,255,255,0.15)',
-  t1:      '#FFFFFF',
-  t2:      '#BFDBFE',
-  t3:      '#93C5FD',
-  blue:    '#60A5FA',
-  red:     '#EF4444',
-  green:   '#10B981',
-};
-
 // ══════════════════════════════════════════════════════════════
 //  HEADER
 // ══════════════════════════════════════════════════════════════
-function MenuButton({ navigation }) {
+function MenuButton({ navigation, colors }) {
   const scale = useRef(new Animated.Value(1)).current;
   return (
-    <Animated.View style={{ transform: [{ scale }], marginLeft: 14 }}>
+    <Animated.View style={{ transform: [{ scale }], marginLeft: 16 }}>
       <TouchableOpacity
         onPress={() => navigation.dispatch(DrawerActions.openDrawer())}
-        style={[h.menuBtn, { backgroundColor: 'rgba(255,255,255,0.08)', borderColor: 'rgba(255,255,255,0.15)' }]}
+        style={[h.menuBtn, { backgroundColor: colors.bg2, borderColor: colors.border }]}
         activeOpacity={0.7}
       >
-        <View style={h.menuLine} />
-        <View style={[h.menuLine, { width: 14 }]} />
-        <View style={[h.menuLine, { width: 18 }]} />
+        <Feather name="menu" size={20} color={colors.t1} />
       </TouchableOpacity>
     </Animated.View>
   );
 }
 
-function NotificationBell({ navigation }) {
-  const { user } = useAuth();
+function HeaderRight({ navigation, colors }) {
+  const { user, projectId } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
+  const [pendingOpsCount, setPendingOpsCount] = useState(0);
 
   useEffect(() => {
      const check = async () => {
-         const notifs = await getLocalNotificationsBox(user?.id);
+         const notifs = await getLocalNotificationsBox(user?.id, projectId);
          setUnreadCount(notifs.filter(n => !n.is_read).length);
+         const ops = await getPendingOfflineOperationsForUser(user?.id, { projectId });
+         setPendingOpsCount((ops || []).filter(o => o.sync_status !== 'synced').length);
      };
      check();
      const unsub = subscribeDataChanges(e => {
-        if(e.type === 'notifications') check();
+        if (['notifications', 'operations_log', 'sync_queue', 'all'].includes(e.type)) check();
      });
      return unsub;
-  }, [user?.id]);
+  }, [user?.id, projectId]);
 
   return (
-    <TouchableOpacity onPress={() => navigation.navigate('Notifications')} style={{ marginRight: 15, position: 'relative' }}>
-       <Text style={{ fontSize: 20 }}>🔔</Text>
-       {unreadCount > 0 && (
-         <View style={{ position: 'absolute', top: -5, left: -5, backgroundColor: '#EF4444', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center' }}>
-            <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
-         </View>
-       )}
-    </TouchableOpacity>
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 14, gap: 10 }}>
+      {/* compact online status */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.success + '15', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, borderWidth: 1, borderColor: colors.success + '30' }}>
+        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success }} />
+        <Text style={{ fontSize: 9, color: colors.success, fontWeight: '800' }}>متصل</Text>
+      </View>
+      {/* notification bell */}
+      <TouchableOpacity onPress={() => navigation.navigate('Operations')} style={{ position: 'relative', width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+         <Feather name="activity" size={22} color={colors.t1} />
+         {pendingOpsCount > 0 && (
+           <View style={{ position: 'absolute', top: 4, right: 4, backgroundColor: colors.warning, borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: colors.card }}>
+              <Text style={{ color: 'white', fontSize: 10, fontWeight: '800' }}>{pendingOpsCount > 99 ? '99+' : pendingOpsCount}</Text>
+           </View>
+         )}
+      </TouchableOpacity>
+      {/* notification bell */}
+      <TouchableOpacity onPress={() => navigation.navigate('Notifications')} style={{ position: 'relative', width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+         <Feather name="bell" size={22} color={colors.t1} />
+         {unreadCount > 0 && (
+           <View style={{ position: 'absolute', top: 4, right: 4, backgroundColor: colors.danger, borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: colors.card }}>
+              <Text style={{ color: 'white', fontSize: 10, fontWeight: '800' }}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+           </View>
+         )}
+      </TouchableOpacity>
+    </View>
   );
 }
 
-function HeaderOptions(title, navigation) {
+function HeaderOptions(title, navigation, colors, fontSize, isLight) {
   return {
     title,
     headerStyle: {
-      backgroundColor: navColors.bg,
-      borderBottomWidth: 0,
-      height: 64,
+      height: 68,
+      elevation: 0, shadowOpacity: 0,
+      backgroundColor: isLight ? colors.primary : colors.card,
+      borderBottomWidth: isLight ? 0 : 1,
+      borderBottomColor: colors.border,
     },
-    headerTintColor: navColors.t1,
-    headerTitleStyle: { fontWeight: '900', fontSize: 17, letterSpacing: -0.4 },
-    headerLeft: () => <MenuButton navigation={navigation} />,
-    headerRight: () => <NotificationBell navigation={navigation} />,
+    headerTintColor: isLight ? '#FFFFFF' : colors.t1,
+    headerTitleStyle: { 
+      fontFamily: 'IBMPlexSansArabic-Bold', 
+      fontWeight: '800', 
+      fontSize: fontSize.xl, 
+      letterSpacing: -0.3,
+      color: isLight ? '#FFFFFF' : colors.t1 
+    },
+    headerLeft: () => <MenuButton navigation={navigation} colors={colors} />,
+    headerRight: () => <HeaderRight navigation={navigation} colors={colors} />,
   };
 }
 
 // ══════════════════════════════════════════════════════════════
 //  STACKS
 // ══════════════════════════════════════════════════════════════
-function DashboardStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="DashboardMain" component={DashboardScreen} options={HeaderOptions('الرئيسية', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function InvoicesStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="InvoicesMain" component={InvoicesScreen} options={HeaderOptions('الفواتير', navigation)} />
-      <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} options={{ title: 'تفاصيل الفاتورة' }} />
-      <Stack.Screen name="NewInvoice" component={NewInvoiceScreen} options={{ title: 'فاتورة جديدة' }} />
-      <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={{ title: 'إضافة تحصيل' }} />
-    </Stack.Navigator>
-  );
+function createStack(Component, name, title) {
+  return function StackWrapper({ navigation }) {
+    const { colors, fontSize, isLight } = useTheme();
+    const commonHeaderOptions = {
+      headerTintColor: isLight ? '#FFFFFF' : colors.t1,
+      headerStyle: { 
+        backgroundColor: isLight ? colors.primary : colors.card,
+        borderBottomColor: colors.border, 
+        borderBottomWidth: isLight ? 0 : 1 
+      }
+    };
+
+    return (
+      <Stack.Navigator>
+        <Stack.Screen name={name} component={Component} options={HeaderOptions(title, navigation, colors, fontSize, isLight)} />
+        <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen} options={{ title: 'تفاصيل الفاتورة', ...commonHeaderOptions }} />
+        <Stack.Screen name="NewInvoice" component={NewInvoiceScreen} options={{ title: 'فاتورة جديدة', ...commonHeaderOptions }} />
+        <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={{ title: 'إضافة تحصيل', ...commonHeaderOptions }} />
+        <Stack.Screen name="AddBatch" component={AddBatchScreen} options={{ title: 'إضافة دفعة', ...commonHeaderOptions }} />
+        <Stack.Screen name="NewPOS" component={NewPOSScreen} options={{ title: 'إضافة نقطة', ...commonHeaderOptions }} />
+        <Stack.Screen name="EditPOS" component={EditPOSScreen} options={{ title: 'تعديل نقطة', ...commonHeaderOptions }} />
+        <Stack.Screen name="AssignWallet" component={AssignWalletScreen} options={{ title: 'توزيع أوراق', ...commonHeaderOptions }} />
+        <Stack.Screen name="WalletDetail" component={WalletDetailScreen} options={{ title: 'حركة المحفظة', ...commonHeaderOptions }} />
+        <Stack.Screen name="BatchStockDetail" component={BatchStockDetailScreen} options={{ title: 'تقرير التوزيع', ...commonHeaderOptions }} />
+        <Stack.Screen name="NewSupply" component={NewSupplyScreen} options={{ title: 'توريد جديد', ...commonHeaderOptions }} />
+        <Stack.Screen name="Updates" component={UpdatesScreen} options={{ title: 'التحديثات', ...commonHeaderOptions }} />
+      </Stack.Navigator>
+    );
+  };
 }
 
-function CollectionsStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="CollectionsMain" component={CollectionsScreen} options={HeaderOptions('التحصيلات', navigation)} />
-      <Stack.Screen name="NewCollection" component={NewCollectionScreen} options={{ title: 'إضافة تحصيل' }} />
-    </Stack.Navigator>
-  );
-}
-function InventoryStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="InventoryMain" component={InventoryScreen} options={HeaderOptions('المخزون', navigation)} />
-      <Stack.Screen name="AddBatch" component={AddBatchScreen} options={{ title: 'إضافة دفعة' }} />
-    </Stack.Navigator>
-  );
-}
-function POSStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="POSMain" component={POSScreen} options={HeaderOptions('نقاط البيع', navigation)} />
-      <Stack.Screen name="NewPOS" component={NewPOSScreen} options={{ title: 'إضافة نقطة' }} />
-      <Stack.Screen name="EditPOS" component={EditPOSScreen} options={{ title: 'تعديل نقطة' }} />
-    </Stack.Navigator>
-  );
-}
-function WalletsStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="WalletsMain" component={WalletsScreen} options={HeaderOptions('المحافظ', navigation)} />
-      <Stack.Screen name="AssignWallet" component={AssignWalletScreen} options={{ title: 'توزيع أوراق' }} />
-      <Stack.Screen name="WalletDetail" component={WalletDetailScreen} options={{ title: 'حركة المحفظة' }} />
-    </Stack.Navigator>
-  );
-}
-function ReportsStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="ReportsMain" component={ReportsScreen} options={HeaderOptions('الاستعلامات', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function AdminStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="AdminMain" component={AdminScreen} options={HeaderOptions('الإدارة', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function PermissionsStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="PermissionsMain" component={PermissionsScreen} options={HeaderOptions('إدارة الصلاحيات', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function CashierStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="CashierMain" component={CashierScreen} options={HeaderOptions('اعتماد التحصيلات', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function SettingsStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="SettingsMain" component={SettingsScreen} options={HeaderOptions('الإعدادات العامة', navigation)} />
-    </Stack.Navigator>
-  );
-}
-function SuppliesStack({ navigation }) {
-  return (
-    <Stack.Navigator>
-      <Stack.Screen name="SuppliesMain" component={SuppliesScreen} options={HeaderOptions('التوريدات المالية', navigation)} />
-      <Stack.Screen name="NewSupply" component={NewSupplyScreen} options={{ title: 'توريد جديد' }} />
-    </Stack.Navigator>
-  );
-}
+const DashboardStack = createStack(DashboardScreen, 'DashboardMain', 'الرئيسية');
+const InvoicesStack = createStack(InvoicesScreen, 'InvoicesMain', 'الفواتير');
+const CollectionsStack = createStack(CollectionsScreen, 'CollectionsMain', 'التحصيلات');
+const InventoryStack = createStack(InventoryScreen, 'InventoryMain', 'المخزون');
+const POSStack = createStack(POSScreen, 'POSMain', 'نقاط البيع');
+const WalletsStack = createStack(WalletsScreen, 'WalletsMain', 'المحافظ');
+const ReportsStack = createStack(ReportsScreen, 'ReportsMain', 'الاستعلامات');
+const DiscountApprovalsStack = createStack(DiscountApprovalsScreen, 'DiscountApprovalsMain', 'اعتماد الخصومات');
+const AdminStack = createStack(AdminScreen, 'AdminMain', 'الإدارة');
+const PermissionsStack = createStack(PermissionsScreen, 'PermissionsMain', 'إدارة الصلاحيات');
+const CashierStack = createStack(CashierScreen, 'CashierMain', 'اعتماد التحصيلات');
+const SettingsStack = createStack(SettingsScreen, 'SettingsMain', 'الإعدادات العامة');
+const SuppliesStack = createStack(SuppliesScreen, 'SuppliesMain', 'التوريدات المالية');
 
 
 // ══════════════════════════════════════════════════════════════
 //  BOTTOM TABS
 // ══════════════════════════════════════════════════════════════
-function AnimatedTabIcon({ emoji, label, focused }) {
-  const scale = useRef(new Animated.Value(focused ? 1.1 : 1)).current;
-  useEffect(() => { Animated.spring(scale, { toValue: focused ? 1.12 : 1, useNativeDriver: true }).start(); }, [focused]);
+function AnimatedTabIcon({ iconName, label, focused, colors }) {
+  const scale = useRef(new Animated.Value(focused ? 1.05 : 1)).current;
+  useEffect(() => { Animated.spring(scale, { toValue: focused ? 1.1 : 1, useNativeDriver: true }).start(); }, [focused]);
   return (
     <View style={t.tabIconWrap}>
-      <Animated.View style={[t.tabPill, { backgroundColor: focused ? 'rgba(255,255,255,0.15)' : 'transparent', transform: [{ scale }] }]}>
-        <Text style={{ fontSize: 18 }}>{emoji}</Text>
+      <Animated.View style={[t.tabPill, { backgroundColor: focused ? colors.primary + '17' : 'transparent', transform: [{ scale }] }]}> 
+        <Feather name={iconName} size={22} color={focused ? colors.primary : colors.t3} />
       </Animated.View>
-      <Text style={[t.tabLabel, { color: focused ? '#FFF' : navColors.t2, fontWeight: focused ? '900' : '600' }]}>{label}</Text>
+      <Text style={[t.tabLabel, { color: focused ? colors.primary : colors.t3, fontWeight: focused ? '800' : '600' }]}>{label}</Text>
     </View>
   );
 }
 
 function BottomTabs() {
   const { user, canAccess } = useAuth();
+  const { colors, spacing, isLight } = useTheme();
   const isAdmin = user?.role === 'admin';
 
   const tabs = [
-    { name: 'DashboardTab',   component: DashboardStack,   emoji: '🏠', label: 'الرئيسية', visible: canAccess('Dashboard')  },
-    { name: 'InvoicesTab',    component: InvoicesStack,    emoji: '🧾', label: 'الفواتير', visible: canAccess('Invoices') },
-    { name: 'CollectionsTab', component: CollectionsStack, emoji: '💰', label: 'التحصيل', visible: canAccess('Collections') },
-    { name: 'CashierTab',     component: CashierStack,     emoji: '✅', label: 'الاعتماد', visible: !isAdmin && canAccess('CashierApproval') },
-    { name: 'WalletsTab',     component: WalletsStack,     emoji: '👜', label: 'المحافظ', visible: canAccess('Wallets') },
+    { name: 'DashboardTab',   component: DashboardStack,   icon: 'grid', label: 'الرئيسية', visible: canAccess('Dashboard')  },
+    { name: 'InvoicesTab',    component: InvoicesStack,    icon: 'file-text', label: 'الفواتير', visible: canAccess('Invoices') },
+    { name: 'CollectionsTab', component: CollectionsStack, icon: 'dollar-sign', label: 'التحصيل', visible: canAccess('Collections') },
+    { name: 'CashierTab',     component: CashierStack,     icon: 'check-circle', label: 'الاعتماد', visible: !isAdmin && canAccess('CashierApproval') },
+    { name: 'WalletsTab',     component: WalletsStack,     icon: 'briefcase', label: 'المحافظ', visible: canAccess('Wallets') },
     
     // Hidden from bottom tab bar, accessed via drawer only:
-    { name: 'InventoryTab',   component: InventoryStack,   emoji: '📦', label: '',         visible: false },
-    { name: 'POSTab',         component: POSStack,         emoji: '🏪', label: '',         visible: false },
-    { name: 'ReportsTab',     component: ReportsStack,     emoji: '📊', label: '',         visible: false },
-    { name: 'AdminTab',       component: AdminStack,       emoji: '⚙️', label: '',         visible: false },
-    { name: 'PermissionsTab', component: PermissionsStack, emoji: '🔐', label: '',         visible: false },
-    { name: 'SuppliesTab',    component: SuppliesStack,    emoji: '💵', label: 'الإيرادات',     visible: canAccess('Supplies') },
-    { name: 'SettingsTab',    component: SettingsStack,    emoji: '⚙️', label: '',         visible: false },
+    { name: 'InventoryTab',   component: InventoryStack,   icon: 'package', visible: false },
+    { name: 'POSTab',         component: POSStack,         icon: 'monitor', visible: false },
+    { name: 'ReportsTab',     component: ReportsStack,     icon: 'bar-chart-2', visible: false },
+    { name: 'DiscountApprovalsTab', component: DiscountApprovalsStack, icon: 'percent', visible: false },
+    { name: 'AdminTab',       component: AdminStack,       icon: 'settings', visible: false },
+    { name: 'PermissionsTab', component: PermissionsStack, icon: 'shield', visible: false },
+    { name: 'SuppliesTab',    component: SuppliesStack,    icon: 'credit-card', visible: false },
+    { name: 'SettingsTab',    component: SettingsStack,    icon: 'sliders', visible: false },
   ];
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: navColors.bg,
-          borderTopWidth: 1, borderTopColor: navColors.border,
-          height: 72, paddingBottom: 12, paddingTop: 8,
+          backgroundColor: colors.card,
+          borderTopWidth: 1, borderTopColor: colors.border,
+          height: 80, paddingBottom: 20, paddingTop: 10,
+          elevation: 20,
+          shadowColor: '#000', shadowOffset: { width:0, height:-4 }, shadowOpacity: 0.05, shadowRadius: 10,
         },
         tabBarShowLabel: false,
       }}
     >
       {tabs.map(item => (
         <Tab.Screen key={item.name} name={item.name} component={item.component}
-          options={item.visible ? { tabBarIcon: ({ focused }) => <AnimatedTabIcon emoji={item.emoji} label={item.label} focused={focused} /> } : { tabBarButton: () => null }}
+          options={item.visible ? { tabBarIcon: ({ focused }) => <AnimatedTabIcon iconName={item.icon} label={item.label} focused={focused} colors={colors} /> } : { tabBarButton: () => null }}
         />
       ))}
     </Tab.Navigator>
@@ -286,23 +257,26 @@ function BottomTabs() {
 //  CUSTOM DRAWER
 // ══════════════════════════════════════════════════════════════
 function CustomDrawer({ navigation, state }) {
-  const { user, logout, canAccess } = useAuth();
+  const { user, logout, canAccess, selectedPhase, setSelectedPhase, allPhases } = useAuth();
+  const { colors, fontSize, isLight } = useTheme();
   const isAdmin = user?.role === 'admin';
   const currentRoute = state?.routeNames[state.index];
+  
   const allItems = [
-    { route: 'DashboardTab', label: 'الرئيسية', icon: '🏠', permission: 'Dashboard' },
-    { route: 'InvoicesTab', label: 'الفواتير', icon: '🧾', permission: 'Invoices' },
-    { route: 'CollectionsTab', label: 'التحصيلات', icon: '💰', permission: 'Collections' },
-    { route: 'CashierTab', label: 'اعتماد التحصيل', icon: '✅', permission: 'CashierApproval', hideForAdmin: true },
-    { route: 'InventoryTab', label: 'المخزون', icon: '📦', permission: 'Inventory' },
-    { route: 'POSTab', label: 'نقاط البيع', icon: '🏪', permission: 'POS' },
-    { route: 'WalletsTab', label: 'المحافظ', icon: '👜', permission: 'Wallets' },
-    { route: 'SuppliesTab', label: 'التوريدات المالية', icon: '💵', permission: 'Supplies' },
-    { route: 'ReportsTab', label: 'الاستعلامات', icon: '📊', permission: 'Reports' },
-    { route: 'AdminTab', label: 'الإدارة', icon: '⚙️', permission: 'Admin' },
-    { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: '🔐', permission: 'Admin' }, 
-    { route: 'About', label: 'اتصل بنا', icon: '📞', permission: 'About' },
-    { route: 'SettingsTab', label: 'الإعدادات العامة', icon: '⚙️', permission: 'Settings' },
+    { route: 'DashboardTab', label: 'الرئيسية', icon: 'grid', permission: 'Dashboard' },
+    { route: 'InvoicesTab', label: 'الفواتير', icon: 'file-text', permission: 'Invoices' },
+    { route: 'CollectionsTab', label: 'التحصيلات', icon: 'dollar-sign', permission: 'Collections' },
+    { route: 'CashierTab', label: 'اعتماد التحصيل', icon: 'check-circle', permission: 'CashierApproval', hideForAdmin: true },
+    { route: 'InventoryTab', label: 'المخزون', icon: 'package', permission: 'Inventory' },
+    { route: 'POSTab', label: 'نقاط البيع', icon: 'monitor', permission: 'POS' },
+    { route: 'WalletsTab', label: 'المحافظ', icon: 'briefcase', permission: 'Wallets' },
+    { route: 'SuppliesTab', label: 'التوريدات المالية', icon: 'credit-card', permission: 'Supplies' },
+    { route: 'ReportsTab', label: 'الاستعلامات', icon: 'bar-chart-2', permission: 'Reports' },
+    { route: 'DiscountApprovalsTab', label: 'اعتماد الخصومات', icon: 'percent', permission: 'Admin' },
+    { route: 'AdminTab', label: 'الإدارة', icon: 'settings', permission: 'Admin' },
+    { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: 'shield', permission: 'Admin' }, 
+    { route: 'About', label: 'حول و اتصل بنا', icon: 'info', permission: 'About' },
+    { route: 'SettingsTab', label: 'الإعدادات العامة', icon: 'sliders', permission: 'Settings' },
   ];
 
   const items = allItems.filter(i => {
@@ -311,26 +285,61 @@ function CustomDrawer({ navigation, state }) {
   });
 
   return (
-    <View style={[d.screen, { backgroundColor: navColors.bg }]}>
-      <StatusBar barStyle="light-content" backgroundColor={navColors.bg} />
-      <View style={[d.header, { backgroundColor: navColors.bg2 }]}>
+    <View style={[d.screen, { backgroundColor: colors.bg }]}>
+      <StatusBar barStyle={colors.t1 === '#FFFFFF' ? "light-content" : "dark-content"} backgroundColor={colors.bg} />
+      <View 
+        style={[d.header, { backgroundColor: isLight ? colors.primary : colors.card, borderBottomWidth: 1, borderBottomColor: colors.border }]}
+      >
         <View style={d.userRow}>
-          <View style={d.userAvatar}><Text style={{ fontSize: 22 }}>👤</Text></View>
-          <View style={{ flex: 1, alignItems: 'flex-end' }}>
-            <Text style={[d.userName, { color: navColors.t1 }]}>{user?.name || 'مستخدم'}</Text>
-            <View style={{ backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 10, paddingVertical: 2, borderRadius: 12, marginTop: 4 }}>
-              <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>{ROLE_PERMISSIONS[user?.role]?.label || user?.role}</Text>
+          <View style={[d.userAvatar, { backgroundColor: isLight ? 'rgba(255,255,255,0.2)' : colors.bg2, borderColor: isLight ? 'rgba(255,255,255,0.4)' : colors.border }]}>
+            <Feather name="user" size={26} color={isLight ? '#FFFFFF' : colors.primary} />
+          </View>
+          <View style={{ flex: 1, alignItems: 'flex-start' }}>
+            <Text style={[d.userName, { color: isLight ? '#FFFFFF' : colors.t1, fontSize: fontSize.xl }]}>{user?.name || 'مستخدم'}</Text>
+            <View style={{ backgroundColor: isLight ? 'rgba(255,255,255,0.2)' : colors.primary + '15', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, marginTop: 6, borderWidth: 1, borderColor: isLight ? 'rgba(255,255,255,0.4)' : colors.primary + '30' }}>
+              <Text style={{ color: isLight ? '#FFFFFF' : colors.primary, fontSize: fontSize.xs, fontWeight: '800' }}>{ROLE_PERMISSIONS[user?.role]?.label || user?.role}</Text>
             </View>
           </View>
         </View>
+        
+        {/* Phase Selector */}
+        {allPhases && allPhases.length > 0 && (
+          <View style={{ marginTop: 20 }}>
+            <Text style={{ color: isLight ? 'rgba(255,255,255,0.8)' : colors.t2, fontSize: fontSize.xs, fontFamily: 'IBMPlexSansArabic-SemiBold', marginBottom: 8, textAlign: 'right' }}>السياق الحالي (المرحلة):</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: 'row-reverse', paddingRight: 4 }}>
+              {allPhases.map(p => {
+                const isSelected = selectedPhase?.id === p.id;
+                return (
+                  <TouchableOpacity 
+                    key={p.id} 
+                    onPress={() => setSelectedPhase(p)} 
+                    style={{ 
+                      backgroundColor: isSelected ? colors.primary : (isLight ? 'rgba(255,255,255,0.2)' : colors.bg2), 
+                      paddingHorizontal: 14, 
+                      paddingVertical: 8, 
+                      borderRadius: 10, 
+                      marginLeft: 8, 
+                      borderWidth: 1, 
+                      borderColor: isSelected ? colors.primary : (isLight ? 'rgba(255,255,255,0.4)' : colors.border) 
+                    }}
+                  >
+                    <Text style={{ color: isSelected ? '#FFFFFF' : (isLight ? '#FFFFFF' : colors.t1), fontSize: fontSize.xs, fontFamily: isSelected ? 'IBMPlexSansArabic-Bold' : 'IBMPlexSansArabic-Medium' }}>
+                      {p.name} {p.status === 'closed' ? '🔒' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
       </View>
-      <ScrollView contentContainerStyle={{ paddingVertical: 12 }}>
+      <ScrollView contentContainerStyle={{ paddingVertical: 16 }}>
         {items.map((item, i) => {
           const active = currentRoute === item.route;
           return (
             <TouchableOpacity 
               key={i} 
-              style={[d.item, active && { backgroundColor: 'rgba(255,255,255,0.12)' }]} 
+              style={[d.item, active && { backgroundColor: colors.primary + '10' }]}
               onPress={() => { 
                 navigation.dispatch(DrawerActions.closeDrawer()); 
                 if (item.route === 'About' || item.route === 'Notifications') {
@@ -340,18 +349,19 @@ function CustomDrawer({ navigation, state }) {
                 }
               }}
             >
-              <View style={[d.itemIcon, { backgroundColor: active ? 'rgba(255,255,255,0.1)' : 'transparent' }]}>
-                <Text style={{ fontSize: 18 }}>{item.icon}</Text>
+              <View style={[d.itemIcon, { backgroundColor: active ? colors.primary + '20' : colors.bg2 }]}> 
+                <Feather name={item.icon} size={20} color={active ? colors.primary : colors.t2} />
               </View>
-              <Text style={[d.itemLabel, { color: active ? '#FFF' : navColors.t2, fontWeight: active ? '900' : '600' }]}>{item.label}</Text>
-              {active && <View style={d.activeBar} />}
+              <Text style={[d.itemLabel, { color: active ? colors.primary : colors.t2, fontWeight: active ? '800' : '600', fontSize: fontSize.md }]}>{item.label}</Text>
+              {active && <View style={[d.activeBar, { backgroundColor: colors.primary }]} />}
             </TouchableOpacity>
           );
         })}
       </ScrollView>
-      <View style={{ padding: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.05)' }}>
-        <TouchableOpacity style={d.logoutBtn} onPress={logout}>
-          <Text style={{ color: '#FF9E9E', fontWeight: '900', fontSize: 15 }}>🚪 تسجيل الخروج</Text>
+      <View style={{ padding: 20, borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: 'transparent' }}>
+        <TouchableOpacity style={[d.logoutBtn, { backgroundColor: isLight ? '#FFFFFF' : colors.bg2, borderColor: colors.border }]} onPress={logout}>
+          <Feather name="log-out" size={20} color={colors.danger} />
+          <Text style={{ color: colors.danger, fontWeight: '800', fontSize: fontSize.md }}>تسجيل الخروج</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -367,8 +377,8 @@ function MainDrawer() {
 }
 
 export default function AppNavigator() {
-  const { user, loading } = useAuth();
-  const { isDark } = useTheme();
+  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode } = useAuth();
+  const { isDark, colors, fontSize } = useTheme();
   const navigationRef = useRef();
 
   useEffect(() => {
@@ -378,18 +388,55 @@ export default function AppNavigator() {
     }
   }, [user]);
 
-  if (loading) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: navColors.bg }}><ActivityIndicator size="large" color="#FFF" /></View>;
+  if (loading || !dbReady) return <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg }}><ActivityIndicator size="large" color={colors.primary} /><Text style={{ marginTop: 12, color: colors.t2, fontSize: 14 }}>جاري تهيئة قاعدة البيانات...</Text></View>;
+
+  if (user && !initialSyncReady) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg, padding: 20 }}>
+        {initialSyncInProgress ? (
+          <>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={{ marginTop: 14, color: colors.t1, fontSize: 16, fontFamily: 'IBMPlexSansArabic-Bold', textAlign: 'center' }}>جاري جلب البيانات...</Text>
+          </>
+        ) : (
+          <>
+            <Feather name="wifi-off" size={34} color={colors.danger} />
+            <Text style={{ marginTop: 14, color: colors.danger, fontSize: 15, fontFamily: 'IBMPlexSansArabic-Bold', textAlign: 'center' }}>
+              {startupError || 'تعذر تحميل البيانات الأولية.'}
+            </Text>
+            <Text style={{ marginTop: 8, color: colors.t3, fontSize: 13, textAlign: 'center' }}>
+              يرجى الاتصال بالإنترنت ثم إعادة تسجيل الدخول.
+            </Text>
+          </>
+        )}
+      </View>
+    );
+  }
+
   return (
     <NavigationContainer ref={navigationRef} theme={isDark ? DarkTheme : DefaultTheme}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={selectedPhase?.status === 'closed' ? colors.danger : colors.card} />
+      {user && offlineMode && (
+        <View style={{ backgroundColor: colors.warning, paddingTop: StatusBar.currentHeight || 28, paddingBottom: 8, alignItems: 'center', zIndex: 9999, elevation: 10 }}>
+          <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Bold', fontSize: fontSize.sm }}>وضع عدم الاتصال - يتم عرض البيانات المحلية</Text>
+        </View>
+      )}
+      {user && selectedPhase?.status === 'closed' && (
+        <View style={{ backgroundColor: colors.danger, paddingTop: StatusBar.currentHeight || 40, paddingBottom: 10, alignItems: 'center', zIndex: 9999, elevation: 10 }}>
+          <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Bold', fontSize: fontSize.sm }}>وضع القراءة فقط - المرحلة مغلقة ({selectedPhase.name})</Text>
+        </View>
+      )}
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!user ? (
+        {!projectId ? (
+          <Stack.Screen name="License" component={LicenseScreen} />
+        ) : !user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : (
           <>
             <Stack.Screen name="MainApp" component={MainDrawer} />
-            <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'اتصل بنا', headerTintColor: '#FFF', headerStyle: { backgroundColor: navColors.bg } }} />
-            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ headerShown: true, title: 'الإشعارات الذكية', headerTintColor: '#FFF', headerStyle: { backgroundColor: navColors.bg } }} />
+            <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'حول اتصل بنا', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ headerShown: true, title: 'الإشعارات الذكية', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
+            <Stack.Screen name="Operations" component={OperationsScreen} options={{ headerShown: true, title: 'العمليات', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
           </>
         )}
       </Stack.Navigator>
@@ -398,23 +445,22 @@ export default function AppNavigator() {
 }
 
 const h = StyleSheet.create({
-  menuBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', gap: 4.5 },
-  menuLine: { height: 2.5, width: 22, borderRadius: 2, backgroundColor: '#FFF' },
+  menuBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
 });
 const t = StyleSheet.create({
-  tabIconWrap: { alignItems: 'center', gap: 3 },
-  tabPill: { width: 48, height: 34, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  tabLabel: { fontSize: 10, letterSpacing: -0.2 },
+  tabIconWrap: { alignItems: 'center', gap: 4 },
+  tabPill: { width: 48, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  tabLabel: { fontSize: 11, letterSpacing: 0.1, fontFamily: 'IBMPlexSansArabic-SemiBold' },
 });
 const d = StyleSheet.create({
   screen: { flex: 1 },
   header: { padding: 24, paddingTop: 64 },
-  userRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: 16 },
-  userAvatar: { width: 52, height: 52, borderRadius: 16, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.1)' },
-  userName: { fontSize: 18, fontWeight: '900', letterSpacing: -0.5 },
-  item: { flexDirection: 'row-reverse', alignItems: 'center', padding: 14, marginHorizontal: 12, marginVertical: 2, borderRadius: 14, position: 'relative' },
-  itemIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginLeft: 12 },
-  itemLabel: { flex: 1, textAlign: 'right', fontSize: 15 },
-  activeBar: { position: 'absolute', right: 0, width: 4, height: '60%', borderRadius: 2, backgroundColor: '#FFF' },
-  logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: 'rgba(255, 255, 255, 0.08)', padding: 16, borderRadius: 14 },
+  userRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  userAvatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  userName: { fontWeight: '900', letterSpacing: -0.3, fontFamily: 'IBMPlexSansArabic-Bold' },
+  item: { flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, marginHorizontal: 12, marginVertical: 4, borderRadius: 14, position: 'relative' },
+  itemIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginLeft: 16 },
+  itemLabel: { flex: 1, textAlign: 'right' },
+  activeBar: { position: 'absolute', right: 0, width: 4, height: '50%', borderRadius: 2 },
+  logoutBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 12, borderWidth: 1, padding: 16, borderRadius: 14 },
 });

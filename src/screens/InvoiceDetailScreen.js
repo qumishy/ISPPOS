@@ -3,7 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity,
   Alert, Platform, Linking
 } from 'react-native';
-import { FontAwesome5 } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
@@ -11,43 +11,79 @@ import {
   getLocalInvoices, getLocalInvoiceItems, getLocalCollections, 
   softDeleteInvoice, getSetting
 } from '../services/database';
-import { formatCurrency } from '../utils/helpers';
+import { formatCurrency, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
 import { Btn, Loading, Row, Badge } from '../components/UI';
 import { makeStyles } from '../styles/form.styles';
+import { useLoading } from '../services/LoadingContext';
 
 export default function InvoiceDetailScreen({ route, navigation }) {
-  const { id } = route.params;
+  const invoiceId = route.params?.id || route.params?.invoice_id || route.params?.invoiceId || '';
+  const refreshAt = route.params?.refresh_at || route.params?.refreshAt || null;
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
-  const { can, user } = useAuth();
+  const { can, user, projectId } = useAuth();
+  const { showLoading, hideLoading } = useLoading();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   const [invoice, setInvoice] = useState(null);
   const [items, setItems] = useState([]);
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const activePayments = payments.filter(p =>
+    (p.active === 1 || p.active === 'true' || p.active == null) &&
+    !['rejected', 'cancelled', 'canceled', 'deleted'].includes(String(p.status || 'pending').toLowerCase())
+  );
+  const displayedPayments = invoice?.status === 'cancelled' ? payments : activePayments;
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
+      setLoading(true);
+      setLoadError('');
       try {
+        if (!invoiceId) throw new Error('رقم الفاتورة غير صالح');
+        if (!projectId) throw new Error('سياق المشروع غير جاهز');
+
         const [invs, itms, pms] = await Promise.all([
-          getLocalInvoices({ id }),
-          getLocalInvoiceItems(id),
-          getLocalCollections({ invoice_id: id })
+          getLocalInvoices({ id: invoiceId, project_id: projectId, includeInactive: true }),
+          getLocalInvoiceItems(invoiceId),
+          getLocalCollections({ invoice_id: invoiceId, project_id: projectId, includeInactive: true })
         ]);
-        if (invs.length > 0) setInvoice(invs[0]);
-        setItems(itms || []);
-        setPayments(pms || []);
-      } catch (e) { }
-      setLoading(false);
+
+        if (cancelled) return;
+
+        if (invs.length > 0) {
+          setInvoice(invs[0]);
+          setItems(itms || []);
+          setPayments(pms || []);
+        } else {
+          setInvoice(null);
+          setItems([]);
+          setPayments([]);
+          setLoadError('تعذر تحميل الفاتورة من قاعدة البيانات المحلية.');
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setInvoice(null);
+        setItems([]);
+        setPayments([]);
+        setLoadError(e?.message || 'تعذر تحميل تفاصيل الفاتورة');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
+
     load();
-  }, [id]);
+    return () => { cancelled = true; };
+  }, [invoiceId, refreshAt, projectId]);
 
   const handlePrint = async () => {
-    const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const totalPaid = activePayments.reduce((sum, p) => sum + (p.amount || 0), 0);
     const balance = Math.max(0, (invoice.net_amount || invoice.total_amount) - totalPaid);
 
-    const collectionsHtml = payments.length > 0 ? `
-      <div class="section-title">📦 سجل المدفوعات</div>
+    const collectionsHtml = activePayments.length > 0 ? `
+      <div class="section-title">سجل المدفوعات</div>
       <table class="table">
         <thead>
           <tr>
@@ -57,7 +93,7 @@ export default function InvoiceDetailScreen({ route, navigation }) {
           </tr>
         </thead>
         <tbody>
-          ${payments.map(p => `
+          ${activePayments.map(p => `
             <tr>
               <td>${p.collection_date}</td>
               <td>${p.method === 'cash' ? 'نقدي' : 'تحويل'}</td>
@@ -114,7 +150,7 @@ export default function InvoiceDetailScreen({ route, navigation }) {
           <div><strong>المندوب المُصدر:</strong> ${invoice.agent_name || ''}</div>
         </div>
 
-        <div class="section-title">📋 تفاصيل الأصناف</div>
+        <div class="section-title">تفاصيل الأصناف</div>
         <table class="table">
           <thead>
             <tr>
@@ -151,15 +187,23 @@ export default function InvoiceDetailScreen({ route, navigation }) {
     await Print.printAsync({ html });
   };
  
-  const handleDelete = () => {
-    Alert.alert('حذف الفاتورة', 'هل أنت متأكد من حذف هذه الفاتورة نهائياً؟ سيتم استعادة الكروت للمخزن.', [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: 'تأكيد الحذف', style: 'destructive', onPress: async () => {
+  const handleCancelInvoice = () => {
+    if (deleting) return;
+    Alert.alert('إلغاء الفاتورة', 'هل أنت متأكد من إلغاء هذه الفاتورة؟ سيتم إلغاء البنود والتحصيلات التابعة لها واستعادة الكروت للمخزن.', [
+      { text: 'تراجع', style: 'cancel' },
+      { text: 'تأكيد الإلغاء', style: 'destructive', onPress: async () => {
         try {
-          await softDeleteInvoice(id);
-          Alert.alert('✅ تم', 'تم حذف الفاتورة بنجاح');
-          navigation.goBack();
-        } catch(e) { Alert.alert('خطأ', e.message); }
+          if (deleting) return;
+          setDeleting(true);
+          showLoading('جاري إلغاء الفاتورة...');
+          await softDeleteInvoice(invoiceId);
+          navigation.navigate('InvoicesMain', { refresh_at: Date.now(), cancelled_invoice_id: invoiceId });
+        } catch(e) {
+          Alert.alert('خطأ', e.message);
+        } finally {
+          setDeleting(false);
+          hideLoading();
+        }
       }}
     ]);
   };
@@ -200,75 +244,195 @@ export default function InvoiceDetailScreen({ route, navigation }) {
     Linking.openURL(url);
   };
 
-  if (loading || !invoice) return <Loading />;
+  if (loading) return <Loading />;
+  if (loadError || !invoice) {
+    return (
+      <View style={[s.screen, { justifyContent: 'center', padding: spacing.md }]}>
+        <View style={[s.section, { alignItems: 'center', gap: spacing.sm }]}>
+          <Feather name="alert-circle" size={28} color={colors.danger} />
+          <Text style={{ color: colors.danger, fontWeight: '800', textAlign: 'center' }}>
+            {loadError || 'تعذر تحميل الفاتورة'}
+          </Text>
+          <Btn label="العودة" variant="outline" onPress={() => navigation.goBack()} style={{ width: '100%' }} />
+        </View>
+      </View>
+    );
+  }
+  const paymentStatus = invoice.payment_status || invoice.status;
+  const approvalStatus = invoice.approval_status;
+  const paymentMeta = invoicePaymentStatusMeta(paymentStatus);
+  const approvalMeta = invoiceApprovalStatusMeta(approvalStatus);
+  const discountRequested = Number(invoice.discount_requested_value || 0);
+  const discountApplied = Number(invoice.discount_applied_value || 0);
+  const hasDiscount = discountRequested > 0;
+  const discountState = String(invoice.discount_status || '').trim();
+  const discountLabel = !hasDiscount
+    ? 'لا يوجد'
+    : (discountState === 'approved' || discountState === 'auto_approved')
+      ? 'معتمد'
+      : discountState === 'rejected'
+        ? 'مرفوض'
+        : 'معلق';
+  const discountColor = !hasDiscount
+    ? colors.t3
+    : (discountState === 'approved' || discountState === 'auto_approved')
+      ? colors.green
+      : discountState === 'rejected'
+        ? colors.red
+        : colors.orange;
+  const paymentRemaining = Math.max(0, Number(invoice.payment_remaining_amount ?? invoice.remaining_amount ?? (invoice.net_amount || invoice.total_amount || 0) - (invoice.paid_amount || 0)));
+  const approvalRemaining = Math.max(0, Number(invoice.approval_remaining_amount ?? invoice.remaining_unpaid_amount ?? (invoice.net_amount || invoice.total_amount || 0) - (invoice.approved_amount || 0)));
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: spacing.md }}>
-      <View style={s.invoiceHeader}><Text style={s.invoiceTitle}>{invoice.invoice_number}</Text><Badge status={invoice.status} /></View>
       <View style={s.section}>
-        <Row style={{ justifyContent: 'space-between', paddingVertical: 10 }}><Text style={{ color: colors.t3 }}>نقطة البيع</Text><Text style={{ color: colors.t1, fontWeight: '700' }}>{invoice.pos_name}</Text></Row>
-        <Row style={{ justifyContent: 'space-between', paddingVertical: 10 }}><Text style={{ color: colors.t3 }}>التاريخ</Text><Text style={{ color: colors.t1 }}>{invoice.invoice_date}</Text></Row>
-      </View>
-      <View style={s.section}>
-        <Text style={s.sectionTitle}>📋 البنود (الأصناف)</Text>
-        <View style={s.tableHeader}>
-          <Text style={[s.thCell, { flex: 2 }]}>الفئة</Text>
-          <Text style={[s.thCell, { flex: 1 }]}>الكمية</Text>
-          <Text style={[s.thCell, { flex: 1.5 }]}>الإجمالي</Text>
-        </View>
-        {items.map(it => (
-          <Row key={it.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-            <Text style={{ flex: 2, color: colors.t1, fontSize: 13 }}>{it.category_name}</Text>
-            <Text style={{ flex: 1, textAlign: 'center', color: colors.t1 }}>{it.quantity}</Text>
-            <Text style={{ flex: 1.5, textAlign: 'right', fontWeight: 'bold', color: colors.green }}>{formatCurrency(it.total_price)}</Text>
-          </Row>
-        ))}
-        <View style={s.totalsBox}>
-          <Row style={{ justifyContent: 'space-between' }}>
-            <Text style={{ fontSize: 16, fontWeight: 'bold', color: colors.t2 }}>صافي الفاتورة:</Text>
-            <Text style={{ fontSize: 22, color: colors.blue, fontWeight: '900' }}>{formatCurrency(invoice.net_amount || invoice.total_amount)}</Text>
-          </Row>
-        </View>
-
-        <Row style={{ gap: 8, marginTop: 15 }}>
-          <Btn label={<FontAwesome5 name="whatsapp" size={24} color="white" />} variant="success" size="sm" style={{ flex: 1 }} onPress={handleWhatsApp} />
-          <Btn label="✉️ رسالة SMS" variant="outline" size="sm" style={{ flex: 1 }} onPress={handleSMS} />
+        <Text style={[s.sectionTitle, { marginBottom: spacing.sm }]}>ملخص الفاتورة</Text>
+        <Row style={{ justifyContent: 'space-between', paddingVertical: 6 }}>
+          <Text style={{ color: colors.t3 }}>رقم الفاتورة</Text>
+          <Text style={{ color: colors.t1, fontWeight: '900' }}>{invoice.invoice_number}</Text>
         </Row>
+        <Row style={{ justifyContent: 'space-between', paddingVertical: 6 }}>
+          <Text style={{ color: colors.t3 }}>نقطة البيع</Text>
+          <Text style={{ color: colors.t1, fontWeight: '700' }}>{invoice.pos_name}</Text>
+        </Row>
+        <Row style={{ justifyContent: 'space-between', paddingVertical: 6 }}>
+          <Text style={{ color: colors.t3 }}>المندوب/المستخدم</Text>
+          <Text style={{ color: colors.t1, fontWeight: '700' }}>{invoice.agent_name || '-'}</Text>
+        </Row>
+        <Row style={{ justifyContent: 'space-between', paddingVertical: 6 }}>
+          <Text style={{ color: colors.t3 }}>التاريخ</Text>
+          <Text style={{ color: colors.t1 }}>{invoice.invoice_date}</Text>
+        </Row>
+        <View style={{ marginTop: 8, gap: 8, alignItems: 'flex-end' }}>
+          <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
+            <Badge status={paymentStatus} label={paymentMeta.label} color={paymentMeta.color} />
+            <Text style={{ color: colors.t3, fontSize: 11, fontWeight: '700' }}>حالة السداد</Text>
+          </View>
+          <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
+            <Badge status={approvalStatus} label={approvalMeta.label} color={approvalMeta.color} />
+            <Text style={{ color: colors.t3, fontSize: 11, fontWeight: '700' }}>حالة الاعتماد</Text>
+          </View>
+          <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 6 }}>
+            <Badge status={discountState || 'none'} label={discountLabel} color={discountColor} />
+            <Text style={{ color: colors.t3, fontSize: 11, fontWeight: '700' }}>حالة الخصم</Text>
+          </View>
+        </View>
+      </View>
+      <View style={s.section}>
+        <Text style={s.sectionTitle}>البنود (الأصناف)</Text>
+        <View style={{ gap: spacing.sm, marginTop: 10 }}>
+          {items.map(it => (
+            <View key={it.id} style={{ backgroundColor: colors.bg2, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border }}>
+              <Row style={{ justifyContent: 'space-between', marginBottom: spacing.xs }}>
+                <Text style={{ color: colors.t1, fontSize: fontSize.md, fontWeight: '800', flexShrink: 1 }}>{it.category_name}</Text>
+                <Text style={{ color: colors.green, fontWeight: '900', fontSize: fontSize.lg }}>{formatCurrency(it.total_price)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
+                <Text style={{ color: colors.t3, fontSize: fontSize.sm }}>الباتش: <Text style={{ color: colors.t1, fontWeight: '700' }}>{it.batch_name || it.batch_number || '-'}</Text></Text>
+                <Text style={{ color: colors.t3, fontSize: fontSize.sm }}>الكمية: <Text style={{ color: colors.t1, fontWeight: '700' }}>{it.quantity}</Text></Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
+                <Text style={{ color: colors.t3, fontSize: fontSize.sm }}>سعر الوحدة: <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatCurrency(it.total_price / (it.quantity || 1))}</Text></Text>
+                <Text style={{ color: colors.t3, fontSize: fontSize.sm }}>الإجمالي: <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatCurrency(it.total_price)}</Text></Text>
+              </Row>
+            </View>
+          ))}
+        </View>
+      </View>
+      <View style={s.section}>
+        <Text style={s.sectionTitle}>الملخص المالي</Text>
+        <View style={{ marginTop: 10, padding: 12, borderRadius: 10, backgroundColor: colors.bg2, borderWidth: 1, borderColor: colors.border }}>
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>إجمالي الفاتورة</Text>
+            <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatCurrency(invoice.total_amount || 0)}</Text>
+          </Row>
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>الخصم</Text>
+            <Text style={{ color: discountColor, fontWeight: '700' }}>{formatCurrency(discountApplied || discountRequested || 0)}</Text>
+          </Row>
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>صافي الفاتورة</Text>
+            <Text style={{ color: colors.blue, fontWeight: '900' }}>{formatCurrency(invoice.net_amount || invoice.total_amount)}</Text>
+          </Row>
+          <View style={{ borderTopWidth: 1, borderTopColor: colors.border + '50', marginVertical: 8 }} />
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>المبلغ المدفوع</Text>
+            <Text style={{ color: colors.green, fontWeight: '800' }}>{formatCurrency(invoice.paid_amount || 0)}</Text>
+          </Row>
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>المبلغ المتبقي</Text>
+            <Text style={{ color: colors.red, fontWeight: '900' }}>{formatCurrency(paymentRemaining)}</Text>
+          </Row>
+        </View>
+        {hasDiscount && (() => {
+          const ds = String(invoice.discount_status || '').trim();
+          const isPending   = !['approved','auto_approved','rejected','none',''].includes(ds);
+          const isApproved  = ds === 'approved' || ds === 'auto_approved';
+          const isRejected  = ds === 'rejected';
+          const bannerColor = isPending ? colors.danger : isApproved ? colors.green : colors.danger;
+          const bannerBg    = bannerColor + '15';
+          const statusLabel = isPending ? '⚠️ بانتظار اعتماد المدير (خصم معلق)' : isApproved ? '✅ خصم معتمد' : '❌ خصم مرفوض';
+          return (
+            <View style={{ marginTop: 12, borderRadius: 12, borderWidth: 1.5, borderColor: bannerColor + '60', backgroundColor: bannerBg, overflow: 'hidden' }}>
+              <View style={{ backgroundColor: bannerColor + '25', paddingHorizontal: 14, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Feather name="percent" size={16} color={bannerColor} />
+                <Text style={{ fontWeight: '900', fontSize: 14, color: bannerColor }}>{statusLabel}</Text>
+              </View>
+              <View style={{ padding: 14, gap: 8 }}>
+                {[
+                  { l: 'الخصم المطلوب', v: formatCurrency(Number(invoice.discount_requested_value || 0)), c: colors.orange },
+                  invoice.discount_requested_reason && { l: 'سبب الخصم', v: invoice.discount_requested_reason, c: colors.t1 },
+                  isApproved && { l: 'الخصم المعتمد', v: formatCurrency(Number(invoice.discount_applied_value || 0)), c: colors.green },
+                  isApproved && { l: 'الصافي بعد الخصم', v: formatCurrency(Number(invoice.net_amount || invoice.total_amount || 0)), c: colors.blue },
+                  isRejected && { l: 'يُطبق الإجمالي الكامل', v: formatCurrency(Number(invoice.total_amount || 0)), c: colors.t1 },
+                  isPending && { l: 'التحصيل محظور', v: 'حتى يعتمد المدير أو يرفض الخصم', c: colors.orange },
+                ].filter(Boolean).map((row, i) => (
+                  <Row key={i} style={{ justifyContent: 'space-between' }}>
+                    <Text style={{ color: colors.t3, fontSize: 13 }}>{row.l}</Text>
+                    <Text style={{ color: row.c, fontWeight: '700', fontSize: 13, flexShrink: 1, textAlign: 'right', marginLeft: 8 }}>{row.v}</Text>
+                  </Row>
+                ))}
+              </View>
+            </View>
+          );
+        })()}
       </View>
 
-      {user?.role === 'admin' && (
+      {user?.role === 'admin' && invoice?.status !== 'cancelled' && (
         <View style={[s.section, { borderTopWidth: 1, borderTopColor: colors.red + '30', marginTop: 10 }]}>
-          <Btn label="🗑️ حذف الفاتورة" variant="danger" onPress={handleDelete} />
+          <Btn label="إلغاء الفاتورة" icon="x-circle" variant="danger" onPress={handleCancelInvoice} loading={deleting} disabled={deleting} />
         </View>
       )}
 
       <View style={s.section}>
-        <Text style={s.sectionTitle}>💰 سجل التحصيلات (المدفوعات)</Text>
-        {payments.length === 0 ? (
+        <Text style={s.sectionTitle}>سجل التحصيلات (المدفوعات)</Text>
+        {displayedPayments.length === 0 ? (
           <Text style={{ textAlign: 'center', color: colors.t3, paddingVertical: 10 }}>لا توجد دفعات مسجلة بعد</Text>
         ) : (
           <>
-            <View style={s.tableHeader}>
-              <Text style={[s.thCell, { flex: 1.2 }]}>التاريخ</Text>
-              <Text style={[s.thCell, { flex: 1 }]}>المبلغ</Text>
-              <Text style={[s.thCell, { flex: 1 }]}>الحالة</Text>
-            </View>
-            {payments.map(pm => (
-              <View key={pm.id} style={s.tableRow}>
-                <Text style={[s.tdCell, { flex: 1.2, fontSize: 11 }]}>{pm.collection_date}</Text>
-                <Text style={[s.tdCell, { flex: 1, fontWeight: 'bold', color: colors.green }]}>{formatCurrency(pm.amount)}</Text>
-                <View style={{ flex: 1, alignItems: 'center' }}>
+            <View style={{ gap: spacing.sm, marginTop: 10 }}>
+              {displayedPayments.map(pm => (
+                <View key={pm.id} style={{ backgroundColor: colors.bg2, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <View style={{ backgroundColor: pm.status === 'approved' ? colors.green + '15' : pm.status === 'cancelled' ? colors.red + '15' : colors.orange + '15', width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }}>
+                      <Feather name={pm.status === 'approved' ? "check-circle" : pm.status === 'cancelled' ? "x-circle" : "clock"} size={18} color={pm.status === 'approved' ? colors.green : pm.status === 'cancelled' ? colors.red : colors.orange} />
+                    </View>
+                    <View>
+                      <Text style={{ color: colors.t1, fontSize: fontSize.md, fontWeight: '800' }}>{formatCurrency(pm.amount)}</Text>
+                      <Text style={{ color: colors.t3, fontSize: fontSize.xs, marginTop: 2 }}>{pm.collection_date}</Text>
+                    </View>
+                  </View>
                   <Badge 
                     status={pm.status} 
-                    label={pm.status === 'approved' ? 'معتمد' : 'معلق'} 
-                    size="xs" 
-                    color={pm.status === 'approved' ? colors.green : colors.orange}
+                    label={pm.status === 'approved' ? 'معتمد' : pm.status === 'cancelled' ? 'ملغى' : 'معلق'} 
+                    size="sm" 
+                    color={pm.status === 'approved' ? colors.green : pm.status === 'cancelled' ? colors.red : colors.orange}
                   />
                 </View>
-              </View>
-            ))}
+              ))}
+            </View>
             <View style={{ marginTop: 10, padding: 10, backgroundColor: colors.bg2, borderRadius: 8 }}>
               <Row style={{ justifyContent: 'space-between' }}>
-                <Text style={{ color: colors.t3 }}>إجمالي المسدد:</Text>
+                <Text style={{ color: colors.t3 }}>إجمالي المحصل:</Text>
                 <Text style={{ fontWeight: 'bold', color: colors.green }}>{formatCurrency(invoice.paid_amount || 0)}</Text>
               </Row>
               <Row style={{ justifyContent: 'space-between', marginTop: 5 }}>
@@ -277,14 +441,28 @@ export default function InvoiceDetailScreen({ route, navigation }) {
               </Row>
               <Row style={{ justifyContent: 'space-between', marginTop: 5, borderTopWidth: 1, borderTopColor: colors.border + '30', paddingTop: 5 }}>
                 <Text style={{ color: colors.t3 }}>المتبقي (فعلي):</Text>
-                <Text style={{ fontWeight: 'bold', color: colors.red }}>{formatCurrency(Math.max(0, (invoice.net_amount || invoice.total_amount) - (invoice.paid_amount || 0)))}</Text>
+                <Text style={{ fontWeight: 'bold', color: colors.red }}>{formatCurrency(paymentRemaining)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', marginTop: 5 }}>
+                <Text style={{ color: colors.t3 }}>المتبقي للاعتماد:</Text>
+                <Text style={{ fontWeight: 'bold', color: colors.warning }}>{formatCurrency(approvalRemaining)}</Text>
               </Row>
             </View>
           </>
         )}
       </View>
 
-      <Row style={{ gap: 10, marginTop: 10 }}><Btn label="🖨️ طباعة" style={{ flex: 1 }} onPress={handlePrint} /><Btn label="⬅️ عودة" variant="outline" onPress={() => navigation.goBack()} /></Row>
+      <View style={s.section}>
+        <Text style={s.sectionTitle}>الإجراءات</Text>
+        <Row style={{ gap: 8, marginTop: 10 }}>
+          <Btn label={<Feather name="message-circle" size={24} color="white" />} variant="success" size="sm" style={{ flex: 1 }} onPress={handleWhatsApp} />
+          <Btn label=" رسالة SMS" icon="message-square" variant="outline" size="sm" style={{ flex: 1 }} onPress={handleSMS} />
+        </Row>
+        <Row style={{ gap: 10, marginTop: 10 }}>
+          <Btn label="طباعة" icon="printer" style={{ flex: 1 }} onPress={handlePrint} />
+          <Btn label="عودة" icon="arrow-right" variant="outline" onPress={() => navigation.goBack()} />
+        </Row>
+      </View>
     </ScrollView>
   );
 }

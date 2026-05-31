@@ -9,7 +9,9 @@ import { useAuth, ROLE_PERMISSIONS } from '../services/AuthContext';
 import { execSQL } from '../services/database';
 import { syncAll } from '../services/SyncService';
 import { Row, Btn, Avatar } from '../components/UI';
+import { Feather } from '@expo/vector-icons';
 import { makeStyles } from '../styles/settings.styles';
+import { manualCheckForUpdate } from '../services/updateService';
 
 const SETTINGS_KEY = 'isp_app_settings';
 
@@ -24,7 +26,7 @@ const defaultSettings = {
   companyName: 'نظام الكروت',
 };
 
-export default function SettingsScreen() {
+export default function SettingsScreen({ navigation }) {
   const { user, logout } = useAuth();
   const { colors, spacing, radius, fontSize, shadow, mode, isDark, toggleTheme } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
@@ -75,16 +77,30 @@ export default function SettingsScreen() {
 
   const handleManualSync = async () => {
     setSyncing(true); await syncAll(); await loadDbInfo(); setSyncing(false);
-    Alert.alert('✅ تمت المزامنة', 'تم مزامنة البيانات مع الخادم');
+    Alert.alert('تمت المزامنة', 'تم مزامنة البيانات مع الخادم');
   };
 
-  const handleClearQueue = () => {
+  const handleClearQueue = async () => {
+    try {
+      const unsyncedR = await execSQL(`SELECT COUNT(*) as cnt FROM sync_queue WHERE table_name IN ('invoices', 'invoice_items')`);
+      const unsyncedCount = unsyncedR.rows._array[0]?.cnt || 0;
+      if (unsyncedCount > 0) {
+        Alert.alert(
+          'حظر مسح طابور المزامنة',
+          'لا يمكن مسح طابور المزامنة لوجود فواتير أو بنود غير مرفوعة. يرجى الاتصال بالإنترنت ومزامنتها أولاً لمنع فقدان البيانات.',
+          [{ text: 'حسنًا' }]
+        );
+        return;
+      }
+    } catch (e) {
+      console.error(e);
+    }
     Alert.alert('مسح طابور المزامنة', 'هل تريد مسح العمليات المعلقة؟', [
       { text: 'إلغاء', style: 'cancel' },
       {
         text: 'مسح', style: 'destructive', onPress: async () => {
           await execSQL('DELETE FROM sync_queue'); loadDbInfo();
-          Alert.alert('✅ تم', 'تم مسح طابور المزامنة');
+          Alert.alert('تمت العملية', 'تم مسح طابور المزامنة');
         }
       },
     ]);
@@ -95,10 +111,13 @@ export default function SettingsScreen() {
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
       {/* ══ Theme Switcher ══ */}
-      <Text style={s.sectionTitle}>🌙 المظهر</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+        <Feather name="moon" size={18} color={colors.primary} />
+        <Text style={[s.sectionTitle, { marginBottom: 0, marginLeft: 8 }]}>المظهر</Text>
+      </View>
       <TouchableOpacity style={s.themeCard} activeOpacity={0.8} onPress={toggleTheme}>
         <View style={[s.themeIconWrap, { backgroundColor: isDark ? colors.blue + '20' : colors.orange + '20' }]}>
-          <Text style={{ fontSize: 24 }}>{isDark ? '🌙' : '☀️'}</Text>
+          <Feather name={isDark ? "moon" : "sun"} size={24} color={isDark ? colors.blue : colors.orange} />
         </View>
         <View style={s.themeInfo}>
           <Text style={s.themeTitle}>{isDark ? 'الوضع الليلي' : 'الوضع الفاتح'}</Text>
@@ -109,7 +128,7 @@ export default function SettingsScreen() {
              borderColor: isDark ? colors.border3 : colors.blueG,
            }]}>
           <Text style={[s.themeToggleTxt, { color: isDark ? colors.t2 : '#fff' }]}>تبديل</Text>
-          <Text style={[s.themeToggleMode, { color: isDark ? colors.blue : colors.bg2 }]}>{isDark ? 'Dark' : 'Light'}</Text>
+          <Text style={[s.themeToggleMode, { color: isDark ? colors.blue : colors.bg2 }]}>{isDark ? 'ليلي' : 'فاتح'}</Text>
         </View>
       </TouchableOpacity>
 
@@ -123,18 +142,35 @@ export default function SettingsScreen() {
           </Text>
           <Text style={{ fontSize: fontSize.xs, color: colors.t3, marginTop: 2 }}>@{user?.username}</Text>
         </View>
-        <TouchableOpacity style={s.logoutBtn} onPress={() =>
+        <TouchableOpacity style={s.logoutBtn} onPress={async () => {
+          try {
+            const unsyncedR = await execSQL(`SELECT COUNT(*) as cnt FROM sync_queue WHERE table_name IN ('invoices', 'invoice_items')`);
+            const unsyncedCount = unsyncedR.rows._array[0]?.cnt || 0;
+            if (unsyncedCount > 0) {
+              Alert.alert(
+                'حظر تسجيل الخروج',
+                'لا يمكن تسجيل الخروج لوجود فواتير أو بنود غير مرفوعة في طابور المزامنة. يرجى مزامنتها أولاً لمنع فقدان البيانات.',
+                [{ text: 'حسنًا' }]
+              );
+              return;
+            }
+          } catch (e) {
+            console.error(e);
+          }
           Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
             { text: 'إلغاء', style: 'cancel' },
-            { text: '🚪 خروج', style: 'destructive', onPress: logout },
-          ])
-        }>
-          <Text style={s.logoutTxt}>🚪 خروج</Text>
+            { text: 'الخروج', style: 'destructive', onPress: logout },
+          ]);
+        }}>
+          <Text style={s.logoutTxt}>خروج</Text>
         </TouchableOpacity>
       </View>
 
       {/* ══ Sync ══ */}
-      <Text style={s.sectionTitle}>🔄 المزامنة</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 12 }}>
+        <Feather name="refresh-cw" size={18} color={colors.primary} />
+        <Text style={[s.sectionTitle, { marginBottom: 0, marginLeft: 8 }]}>المزامنة</Text>
+      </View>
       <View style={s.section}>
         <Row style={s.row}>
           <Text style={s.rowLabel}>عمليات معلقة</Text>
@@ -147,18 +183,21 @@ export default function SettingsScreen() {
           <Switch value={settings.autoSync} onValueChange={() => toggle('autoSync')}
             trackColor={{ false: colors.border2, true: colors.blue + '66' }} thumbColor={settings.autoSync ? colors.blue : colors.t3} />
         </Row>
-        <Btn label={syncing ? 'جاري المزامنة...' : '🔄 مزامنة الآن'}
+        <Btn label={syncing ? 'جاري المزامنة...' : 'مزامنة الآن'} icon="refresh-cw"
           variant="primary" size="sm" onPress={handleManualSync} disabled={syncing}
           style={{ marginTop: spacing.sm }} />
         {pendingSync > 0 && (
-          <Btn label="🗑️ مسح طابور المزامنة"
+          <Btn label="مسح طابور المزامنة" icon="trash-2"
             variant="danger" size="sm" onPress={handleClearQueue}
             style={{ marginTop: spacing.xs }} />
         )}
       </View>
 
       {/* ══ Currency ══ */}
-      <Text style={s.sectionTitle}>🎨 إعدادات العرض</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 12 }}>
+        <Feather name="layout" size={18} color={colors.primary} />
+        <Text style={[s.sectionTitle, { marginBottom: 0, marginLeft: 8 }]}>إعدادات العرض</Text>
+      </View>
       <View style={s.section}>
         <View style={s.row}>
           <Text style={[s.rowLabel, { marginBottom: spacing.sm }]}>العملة</Text>
@@ -174,7 +213,10 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <Text style={s.sectionTitle}>ℹ️ عن التطبيق</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 12 }}>
+        <Feather name="info" size={18} color={colors.primary} />
+        <Text style={[s.sectionTitle, { marginBottom: 0, marginLeft: 8 }]}>عن التطبيق</Text>
+      </View>
       <View style={s.section}>
         {[
           { l: 'اسم التطبيق', v: 'نظام كروت الإنترنت' },
@@ -186,8 +228,10 @@ export default function SettingsScreen() {
             <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{item.v}</Text>
           </Row>
         ))}
+        <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: spacing.sm }} />
+        <Btn label="التحديثات" icon="package" variant="outline" size="sm" onPress={() => navigation.navigate('Updates')} style={{ marginTop: spacing.xs }} />
+        <Btn label="التحقق من وجود تحديثات" icon="download-cloud" variant="outline" size="sm" onPress={manualCheckForUpdate} style={{ marginTop: spacing.xs }} />
       </View>
     </ScrollView>
   );
 }
-

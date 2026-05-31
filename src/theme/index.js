@@ -5,7 +5,7 @@
 
 // ── Re-export from new files
 export { darkColors as colors, lightColors } from './colors';
-export { spacing, radius, fontSize } from './ThemeContext';
+export { spacing, radius, fontSize, fontFamily } from './ThemeContext';
 export { useTheme, ThemeProvider } from './ThemeContext';
 
 // ── Static dark shadow (للاستخدام الثابت في ملفات غير ديناميكية)

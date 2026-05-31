@@ -1,8 +1,35 @@
-import { execSQL, addToSyncQueue, notifyDataChanged } from './dbCore';
+import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
+import { getCached } from './cacheService';
 
-export const getLocalUsers = async () => {
-  const r = await execSQL(`SELECT * FROM users ORDER BY name ASC`);
-  return r.rows._array || [];
+export const getLocalUsers = async (projectId) => {
+  const cacheKey = projectId ? `users:all:${projectId}` : 'users:all:global';
+  return getCached(cacheKey, async () => {
+    const where = projectId ? `WHERE project_id = '${projectId}'` : '';
+    const r = await execSQL(`SELECT * FROM users ${where} ORDER BY name ASC`);
+    return r.rows._array || [];
+  });
+};
+
+export const createLocalUser = async (data) => {
+  const id = uuidv4();
+  const payload = {
+    id,
+    name: data.name,
+    username: data.username,
+    password_hash: data.password_hash,
+    role: data.role || 'agent',
+    phone: data.phone || '',
+    active: 1,
+    synced: 0,
+    project_id: data.project_id
+  };
+  await execSQL(
+    `INSERT INTO users (id, name, username, password_hash, role, phone, active, synced, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.id, payload.name, payload.username, payload.password_hash, payload.role, payload.phone, payload.active, payload.synced, payload.project_id]
+  );
+  await addToSyncQueue('users', 'INSERT', payload, id);
+  notifyDataChanged('users');
+  return payload;
 };
 
 export const updateUser = async (id, data) => {

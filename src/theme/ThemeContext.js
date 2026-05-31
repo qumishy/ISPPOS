@@ -1,81 +1,95 @@
 // ═══════════════════════════════════════════════════════
-//  Smart POS Net — ThemeContext
-//  يدير التبديل بين Dark / Light مع حفظ الاختيار
+//  Smart POS Net — ThemeContext (Responsive ERP)
+//  يدير التبديل والتجاوب مع جميع أحجام الشاشات
 // ═══════════════════════════════════════════════════════
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import { Dimensions } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { darkColors, lightColors } from './colors';
 
+const { width } = Dimensions.get('window');
+// Use 390 as the base width (typical medium phone)
+const scale = (size) => Math.round((width / 390) * size);
+
 const THEME_KEY = 'isp_theme_mode';
 
-// ── Shared design tokens (لا تتغير بين الوضعين)
+// ── Scalable Shared tokens
 export const spacing = {
-  xs:  4,
-  sm:  8,
-  md:  12,
-  lg:  16,
-  xl:  20,
-  xxl: 24,
-  '2xl': 32,
-  '3xl': 40,
+  xs: scale(4),
+  sm: scale(8),
+  md: scale(12),
+  lg: scale(16),
+  xl: scale(24),
+  xxl: scale(32),
+  '2xl': scale(40),
+  '3xl': scale(48),
 };
 
 export const radius = {
-  xs:   6,
-  sm:   10,
-  md:   14,
-  lg:   18,
-  xl:   22,
-  '2xl':28,
+  xs: scale(6),
+  sm: scale(8),
+  md: scale(12),
+  lg: scale(16),
+  xl: scale(20),
+  '2xl': scale(28),
   full: 999,
 };
 
 export const fontSize = {
-  xs:  10,
-  sm:  11,
-  md:  13,
-  lg:  14,
-  xl:  16,
-  xxl: 20,
-  h:   24,
-  hh:  28,
-  display: 34,
+  xs: scale(11),
+  sm: scale(13),
+  md: scale(15),
+  lg: scale(17),
+  xl: scale(19),
+  xxl: scale(22),
+  h: scale(26),
+  hh: scale(30),
+  display: scale(36),
 };
 
-export const makeShadow = (colors) => ({
+export const fontFamily = {
+  regular:   'IBMPlexSansArabic-Regular',
+  medium:    'IBMPlexSansArabic-Medium',
+  semiBold:  'IBMPlexSansArabic-SemiBold',
+  bold:      'IBMPlexSansArabic-Bold',
+  extraBold: 'IBMPlexSansArabic-ExtraBold',
+  black:     'IBMPlexSansArabic-Black',
+};
+
+export const makeShadow = (colors, isDark) => ({
   sm: {
-    shadowColor: colors.t1 === '#F1F5F9' ? '#000' : '#94A3B8',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: colors.t1 === '#F1F5F9' ? 0.15 : 0.08,
-    shadowRadius: 4,
+    shadowColor: isDark ? '#000' : '#475569',
+    shadowOffset: { width: 0, height: scale(4) },
+    shadowOpacity: isDark ? 0.6 : 0.08,
+    shadowRadius: scale(12),
     elevation: 3,
   },
   md: {
-    shadowColor: colors.t1 === '#F1F5F9' ? '#000' : '#94A3B8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: colors.t1 === '#F1F5F9' ? 0.20 : 0.10,
-    shadowRadius: 8,
+    shadowColor: isDark ? '#000' : '#475569',
+    shadowOffset: { width: 0, height: scale(8) },
+    shadowOpacity: isDark ? 0.7 : 0.12,
+    shadowRadius: scale(20),
     elevation: 6,
   },
   lg: {
-    shadowColor: colors.t1 === '#F1F5F9' ? '#000' : '#94A3B8',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: colors.t1 === '#F1F5F9' ? 0.25 : 0.12,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowColor: isDark ? '#000' : '#475569',
+    shadowOffset: { width: 0, height: scale(12) },
+    shadowOpacity: isDark ? 0.8 : 0.16,
+    shadowRadius: scale(32),
+    elevation: 10,
   },
   blue: {
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.30,
-    shadowRadius: 12,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: scale(6) },
+    shadowOpacity: 0.35,
+    shadowRadius: scale(16),
     elevation: 8,
   },
   green: {
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.30,
-    shadowRadius: 12,
+    shadowColor: colors.success,
+    shadowOffset: { width: 0, height: scale(6) },
+    shadowOpacity: 0.35,
+    shadowRadius: scale(16),
     elevation: 8,
   },
 });
@@ -84,7 +98,7 @@ export const makeShadow = (colors) => ({
 const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
-  const [mode, setMode] = useState('dark');  // 'dark' | 'light'
+  const [mode, setMode] = useState('light');  // 'dark' | 'light'
 
   // تحميل التفضيل المحفوظ عند الإقلاع
   useEffect(() => {
@@ -103,20 +117,24 @@ export function ThemeProvider({ children }) {
     () => (mode === 'light' ? lightColors : darkColors),
     [mode]
   );
+  
+  const isDark = mode === 'dark';
 
-  const shadow = useMemo(() => makeShadow(colors), [colors]);
+  const shadow = useMemo(() => makeShadow(colors, isDark), [colors, isDark]);
 
   const value = useMemo(() => ({
     mode,
-    isDark: mode === 'dark',
-    isLight: mode === 'light',
+    isDark,
+    isLight: !isDark,
     colors,
     shadow,
     spacing,
     radius,
     fontSize,
+    fontFamily,
     toggleTheme,
-  }), [mode, colors, shadow]);
+    scale
+  }), [mode, isDark, colors, shadow]);
 
   return (
     <ThemeContext.Provider value={value}>

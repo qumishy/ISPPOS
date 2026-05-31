@@ -10,7 +10,7 @@ import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
 
 export default function NotificationsScreen({ navigation }) {
-  const { user } = useAuth();
+  const { user, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
@@ -19,16 +19,30 @@ export default function NotificationsScreen({ navigation }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const data = await getLocalNotificationsBox(user?.id);
+    if (!projectId) {
+      setNotifications([]);
+      setLoading(false);
+      return;
+    }
+    const data = await getLocalNotificationsBox(user?.id, projectId);
     setNotifications(data || []);
     setLoading(false);
-  }, [user]);
+  }, [user, projectId]);
 
   useEffect(() => { load(); }, [load]);
 
+  const normalizeBody = (text) => {
+    const raw = String(text || '');
+    const lower = raw.toLowerCase();
+    if (lower.includes('net.http_post') || lower.includes('http_post')) {
+      return 'حدثت مشكلة شبكة أثناء إرسال الإشعار. يرجى المحاولة لاحقاً.';
+    }
+    return raw;
+  };
+
   const handleRead = async (notif) => {
     if (!notif.is_read) {
-      await markNotificationRead(notif.id);
+      await markNotificationRead(notif.id, projectId);
       load();
     }
     if (notif.route) {
@@ -36,19 +50,23 @@ export default function NotificationsScreen({ navigation }) {
        try { params = JSON.parse(notif.params); } catch(e){}
        
        if (notif.route === 'InvoiceDetail') {
-          navigation.navigate('MainTabs', { screen: 'InvoicesTab', params: { screen: 'InvoiceDetail', params } });
-       } else if (notif.route === 'CollectionsMain') {
-          navigation.navigate('MainTabs', { screen: 'CollectionsTab' });
-       } else if (notif.route === 'SuppliesMain') {
-          navigation.navigate('MainTabs', { screen: 'SuppliesTab' });
+           navigation.navigate('MainTabs', { screen: 'InvoicesTab', params: { screen: 'InvoiceDetail', params } });
+       } else if (['Invoices', 'InvoicesMain'].includes(notif.route)) {
+           navigation.navigate('MainTabs', { screen: 'InvoicesTab' });
+       } else if (['Collections', 'CollectionsMain'].includes(notif.route)) {
+           navigation.navigate('MainTabs', { screen: 'CollectionsTab' });
+       } else if (['Supplies', 'SuppliesMain'].includes(notif.route)) {
+           navigation.navigate('MainTabs', { screen: 'SuppliesTab' });
+       } else if (['Wallets', 'WalletsMain'].includes(notif.route)) {
+           navigation.navigate('MainTabs', { screen: 'WalletsTab' });
        } else {
-          navigation.navigate(notif.route, params);
+           navigation.navigate(notif.route, params);
        }
     }
   };
 
   const handleReadAll = async () => {
-    await markAllNotificationsRead(user?.id);
+    await markAllNotificationsRead(user?.id, projectId);
     load();
   };
 
@@ -59,7 +77,7 @@ export default function NotificationsScreen({ navigation }) {
         action="✔ تحديد الكل كمقروء"
         onAction={handleReadAll}
       />
-      {loading ? <Loading /> : notifications.length === 0 ? <Empty icon="🔕" title="لا توجد إشعارات" /> : (
+      {loading ? <Loading /> : notifications.length === 0 ? <Empty icon="bell-off" title="لا توجد إشعارات" /> : (
         <FlatList
           data={notifications}
           keyExtractor={i => i.id}
@@ -70,7 +88,7 @@ export default function NotificationsScreen({ navigation }) {
                  <Text style={{ fontWeight: '900', color: item.is_read ? colors.t2 : colors.blue, fontSize: 16 }}>{item.title}</Text>
                  {!item.is_read && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.orange }} />}
                </Row>
-               <Text style={{ color: colors.t1, fontSize: 14, marginBottom: 8 }}>{item.body}</Text>
+               <Text style={{ color: colors.t1, fontSize: 14, marginBottom: 8 }}>{normalizeBody(item.body)}</Text>
                <Text style={{ color: colors.t3, fontSize: 11 }}>{formatDateShort(item.created_at)}</Text>
             </TouchableOpacity>
           )}

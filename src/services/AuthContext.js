@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
-import { isOnline, setCurrentUser } from './SyncService';
+import { isOnline, setCurrentUser, hasBlockingPendingSyncForUser, runRequiredInitialSync, setInitialSyncReady, hasLocalRequiredData, syncNow } from './SyncService';
 import { registerForPushNotificationsAsync } from './NotificationService';
-import { getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS } from './database';
+import { getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting } from './database';
+import { useLoading } from './LoadingContext';
 
 const AuthContext = createContext(null);
 
@@ -41,15 +42,49 @@ export const ROLE_PERMISSIONS = {
 };
 
 export function AuthProvider({ children }) {
+  const { setLoadingProgress, hideLoading } = useLoading();
+  const startupSyncRef = useRef({ blocking: false, backgroundKey: '' });
   const [user, setUser] = useState(null);
+  const [projectId, setProjectId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dbReady, setDbReadyState] = useState(false);
+  const [initialSyncReady, setInitialSyncReadyState] = useState(false);
+  const [initialSyncInProgress, setInitialSyncInProgressState] = useState(false);
+  const [startupError, setStartupError] = useState('');
+  const [offlineMode, setOfflineMode] = useState(false);
   const [permissions, setPermissions] = useState({});
+  const [activePhase, setActivePhase] = useState(null);
+  const [selectedPhase, setSelectedPhase] = useState(null);
+  const [allPhases, setAllPhases] = useState([]);
 
   const reloadPermissions = async (userData) => {
     if (!userData) return;
     try {
       const perms = await getEffectiveUserPermissions(userData.id, userData.role);
       setPermissions(perms);
+    } catch (e) {}
+  };
+
+  const loadActivePhase = async (scopeProjectId = projectId) => {
+    try {
+      if (!scopeProjectId) {
+        setAllPhases([]);
+        setActivePhase(null);
+        setSelectedPhase(null);
+        return;
+      }
+      const phases = await getAllPhases(scopeProjectId);
+      setAllPhases(phases || []);
+      const active = (phases || []).find(p => p.status === 'active') || null;
+      setActivePhase(active);
+      setSelectedPhase(prev => {
+        if (!prev && active) return active;
+        if (prev && phases) {
+          const updated = phases.find(p => p.id === prev.id);
+          return updated || active;
+        }
+        return prev;
+      });
     } catch (e) {}
   };
 
@@ -62,17 +97,142 @@ export function AuthProvider({ children }) {
   }, [user]);
 
   useEffect(() => {
-    AsyncStorage.getItem('isp_user').then(stored => {
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          setUser(parsed);
-          setCurrentUser(parsed);
-        } catch (e) {}
-      }
-      setLoading(false);
+    loadActivePhase(projectId);
+    const unsub = subscribeDataChanges(e => {
+      if (['phases', 'all'].includes(e.type)) loadActivePhase(projectId);
     });
+    return unsub;
+  }, [projectId]);
+
+  useEffect(() => {
+    const initApp = async () => {
+      try {
+        setDbReadyState(!!isDbReady());
+        const storedProjectId = await AsyncStorage.getItem('isp_project_id');
+        if (storedProjectId) {
+          setProjectId(storedProjectId);
+        }
+
+        const storedUser = await AsyncStorage.getItem('isp_user');
+        if (storedUser) {
+          const parsed = JSON.parse(storedUser);
+          // Only auto-login if they belong to the current project
+          if (storedProjectId && parsed.project_id === storedProjectId) {
+             setUser(parsed);
+             setCurrentUser(parsed);
+          }
+        }
+      } catch (e) {}
+      setLoading(false);
+    };
+    initApp();
   }, []);
+
+  useEffect(() => {
+    setDbReadyState(!!isDbReady());
+  }, [loading]);
+
+  useEffect(() => {
+    const ensureStartupSync = async () => {
+      if (!user?.id || !user?.project_id) {
+        setInitialSyncReadyState(false);
+        setOfflineMode(false);
+        setStartupError('');
+        setInitialSyncReady(false);
+        return;
+      }
+      if (!isDbReady()) return;
+      if (startupSyncRef.current.blocking) return;
+
+      setStartupError('');
+
+      try {
+        const projectId = user.project_id;
+        const syncFlagKey = `initial_sync_completed_${projectId}`;
+        const completedFlag = (await getSetting(syncFlagKey, '0')) === '1';
+        const localDataReady = await hasLocalRequiredData(user.project_id);
+
+        // Fast path: open immediately from SQLite on normal launches.
+        if (localDataReady) {
+          setInitialSyncReady(true);
+          setInitialSyncReadyState(true);
+          setOfflineMode(!isOnline());
+          hideLoading();
+          setInitialSyncInProgressState(false);
+          if (!completedFlag) {
+            try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
+          }
+
+          if (isOnline()) {
+            const bgKey = `${projectId}:${user.id}`;
+            if (startupSyncRef.current.backgroundKey !== bgKey) {
+              startupSyncRef.current.backgroundKey = bgKey;
+              setTimeout(() => {
+                syncNow(user).catch(() => {});
+              }, 0);
+            }
+          }
+          return;
+        }
+
+        // First setup path: block with one short message only.
+        startupSyncRef.current.blocking = true;
+        setInitialSyncInProgressState(true);
+        setLoadingProgress('جاري جلب البيانات...', null);
+
+        if (!isOnline() && !localDataReady) {
+          throw new Error('لا يوجد اتصال بالإنترنت ولا توجد بيانات محلية كافية. يرجى الاتصال بالإنترنت لإجراء المزامنة الأولية.');
+        }
+
+        setOfflineMode(false);
+        const result = await runRequiredInitialSync(user, {
+          timeoutMs: 90000,
+          onProgress: () => setLoadingProgress('جاري جلب البيانات...', null),
+        });
+        setInitialSyncReady(!!result?.ready);
+        setInitialSyncReadyState(!!result?.ready);
+        setOfflineMode(!!result?.offlineFallback);
+        if (result?.ready) {
+          try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
+        }
+        setTimeout(() => hideLoading(), 250);
+      } catch (e) {
+        const msg = e?.message || 'فشلت المزامنة الأولية.';
+        setStartupError(msg);
+        setInitialSyncReady(false);
+        setInitialSyncReadyState(false);
+        hideLoading();
+      } finally {
+        startupSyncRef.current.blocking = false;
+        setInitialSyncInProgressState(false);
+      }
+    };
+
+    ensureStartupSync();
+  }, [user?.id, user?.project_id]);
+
+  const loginWithLicense = async (licenseNumber) => {
+    try {
+      const { data, error } = await supabase
+        .from('project')
+        .select('id')
+        .eq('license_number', licenseNumber)
+        .single();
+      
+      if (error || !data) {
+        return { success: false, error: 'رقم الترخيص غير صحيح أو لا يوجد اتصال بالإنترنت.' };
+      }
+
+      await AsyncStorage.setItem('isp_project_id', data.id);
+      setProjectId(data.id);
+      setUser(null);
+      setCurrentUser(null);
+      await AsyncStorage.removeItem('isp_user');
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: 'تعذر التحقق من الترخيص.' };
+    }
+  };
 
   const saveUserSession = async (data) => {
     try {
@@ -85,6 +245,7 @@ export function AuthProvider({ children }) {
 
     const userData = {
       id: data.id,
+      project_id: data.project_id || projectId,
       name: data.name,
       username: data.username,
       role: data.role,
@@ -102,8 +263,15 @@ export function AuthProvider({ children }) {
       const cached = await AsyncStorage.getItem('isp_user_cache');
       if (cached) {
         const users = JSON.parse(cached);
-        const u = users.find(x => x.username === username && x.password_hash === password);
+        const u = users.find(x => x.username === username && x.password_hash === password && x.project_id === projectId);
         if (u) {
+          const pendingGuard = await hasBlockingPendingSyncForUser(u.id);
+          if (pendingGuard.blocked) {
+            return {
+              success: false,
+              error: 'توجد بيانات غير متزامنة تخص مستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل تبديل المستخدم.'
+            };
+          }
           return await saveUserSession(u);
         }
       }
@@ -119,11 +287,20 @@ export function AuthProvider({ children }) {
         .select('*')
         .eq('username', username)
         .eq('is_active', true)
+        .eq('project_id', projectId)
         .single();
 
       if (!error && data) {
         if (data.password_hash !== password) {
           return { success:false, error:'كلمة المرور غير صحيحة' };
+        }
+
+        const pendingGuard = await hasBlockingPendingSyncForUser(data.id);
+        if (pendingGuard.blocked) {
+          return {
+            success: false,
+            error: 'توجد بيانات غير متزامنة تخص مستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل تبديل المستخدم.'
+          };
         }
         
         // جلب Expo Push Token وتحديثه في قاعدة البيانات
@@ -152,6 +329,12 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     await AsyncStorage.removeItem('isp_user');
     setUser(null);
+    setCurrentUser(null);
+    setInitialSyncReady(false);
+    setInitialSyncReadyState(false);
+    setInitialSyncInProgressState(false);
+    setStartupError('');
+    setOfflineMode(false);
   };
 
   const can = (permission) => {
@@ -176,7 +359,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, can, canAccess, permissions, online: isOnline() }}>
+    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode }}>
       {children}
     </AuthContext.Provider>
   );
