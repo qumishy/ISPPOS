@@ -42,9 +42,28 @@ jobs:
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
-      - name: Upload APK
+      - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 7
+
+      - name: Extract Version
+        id: app_version
+        run: |
+          VERSION=$(grep -oP '"version": "\K[^"]+' app.json)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.app_version.outputs.tag_name }}
+          name: الإصدار ${{ steps.app_version.outputs.tag_name }}
+          body: |
+            تحديث جديد لتطبيق ISPPOS.
+            - تم إضافة قائمة المحافظات والمديريات اليمنية.
+            - تم إضافة حماية لتسجيل الخروج ومسح البيانات في حال وجود فواتير معلقة للمزامنة.
+          files: android/app/build/outputs/apk/release/*.apk
+          token: ${{ secrets.GITHUB_TOKEN }}
