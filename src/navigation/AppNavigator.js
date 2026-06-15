@@ -11,6 +11,8 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { Feather } from '@expo/vector-icons';
 
 import { useAuth, ROLE_PERMISSIONS } from '../services/AuthContext';
+import { useLoading } from '../services/LoadingContext';
+import { subscribeDataChanges, getSetting } from '../services/database';
 import { useTheme } from '../theme';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -26,7 +28,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 import UpdatesScreen from '../screens/UpdatesScreen';
 import DiscountApprovalsScreen from '../screens/DiscountApprovalsScreen';
 
-import { getLocalNotificationsBox, getPendingOfflineOperationsForUser, subscribeDataChanges } from '../services/database';
+import { getLocalNotificationsBox, getPendingOfflineOperationsForUser } from '../services/database';
 import { setupNotificationListeners } from '../services/NotificationService';
 
 import InvoicesScreen      from '../screens/InvoicesListScreen';
@@ -49,6 +51,7 @@ import AboutScreen        from '../screens/AboutScreen';
 import NewSupplyScreen    from '../screens/NewSupplyScreen';
 import InvoiceDetailScreen from '../screens/InvoiceDetailScreen';
 import BatchStockDetailScreen from '../screens/BatchStockDetailScreen';
+import PhaseReportScreen from '../screens/PhaseReportScreen';
 
 const Drawer = createDrawerNavigator();
 const Tab    = createBottomTabNavigator();
@@ -170,6 +173,7 @@ function createStack(Component, name, title) {
         <Stack.Screen name="AssignWallet" component={AssignWalletScreen} options={{ title: 'توزيع أوراق', ...commonHeaderOptions }} />
         <Stack.Screen name="WalletDetail" component={WalletDetailScreen} options={{ title: 'حركة المحفظة', ...commonHeaderOptions }} />
         <Stack.Screen name="BatchStockDetail" component={BatchStockDetailScreen} options={{ title: 'تقرير التوزيع', ...commonHeaderOptions }} />
+        <Stack.Screen name="PhaseReport" component={PhaseReportScreen} options={{ title: 'تقرير المرحلة', ...commonHeaderOptions }} />
         <Stack.Screen name="NewSupply" component={NewSupplyScreen} options={{ title: 'توريد جديد', ...commonHeaderOptions }} />
         <Stack.Screen name="Updates" component={UpdatesScreen} options={{ title: 'التحديثات', ...commonHeaderOptions }} />
       </Stack.Navigator>
@@ -377,9 +381,28 @@ function MainDrawer() {
 }
 
 export default function AppNavigator() {
-  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode } = useAuth();
+  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync, logout } = useAuth();
+  const { message: loadingMessage, progress: loadingPercent } = useLoading();
   const { isDark, colors, fontSize } = useTheme();
   const navigationRef = useRef();
+  const [historicalSyncStatus, setHistoricalSyncStatus] = useState(null);
+
+  useEffect(() => {
+    if (user && initialSyncReady) {
+      getSetting('historical_sync_started').then(s => {
+        if (s === '1') {
+          getSetting('historical_sync_completed').then(c => {
+            if (c !== '1') setHistoricalSyncStatus('syncing');
+          });
+        }
+      });
+      return subscribeDataChanges(({ type }) => {
+        if (type === 'historical_sync_started') setHistoricalSyncStatus('syncing');
+        else if (type === 'historical_sync_completed') setHistoricalSyncStatus('completed');
+        else if (type === 'historical_sync_failed') setHistoricalSyncStatus('failed');
+      });
+    }
+  }, [user, initialSyncReady]);
 
   useEffect(() => {
     if (user) {
@@ -396,7 +419,14 @@ export default function AppNavigator() {
         {initialSyncInProgress ? (
           <>
             <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={{ marginTop: 14, color: colors.t1, fontSize: 16, fontFamily: 'IBMPlexSansArabic-Bold', textAlign: 'center' }}>جاري جلب البيانات...</Text>
+            <Text style={{ marginTop: 14, color: colors.t1, fontSize: 16, fontFamily: 'IBMPlexSansArabic-Bold', textAlign: 'center' }}>
+              {loadingMessage || 'جاري جلب البيانات...'}
+            </Text>
+            {loadingPercent !== null && (
+              <View style={{ width: '80%', height: 6, backgroundColor: colors.border, borderRadius: 3, marginTop: 16, overflow: 'hidden' }}>
+                <View style={{ height: '100%', width: `${loadingPercent}%`, backgroundColor: colors.primary, borderRadius: 3 }} />
+              </View>
+            )}
           </>
         ) : (
           <>
@@ -405,8 +435,22 @@ export default function AppNavigator() {
               {startupError || 'تعذر تحميل البيانات الأولية.'}
             </Text>
             <Text style={{ marginTop: 8, color: colors.t3, fontSize: 13, textAlign: 'center' }}>
-              يرجى الاتصال بالإنترنت ثم إعادة تسجيل الدخول.
+              فشل جلب البيانات، تحقق من الاتصال ثم أعد المحاولة
             </Text>
+            <TouchableOpacity 
+              onPress={() => retryInitialSync?.()}
+              style={{ marginTop: 24, backgroundColor: colors.primary, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            >
+              <Feather name="refresh-cw" size={16} color="#FFF" />
+              <Text style={{ color: '#FFF', fontFamily: 'IBMPlexSansArabic-Bold', fontSize: 14 }}>إعادة المحاولة</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              onPress={logout}
+              style={{ marginTop: 16, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border }}
+            >
+              <Text style={{ color: colors.danger, fontFamily: 'IBMPlexSansArabic-SemiBold', fontSize: 14 }}>تسجيل الخروج</Text>
+            </TouchableOpacity>
           </>
         )}
       </View>
@@ -419,6 +463,19 @@ export default function AppNavigator() {
       {user && offlineMode && (
         <View style={{ backgroundColor: colors.warning, paddingTop: StatusBar.currentHeight || 28, paddingBottom: 8, alignItems: 'center', zIndex: 9999, elevation: 10 }}>
           <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Bold', fontSize: fontSize.sm }}>وضع عدم الاتصال - يتم عرض البيانات المحلية</Text>
+        </View>
+      )}
+      {user && historicalSyncStatus === 'syncing' && (
+        <View style={{ backgroundColor: colors.primary, paddingTop: offlineMode ? 8 : (StatusBar.currentHeight || 40), paddingBottom: 8, alignItems: 'center', zIndex: 9998, elevation: 9 }}>
+          <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Medium', fontSize: fontSize.sm }}>جاري مزامنة المراحل السابقة (بالخلفية)...</Text>
+        </View>
+      )}
+      {user && historicalSyncStatus === 'failed' && (
+        <View style={{ backgroundColor: colors.danger, paddingTop: offlineMode ? 8 : (StatusBar.currentHeight || 40), paddingBottom: 8, alignItems: 'center', zIndex: 9998, elevation: 9, flexDirection: 'row', justifyContent: 'center', gap: 8 }}>
+          <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Medium', fontSize: fontSize.sm }}>تعذر إكمال مزامنة المراحل السابقة</Text>
+          <TouchableOpacity onPress={() => { setHistoricalSyncStatus('syncing'); retryInitialSync?.(); }}>
+            <Feather name="refresh-cw" size={14} color="#FFF" />
+          </TouchableOpacity>
         </View>
       )}
       {user && selectedPhase?.status === 'closed' && (

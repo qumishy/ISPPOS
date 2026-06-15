@@ -260,26 +260,63 @@ LEFT JOIN pos_customers p ON p.id = i.pos_id
 ${where}
 `;
     if (filters.status) {
-    if (filters.status === 'overdue') {
-      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND ${delayDaysExpr} > 0`;
-    } else if (filters.status === 'due_soon') {
-      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND (-(${delayDaysExpr})) <= 2 AND (-(${delayDaysExpr})) >= 0`;
-    } else {
-      sql += ` AND i.status = ?`;
-      params.push(filters.status);
+      if (filters.status === 'overdue') {
+        sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND ${delayDaysExpr} > 0`;
+      } else if (filters.status === 'due_soon') {
+        sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND (-(${delayDaysExpr})) <= 2 AND (-(${delayDaysExpr})) >= 0`;
+      } else {
+        sql += ` AND i.status = ?`;
+        params.push(filters.status);
+      }
     }
-  }
-  if (filters.phase_id) { sql += ` AND i.phase_id = ?`; params.push(filters.phase_id); }
-  if (filters.id) { sql += ` AND i.id = ?`; params.push(filters.id); }
-  if (filters.agent_id) { sql += ` AND i.agent_id = ?`; params.push(filters.agent_id); }
-  if (filters.pos_id) { sql += ` AND i.pos_id = ?`; params.push(filters.pos_id); }
-  if (filters.onlyWithBalance) { sql += ` AND (${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1`; }
-  // Exclude invoices that are blocked pending manager discount approval.
-  // Used by the collection screen so agents cannot select a locked invoice.
-  // Matches the same logic as getPendingDiscountInvoices and the collection guards.
-  if (filters.excludePendingDiscount) {
-    sql += ` AND NOT (COALESCE(i.discount_requested_value, 0) > 0 AND COALESCE(i.discount_status, 'none') NOT IN ('approved', 'auto_approved', 'rejected', 'none'))`;
-  }
+    if (filters.approval_status) {
+      sql += ` AND COALESCE(i.discount_status, 'none') = ?`;
+      params.push(filters.approval_status);
+    }
+    if (filters.from_date) {
+      sql += ` AND date(COALESCE(i.invoice_date, i.created_at)) >= date(?)`;
+      params.push(filters.from_date);
+    }
+    if (filters.to_date) {
+      sql += ` AND date(COALESCE(i.invoice_date, i.created_at)) <= date(?)`;
+      params.push(filters.to_date);
+    }
+    if (filters.amount_min !== undefined && filters.amount_min !== '') {
+      sql += ` AND ${invoiceAmountExpr} >= ?`;
+      params.push(Number(filters.amount_min));
+    }
+    if (filters.amount_max !== undefined && filters.amount_max !== '') {
+      sql += ` AND ${invoiceAmountExpr} <= ?`;
+      params.push(Number(filters.amount_max));
+    }
+    if (filters.paid_min !== undefined && filters.paid_min !== '') {
+      sql += ` AND (${payableCollectionsExpr}) >= ?`;
+      params.push(Number(filters.paid_min));
+    }
+    if (filters.paid_max !== undefined && filters.paid_max !== '') {
+      sql += ` AND (${payableCollectionsExpr}) <= ?`;
+      params.push(Number(filters.paid_max));
+    }
+    if (filters.remaining_min !== undefined && filters.remaining_min !== '') {
+      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) >= ?`;
+      params.push(Number(filters.remaining_min));
+    }
+    if (filters.remaining_max !== undefined && filters.remaining_max !== '') {
+      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) <= ?`;
+      params.push(Number(filters.remaining_max));
+    }
+
+    if (filters.phase_id) { sql += ` AND i.phase_id = ?`; params.push(filters.phase_id); }
+    if (filters.id) { sql += ` AND i.id = ?`; params.push(filters.id); }
+    if (filters.agent_id) { sql += ` AND i.agent_id = ?`; params.push(filters.agent_id); }
+    if (filters.pos_id) { sql += ` AND i.pos_id = ?`; params.push(filters.pos_id); }
+    if (filters.onlyWithBalance) { sql += ` AND (${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1`; }
+    // Exclude invoices that are blocked pending manager discount approval.
+    // Used by the collection screen so agents cannot select a locked invoice.
+    // Matches the same logic as getPendingDiscountInvoices and the collection guards.
+    if (filters.excludePendingDiscount) {
+      sql += ` AND NOT (COALESCE(i.discount_requested_value, 0) > 0 AND COALESCE(i.discount_status, 'none') NOT IN ('approved', 'auto_approved', 'rejected', 'none'))`;
+    }
     sql += ` ORDER BY created_at DESC`;
     const r = await execSQL(sql, params);
     const rows = (r.rows._array || []).map(decorateInvoiceStatusFields);
@@ -504,7 +541,8 @@ export const createLocalInvoice = async (data) => {
     }
   }
 
-  await addToSyncQueue('invoices', 'INSERT', payload, id);
+  const operationGroupId = data.operation_group_id || null;
+  await addToSyncQueue('invoices', 'INSERT', payload, id, operationGroupId);
   notifyDataChanged('invoices');
   try {
     const actor = await getUserBasic(payload.agent_id);
@@ -601,15 +639,16 @@ export const addInvoiceItem = async (data) => {
 
     // 9) Insert invoice_item (inside same tx)
     yield {
-      sql: `INSERT OR REPLACE INTO invoice_items (id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO invoice_items (id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [itemPayload.id, itemPayload.invoice_id, itemPayload.category_id, itemPayload.batch_id, itemPayload.wallet_id, itemPayload.quantity, itemPayload.unit_price, itemPayload.total_price, itemPayload.created_at, itemPayload.synced]
     };
 
     // 10) Sync queue entry for invoice_item (inside same tx)
+    const opGroupId = data.operation_group_id || null;
     yield {
-      sql: `INSERT INTO sync_queue (table_name, operation, payload, record_id, attempts, created_at)
-       VALUES (?, ?, ?, ?, 0, datetime('now'))`,
-      params: ['invoice_items', 'INSERT', JSON.stringify(itemPayload), id]
+      sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`,
+      params: [opGroupId, 'invoice_items', 'INSERT', JSON.stringify(itemPayload), id, itemPayload.project_id || null]
     };
 
     return itemPayload;

@@ -178,6 +178,7 @@ export const getWalletMovements = async (agentId, filters = {}) => {
     if (filters.pos_id) { sql += ` AND i.pos_id = ?`; params.push(filters.pos_id); }
     if (filters.date) { sql += ` AND i.invoice_date = ?`; params.push(filters.date); }
     if (filters.project_id) { sql += ` AND i.project_id = ?`; params.push(filters.project_id); }
+    if (filters.phase_id) { sql += ` AND i.phase_id = ?`; params.push(filters.phase_id); }
     sql += ` ORDER BY i.created_at DESC`;
     const r = await execSQL(sql, params);
     return r.rows._array || [];

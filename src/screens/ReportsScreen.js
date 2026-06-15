@@ -50,6 +50,7 @@ const COLLECTION_STATUS_MAP = {
   pending:  { text: 'معلق',   color: '#d97706' },
   approved: { text: 'معتمد',  color: '#16a34a' },
   rejected: { text: 'مرفوض', color: '#dc2626' },
+  cancelled: { text: 'ملغية', color: '#ef4444' },
 };
 
 const INITIAL_REPORT_ROWS = 150;
@@ -127,13 +128,11 @@ const AUDIT_SQL = `
   LEFT JOIN card_categories cc ON cc.id = ii.category_id
   LEFT JOIN batches        b  ON b.id  = ii.batch_id
   LEFT JOIN collections    c  ON c.invoice_id = i.id
-                              AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
-                              AND LOWER(COALESCE(c.status, '')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected')
+                              AND LOWER(COALESCE(c.status, '')) NOT IN ('deleted')
   LEFT JOIN users          apr ON apr.id = c.approved_by
   WHERE COALESCE(i.is_deleted, 0) = 0
     AND i.deleted_at IS NULL
-    AND (i.active = 1 OR i.active IS NULL OR i.active = 'true')
-    AND LOWER(COALESCE(i.status, '')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected')
+    AND LOWER(COALESCE(i.status, '')) NOT IN ('deleted')
     AND i.project_id = ?
   ORDER BY i.invoice_date DESC, i.invoice_number ASC, c.collection_date ASC
 `;
@@ -207,7 +206,7 @@ function Cell({ col, value, colors }) {
 // شيت الفلاتر
 // ═══════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════
-function FilterSheet({ visible, onClose, agents, phases, filters, onApply, colors }) {
+function FilterSheet({ visible, onClose, agents, phases, filters, onApply, colors, defaultPhaseId }) {
   const [local, setLocal] = useState(filters);
   const set = (k, v) => setLocal(p => ({ ...p, [k]: v }));
   useEffect(() => { if (visible) setLocal(filters); }, [visible, filters]);
@@ -258,7 +257,7 @@ function FilterSheet({ visible, onClose, agents, phases, filters, onApply, color
 
             {lbl('حالة السداد')}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 }}>
-              {[['', 'الكل'], ['pending', 'معلقة'], ['partial', 'مسددة جزئياً'], ['paid', 'مسددة']].map(([v, l]) =>
+              {[['', 'الكل'], ['pending', 'معلقة'], ['partial', 'مسددة جزئياً'], ['paid', 'مسددة'], ['cancelled', 'ملغية']].map(([v, l]) =>
                 pill(v || 'all-pay', local.paymentStatus === v, () => set('paymentStatus', v), l, '#2563eb')
               )}
             </View>
@@ -272,7 +271,7 @@ function FilterSheet({ visible, onClose, agents, phases, filters, onApply, color
 
             {lbl('حالة التحصيل')}
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 20 }}>
-              {[['', 'الكل'], ['pending', 'معلق'], ['approved', 'معتمد'], ['rejected', 'مرفوض']].map(([v, l]) =>
+              {[['', 'الكل'], ['pending', 'معلق'], ['approved', 'معتمد'], ['rejected', 'مرفوض'], ['cancelled', 'ملغية']].map(([v, l]) =>
                 pill(v || 'all-col', local.colStatus === v, () => set('colStatus', v), l, '#7c3aed')
               )}
             </View>
@@ -280,7 +279,7 @@ function FilterSheet({ visible, onClose, agents, phases, filters, onApply, color
 
           <View style={{ flexDirection: 'row', gap: 10, paddingTop: 8 }}>
             <TouchableOpacity
-              onPress={() => { onApply({ dateFrom: '', dateTo: '', agentId: '', phaseId: '', paymentStatus: '', approvalStatus: '', colStatus: '' }); onClose(); }}
+              onPress={() => { onApply({ dateFrom: '', dateTo: '', agentId: '', phaseId: defaultPhaseId || '', paymentStatus: '', approvalStatus: '', colStatus: '' }); onClose(); }}
               style={{ flex: 1, padding: 13, borderRadius: 11, borderWidth: 1, borderColor: colors.border + '60', alignItems: 'center' }}>
               <Text style={{ color: colors.t3, fontWeight: '700' }}>إعادة تعيين</Text>
             </TouchableOpacity>
@@ -661,15 +660,21 @@ function InventoryTrackingTab({ colors }) {
   const requestIdRef = useRef(0);
   const hasLoadedOnce = useRef(false);
 
-  const { projectId } = useAuth();
+  const { projectId, selectedPhase, allPhases } = useAuth();
+  const [phaseFilterId, setPhaseFilterId] = useState(selectedPhase?.id || '');
+
+  useEffect(() => {
+    setPhaseFilterId(selectedPhase?.id || '');
+  }, [selectedPhase?.id]);
+
   const load = useCallback(async () => {
     if (!projectId) return;
     const thisRequest = ++requestIdRef.current;
     // Only show full loading spinner on very first load (no data yet)
     if (!hasLoadedOnce.current) setLoading(true);
     try {
-      console.log(`[Reports:inventory] load start request=${thisRequest} project=${projectId}`);
-      const data = await getInventoryTracking(projectId);
+      console.log(`[Reports:inventory] load start request=${thisRequest} project=${projectId} phase=${phaseFilterId || 'all'}`);
+      const data = await getInventoryTracking(projectId, phaseFilterId || null);
       // Guard: discard result if a newer request was started
       if (thisRequest !== requestIdRef.current) return;
       setRows(data);
@@ -691,7 +696,7 @@ function InventoryTrackingTab({ colors }) {
     } finally {
       if (thisRequest === requestIdRef.current) setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, phaseFilterId]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -859,6 +864,33 @@ function InventoryTrackingTab({ colors }) {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* ── شريط المرحلة ── */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 54, paddingHorizontal: 12, paddingTop: 10 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {(allPhases || []).map((phase) => {
+            const active = phaseFilterId === phase.id;
+            return (
+              <TouchableOpacity
+                key={phase.id}
+                onPress={() => setPhaseFilterId(phase.id)}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  backgroundColor: active ? colors.blue : colors.bg2,
+                  borderWidth: 1,
+                  borderColor: active ? colors.blue : colors.border + '40',
+                }}
+              >
+                <Text style={{ color: active ? '#fff' : colors.t2, fontSize: 11, fontWeight: '800' }}>
+                  {phase.name}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </ScrollView>
 
       {/* ── شريط الفلاتر ── */}
       <View style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6, gap: 8 }}>
@@ -1046,7 +1078,7 @@ function InventoryTrackingTab({ colors }) {
 // ═══════════════════════════════════════════════════════
 export default function ReportsScreen({ navigation }) {
   const { colors } = useTheme();
-  const { user, projectId } = useAuth();
+  const { user, projectId, selectedPhase } = useAuth();
 
   const [activeTab, setActiveTab] = useState('audit'); // 'audit' | 'wallets' | 'inventory'
   const [loading, setLoading] = useState(true);
@@ -1123,6 +1155,14 @@ export default function ReportsScreen({ navigation }) {
   }, [projectId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    setFilters(prev => {
+      const nextPhaseId = selectedPhase?.id || '';
+      if (prev.phaseId === nextPhaseId) return prev;
+      return { ...prev, phaseId: nextPhaseId };
+    });
+  }, [selectedPhase?.id]);
 
   useEffect(() => {
     let t = null;
@@ -1342,7 +1382,7 @@ export default function ReportsScreen({ navigation }) {
           <Text style={{ color: colors.t3, fontSize: 14 }}>{allRows.length === 0 ? 'لا توجد بيانات في النظام' : 'لا توجد نتائج للفلاتر المحددة'}</Text>
           {activeCount > 0 && (
             <TouchableOpacity
-              onPress={() => setFilters({ dateFrom: '', dateTo: '', agentId: '', phaseId: '', paymentStatus: '', approvalStatus: '', colStatus: '' })}
+              onPress={() => setFilters({ dateFrom: '', dateTo: '', agentId: '', phaseId: selectedPhase?.id || '', paymentStatus: '', approvalStatus: '', colStatus: '' })}
               style={{ backgroundColor: colors.blue + '20', paddingHorizontal: 18, paddingVertical: 9, borderRadius: 10 }}>
               <Text style={{ color: colors.blue, fontWeight: '700' }}>مسح الفلاتر</Text>
             </TouchableOpacity>
@@ -1403,6 +1443,7 @@ export default function ReportsScreen({ navigation }) {
           filters={filters}
           onApply={setFilters}
           colors={colors}
+          defaultPhaseId={selectedPhase?.id || ''}
         />
         </View>
       )}

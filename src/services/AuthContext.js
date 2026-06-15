@@ -132,85 +132,85 @@ export function AuthProvider({ children }) {
     setDbReadyState(!!isDbReady());
   }, [loading]);
 
-  useEffect(() => {
-    const ensureStartupSync = async () => {
-      if (!user?.id || !user?.project_id) {
-        setInitialSyncReadyState(false);
-        setOfflineMode(false);
-        setStartupError('');
-        setInitialSyncReady(false);
-        return;
-      }
-      if (!isDbReady()) return;
-      if (startupSyncRef.current.blocking) return;
-
+  const ensureStartupSync = async (isRetry = false) => {
+    if (!user?.id || !user?.project_id) {
+      setInitialSyncReadyState(false);
+      setOfflineMode(false);
       setStartupError('');
+      setInitialSyncReady(false);
+      return;
+    }
+    if (!isDbReady()) return;
+    if (startupSyncRef.current.blocking) return;
 
-      try {
-        const projectId = user.project_id;
-        const syncFlagKey = `initial_sync_completed_${projectId}`;
-        const completedFlag = (await getSetting(syncFlagKey, '0')) === '1';
-        const localDataReady = await hasLocalRequiredData(user.project_id);
+    setStartupError('');
 
-        // Fast path: open immediately from SQLite on normal launches.
-        if (localDataReady) {
-          setInitialSyncReady(true);
-          setInitialSyncReadyState(true);
-          setOfflineMode(!isOnline());
-          hideLoading();
-          setInitialSyncInProgressState(false);
-          if (!completedFlag) {
-            try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
-          }
+    try {
+      const projectId = user.project_id;
+      const syncFlagKey = `initial_sync_completed_${projectId}`;
+      const completedFlag = (await getSetting(syncFlagKey, '0')) === '1';
+      const localDataReady = await hasLocalRequiredData(user.project_id);
 
-          if (isOnline()) {
-            const bgKey = `${projectId}:${user.id}`;
-            if (startupSyncRef.current.backgroundKey !== bgKey) {
-              startupSyncRef.current.backgroundKey = bgKey;
-              setTimeout(() => {
-                syncNow(user).catch(() => {});
-              }, 0);
-            }
-          }
-          return;
-        }
-
-        // First setup path: block with one short message only.
-        startupSyncRef.current.blocking = true;
-        setInitialSyncInProgressState(true);
-        setLoadingProgress('جاري جلب البيانات...', null);
-
-        if (!isOnline() && !localDataReady) {
-          throw new Error('لا يوجد اتصال بالإنترنت ولا توجد بيانات محلية كافية. يرجى الاتصال بالإنترنت لإجراء المزامنة الأولية.');
-        }
-
-        setOfflineMode(false);
-        const result = await runRequiredInitialSync(user, {
-          timeoutMs: 90000,
-          onProgress: () => setLoadingProgress('جاري جلب البيانات...', null),
-        });
-        setInitialSyncReady(!!result?.ready);
-        setInitialSyncReadyState(!!result?.ready);
-        setOfflineMode(!!result?.offlineFallback);
-        if (result?.ready) {
+      // Fast path: open immediately from SQLite on normal launches.
+      if (localDataReady) {
+        setInitialSyncReady(true);
+        setInitialSyncReadyState(true);
+        setOfflineMode(!isOnline());
+        hideLoading();
+        setInitialSyncInProgressState(false);
+        if (!completedFlag) {
           try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
         }
-        setTimeout(() => hideLoading(), 250);
-      } catch (e) {
-        const msg = e?.message || 'فشلت المزامنة الأولية.';
-        setStartupError(msg);
-        setInitialSyncReady(false);
-        setInitialSyncReadyState(false);
-        hideLoading();
-      } finally {
-        startupSyncRef.current.blocking = false;
-        setInitialSyncInProgressState(false);
-      }
-    };
 
+        if (isOnline()) {
+          const bgKey = `${projectId}:${user.id}`;
+          if (startupSyncRef.current.backgroundKey !== bgKey) {
+            startupSyncRef.current.backgroundKey = bgKey;
+            setTimeout(() => {
+              syncNow(user).catch(() => {});
+            }, 0);
+          }
+        }
+        return;
+      }
+
+      // First setup path: block with one short message only.
+      startupSyncRef.current.blocking = true;
+      setInitialSyncInProgressState(true);
+      setLoadingProgress('جاري جلب البيانات...', null);
+
+      if (!isOnline() && !localDataReady) {
+        throw new Error('لا يوجد اتصال بالإنترنت ولا توجد بيانات محلية كافية. يرجى الاتصال بالإنترنت لإجراء المزامنة الأولية.');
+      }
+
+      setOfflineMode(false);
+      const result = await runRequiredInitialSync(user, {
+        timeoutMs: 180000,
+        forceRetry: isRetry,
+        onProgress: (p) => setLoadingProgress(p.message || 'جاري جلب البيانات...', p.percent),
+      });
+      setInitialSyncReady(!!result?.ready);
+      setInitialSyncReadyState(!!result?.ready);
+      setOfflineMode(!!result?.offlineFallback);
+      if (result?.ready) {
+        try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
+      }
+      setTimeout(() => hideLoading(), 250);
+    } catch (e) {
+      const msg = e?.message || 'فشلت المزامنة الأولية.';
+      setStartupError(msg);
+      setInitialSyncReady(false);
+      setInitialSyncReadyState(false);
+      hideLoading();
+    } finally {
+      startupSyncRef.current.blocking = false;
+      setInitialSyncInProgressState(false);
+    }
+  };
+
+  useEffect(() => {
     ensureStartupSync();
   }, [user?.id, user?.project_id]);
-
   const loginWithLicense = async (licenseNumber) => {
     try {
       const { data, error } = await supabase
@@ -359,7 +359,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode }}>
+    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
       {children}
     </AuthContext.Provider>
   );

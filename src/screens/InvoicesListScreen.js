@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
 import { getLocalInvoices, subscribeDataChanges, getInvoiceCountdownMeta } from '../services/database';
@@ -7,6 +7,8 @@ import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceAppro
 import { Badge, Loading, Empty, Row, ScreenHeader } from '../components/UI';
 import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
+
+import AdvancedFiltersModal from '../components/AdvancedFiltersModal';
 
 export default function InvoicesScreen({ navigation, route }) {
   const { user, selectedPhase, projectId } = useAuth();
@@ -19,28 +21,45 @@ export default function InvoicesScreen({ navigation, route }) {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('all');
   const [expandedInvId, setExpandedInvId] = useState(null);
+  const [advancedFilters, setAdvancedFilters] = useState({});
+  const [showFiltersModal, setShowFiltersModal] = useState(false);
+  const hasDisplayedLocalDataRef = useRef(false);
 
   const load = useCallback(async (quiet = false) => {
-    if (!projectId) return;
-    const filters = tab !== 'all' ? { status: tab } : {};
-    if (user?.role !== 'agent' && tab === 'all') {
-      filters.includeInactive = true;
-    }
-    if (user?.role === 'agent') filters.agent_id = user.id;
-    if (selectedPhase) filters.phase_id = selectedPhase.id;
-    if (projectId) filters.project_id = projectId;
+    try {
+      if (!projectId) {
+        setInvoices([]);
+        return;
+      }
+      const filters = tab !== 'all' ? { status: tab } : {};
+      if (user?.role !== 'agent' && tab === 'all') {
+        filters.includeInactive = true;
+      }
+      if (user?.role === 'agent') filters.agent_id = user.id;
+      if (selectedPhase) filters.phase_id = selectedPhase.id;
+      if (projectId) filters.project_id = projectId;
 
-    if (!quiet && invoices.length === 0) setLoading(true);
-    const data = await getLocalInvoices(filters);
-    setInvoices(data);
-    setLoading(false);
-    setRefreshing(false);
-  }, [tab, user, selectedPhase, projectId, invoices.length]);
+      // Merge advanced filters
+      Object.assign(filters, advancedFilters);
+
+      const shouldShowInitialLoader = !quiet && !hasDisplayedLocalDataRef.current;
+      if (shouldShowInitialLoader) setLoading(true);
+      else if (!quiet) setRefreshing(true);
+      const data = await getLocalInvoices(filters);
+      setInvoices(data || []);
+      hasDisplayedLocalDataRef.current = true;
+    } catch (e) {
+      console.log('[Invoices] load error:', e?.message || e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [tab, user, selectedPhase, projectId, advancedFilters]);
 
   useEffect(() => {
     load();
     const unsub = subscribeDataChanges(e => {
-      if (['invoices', 'collections', 'all', 'sync_queue'].includes(e.type)) load(true);
+      if (['invoices', 'collections', 'all'].includes(e.type)) load(true);
     });
     return unsub;
   }, [load]);
@@ -51,10 +70,20 @@ export default function InvoicesScreen({ navigation, route }) {
 
 
   const visibleInvoices = invoices;
-  const filtered = visibleInvoices.filter(inv => !search || JSON.stringify(inv).toLowerCase().includes(search.toLowerCase()));
-  const activeInvoices = visibleInvoices.filter(i => (i.payment_status || i.status) !== 'cancelled');
-  const total = activeInvoices.reduce((s, i) => s + (i.net_amount || i.total_amount || 0), 0);
-  const paid = activeInvoices.filter(i => (i.payment_status || i.status) === 'paid').reduce((s, i) => s + (i.net_amount || i.total_amount || 0), 0);
+  const filtered = useMemo(
+    () => visibleInvoices.filter(inv => !search || JSON.stringify(inv).toLowerCase().includes(search.toLowerCase())),
+    [visibleInvoices, search]
+  );
+  const activeInvoices = useMemo(
+    () => visibleInvoices.filter(i => (i.payment_status || i.status) !== 'cancelled'),
+    [visibleInvoices]
+  );
+  const total = useMemo(() => activeInvoices.reduce((sum, i) => sum + (i.net_amount || i.total_amount || 0), 0), [activeInvoices]);
+  const paid = useMemo(
+    () => activeInvoices.filter(i => (i.payment_status || i.status) === 'paid').reduce((sum, i) => sum + (i.net_amount || i.total_amount || 0), 0),
+    [activeInvoices]
+  );
+  const keyExtractor = useCallback((item) => String(item.id), []);
   const metaChip = {
     flexDirection: 'row-reverse',
     alignItems: 'center',
@@ -117,6 +146,15 @@ export default function InvoicesScreen({ navigation, route }) {
         searchPlaceholder="بحث بالرقم أو العميل..."
         action={selectedPhase?.status !== 'closed' ? "+ فاتورة" : undefined}
         onAction={selectedPhase?.status !== 'closed' ? () => navigation.push('NewInvoice') : undefined}
+        onFilter={() => setShowFiltersModal(true)}
+      />
+
+      <AdvancedFiltersModal
+        visible={showFiltersModal}
+        onClose={() => setShowFiltersModal(false)}
+        currentFilters={advancedFilters}
+        onApply={(f) => setAdvancedFilters(f)}
+        type="invoices"
       />
 
       {selectedPhase?.status === 'closed' && (
@@ -126,12 +164,24 @@ export default function InvoicesScreen({ navigation, route }) {
         </View>
       )}
 
-      {loading ? <Loading /> : filtered.length === 0
+      {!loading && refreshing && (
+        <View style={{ position: 'absolute', top: 8, left: 12, zIndex: 5, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.card + 'E6', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={{ fontSize: 11, color: colors.t2, fontWeight: '700' }}>تحديث...</Text>
+        </View>
+      )}
+
+      {loading && !hasDisplayedLocalDataRef.current ? <Loading /> : filtered.length === 0
         ? <Empty icon="file-text" title="لا توجد فواتير" action={selectedPhase?.status !== 'closed' ? "فاتورة جديدة" : undefined} onAction={selectedPhase?.status !== 'closed' ? () => navigation.navigate('NewInvoice') : undefined} />
         : <FlatList
-          data={filtered} keyExtractor={i => i.id}
+          data={filtered} keyExtractor={keyExtractor}
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.blue} />}
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={50}
+          windowSize={7}
+          removeClippedSubviews
           renderItem={({ item: inv }) => {
             const net = inv.net_amount || inv.total_amount || 0;
             const totalAmount = Number(inv.total_amount ?? net ?? 0);

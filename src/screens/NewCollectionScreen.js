@@ -10,6 +10,7 @@ import { todayISO, formatCurrency } from '../utils/helpers';
 import { Input, Btn, Loading, Row, Picker } from '../components/UI';
 import { makeStyles } from '../styles/form.styles';
 import { useLoading } from '../services/LoadingContext';
+import { uuidv4 } from '../services/dbCore';
 
 
 export default function NewCollectionScreen({ route, navigation }) {
@@ -146,6 +147,7 @@ export default function NewCollectionScreen({ route, navigation }) {
           setSaving(true);
           showLoading('جاري حفظ سند التحصيل...');
           try {
+            const operationGroupId = uuidv4();
             await createLocalCollection({
               ...form,
               amount: parseFloat(form.amount),
@@ -154,6 +156,7 @@ export default function NewCollectionScreen({ route, navigation }) {
               user_id: user?.id || null,
               collector_id: user?.id || null,
               agent_id: form.agent_id || user?.id || null,
+              operation_group_id: operationGroupId,
             });
             Alert.alert('تم الحفظ', 'تم تسجيل التحصيل بنجاح وسيتم إشعار الإدارة.', [{ text: 'موافق', onPress: () => navigation.goBack() }]);
           } catch (e) {

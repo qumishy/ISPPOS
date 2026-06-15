@@ -1,12 +1,16 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
-import { execSQL, getSetting } from './dbCore';
+import { execSQL, getSetting, isDbReady, waitForDbReady } from './dbCore';
 import {
   claimInvoiceNotificationLog,
   markInvoiceNotificationLogSent,
   markInvoiceNotificationLogFailed,
 } from './invoiceNotificationLogService';
+
+let _overdueScanInFlight = false;
+const _lastOverdueScanAtByUser = new Map();
+const OVERDUE_SCAN_DEBOUNCE_MS = 2 * 60 * 1000;
 
 // ── إعدادات كيفية ظهور التنبيهات ──
 Notifications.setNotificationHandler({
@@ -102,8 +106,32 @@ export async function registerForPushNotificationsAsync() {
 
 export async function saveNotificationHistory(title, body, data = {}, notificationId = null) {
   try {
+    if (!isDbReady()) {
+      await waitForDbReady();
+      if (!isDbReady()) {
+        console.log('[Notifications] skipped save before DB ready');
+        return;
+      }
+    }
     const { saveLocalNotificationBox } = require('./dbNotificationService');
     const projectId = data?.project_id || data?.projectId || data?.project_id_context || null;
+    const stableEventKey =
+      data?.event_key ||
+      data?.eventKey ||
+      (
+        projectId &&
+        (data?.reference_id || data?.referenceId || data?.type)
+          ? [
+              'biz',
+              projectId,
+              data?.user_id || data?.recipient_id || '',
+              data?.type || '',
+              data?.reference_id || data?.referenceId || '',
+              data?.route || '',
+            ].join(':')
+          : null
+      ) ||
+      (notificationId ? `notification:${notificationId}` : null);
     await saveLocalNotificationBox({
       id: notificationId || data?.id,
       project_id: projectId,
@@ -112,6 +140,7 @@ export async function saveNotificationHistory(title, body, data = {}, notificati
       body,
       type: data?.type || '',
       reference_id: data?.reference_id || '',
+      event_key: stableEventKey,
       route: data?.route || '',
       params: JSON.stringify(data?.params || {}),
       is_read: 0
@@ -121,6 +150,9 @@ export async function saveNotificationHistory(title, body, data = {}, notificati
   }
 }
 
+const _recentTriggers = new Map();
+const TRIGGER_DEBOUNCE_MS = 5 * 60 * 1000;
+
 export async function triggerAppNotification({
   type, actor, count, category, agent, amount, pos_name,
   reference_id, targetRoles = [], targetUserIds = [], excludeUserIds = [], projectId = null
@@ -129,6 +161,16 @@ export async function triggerAppNotification({
     console.log('[Notifications] blocked trigger without project_id');
     return;
   }
+  
+  const debounceKey = ['biz', projectId, type || 'general', reference_id || ''].join(':');
+  const now = Date.now();
+  if (_recentTriggers.has(debounceKey)) {
+    if (now - _recentTriggers.get(debounceKey) < TRIGGER_DEBOUNCE_MS) {
+      console.log(`[Notifications] skipped duplicate trigger for event_key: ${debounceKey}`);
+      return;
+    }
+  }
+  _recentTriggers.set(debounceKey, now);
   let title = '';
   let body = '';
   let route = '';
@@ -151,7 +193,8 @@ export async function triggerAppNotification({
     route = 'SuppliesTab';
   }
 
-  const data = { type, reference_id, route, params: { reference_id }, project_id: projectId };
+  const event_key = ['biz', projectId, type || 'general', reference_id || '', route || ''].join(':');
+  const data = { type, reference_id, event_key, route, params: { reference_id }, project_id: projectId };
 
   const { uuidv4 } = require('./dbCore');
   const notifId = uuidv4();
@@ -190,12 +233,32 @@ export async function sendLocalNotification(title, body, data = {}) {
 }
 
 export async function checkAndSendOverdueInvoiceNotifications(user) {
+  const scanKey = user?.project_id && user?.id ? `${user.project_id}:${user.id}:${user.role}` : '';
+  let didStartScan = false;
   try {
+    if (_overdueScanInFlight) {
+      console.log('[OverdueNotifications] skipped: scan already running');
+      return 0;
+    }
+    if (scanKey) {
+      const lastScanAt = _lastOverdueScanAtByUser.get(scanKey) || 0;
+      if (Date.now() - lastScanAt < OVERDUE_SCAN_DEBOUNCE_MS) {
+        console.log('[OverdueNotifications] skipped: debounced');
+        return 0;
+      }
+    }
+    if (!isDbReady()) {
+      await waitForDbReady();
+      if (!isDbReady()) return 0;
+    }
     if (!user?.id || !['admin', 'agent'].includes(user.role)) return 0;
     if (!user.project_id) {
       console.log('[OverdueNotifications] blocked without project_id');
       return 0;
     }
+    _overdueScanInFlight = true;
+    didStartScan = true;
+    if (scanKey) _lastOverdueScanAtByUser.set(scanKey, Date.now());
     console.log(`[OverdueNotifications] scan project_id=${user.project_id} user_id=${user.id} role=${user.role}`);
 
     const overdueDays = Number(await getSetting('overdue_days', '20')) || 20;
@@ -283,6 +346,8 @@ export async function checkAndSendOverdueInvoiceNotifications(user) {
     return sentCount;
   } catch (e) {
     return 0;
+  } finally {
+    if (didStartScan) _overdueScanInFlight = false;
   }
 }
 

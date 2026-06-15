@@ -6,6 +6,139 @@ import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
 const DEFAULT_PROJECT_ID = '00000000-0000-4000-a000-000000000001';
 const DEFAULT_PHASE_ID   = '00000000-0000-4000-b000-000000000001';
 
+const coalescePositiveNumber = (...values) => {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 0;
+};
+
+const ensurePhaseCarryForwardTable = async () => {
+  await execSQL(`
+    CREATE TABLE IF NOT EXISTS phase_invoice_carryforwards (
+      id TEXT PRIMARY KEY NOT NULL,
+      invoice_id TEXT NOT NULL,
+      project_id TEXT,
+      source_phase_id TEXT,
+      target_phase_id TEXT NOT NULL,
+      invoice_number TEXT,
+      net_amount REAL DEFAULT 0,
+      paid_amount REAL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      synced INTEGER DEFAULT 0
+    )
+  `);
+  await execSQL(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_carryforwards_invoice_target
+    ON phase_invoice_carryforwards(invoice_id, target_phase_id)
+  `);
+  await execSQL(`
+    CREATE INDEX IF NOT EXISTS idx_phase_carryforwards_source_target
+    ON phase_invoice_carryforwards(source_phase_id, target_phase_id, project_id)
+  `);
+};
+
+const ACTIVE_ROW_CLAUSE = `(active = 1 OR active IS NULL)`;
+const ACTIVE_COLLECTION_ROW_CLAUSE = `(active = 1 OR active = 'true' OR active IS NULL)`;
+const CLOSED_PHASE_INVOICE_EPSILON = 0.1;
+const activeCollectionClause = (alias = 'c') => `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL)`;
+
+const invoiceAmountExpr = `
+  CASE
+    WHEN COALESCE(discount_status, 'none') IN ('approved', 'auto_approved')
+      THEN MAX(0, COALESCE(NULLIF(net_amount, 0), COALESCE(total_amount, 0) - COALESCE(discount_applied_value, 0)))
+    ELSE COALESCE(total_amount, 0)
+  END
+`;
+
+const closedPhaseViolationPredicate = `
+  LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+  AND (
+    COALESCE((
+      SELECT SUM(c.amount)
+      FROM collections c
+      WHERE c.invoice_id = invoices.id
+        AND ${activeCollectionClause('c')}
+        AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+    ), 0) < (${invoiceAmountExpr}) - ${CLOSED_PHASE_INVOICE_EPSILON}
+    OR EXISTS (
+      SELECT 1
+      FROM collections c
+      WHERE c.invoice_id = invoices.id
+        AND ${activeCollectionClause('c')}
+        AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
+      LIMIT 1
+    )
+    OR COALESCE((
+      SELECT SUM(c.amount)
+      FROM collections c
+      LEFT JOIN supplies s ON s.id = c.supply_id
+      WHERE c.invoice_id = invoices.id
+        AND ${activeCollectionClause('c')}
+        AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+        AND c.supply_id IS NOT NULL
+        AND LOWER(COALESCE(s.status, '')) IN ('approved', 'settled', 'supplied', 'completed')
+    ), 0) < COALESCE((
+      SELECT SUM(c.amount)
+      FROM collections c
+      WHERE c.invoice_id = invoices.id
+        AND ${activeCollectionClause('c')}
+        AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+    ), 0) - ${CLOSED_PHASE_INVOICE_EPSILON}
+  )
+`;
+
+const isInvoiceFinanciallyOutstanding = (invoiceLike = {}) => {
+  const invoiceNet = coalescePositiveNumber(invoiceLike.net_amount, invoiceLike.total_amount);
+  const collected = Number(invoiceLike.collected_amount ?? invoiceLike.paid_amount ?? 0);
+  const hasPendingCollections = Number(invoiceLike.pending_collections_count || 0) > 0;
+  const approved = Number(invoiceLike.approved_amount || 0);
+  const settled = Number(invoiceLike.settled_amount || 0);
+  return hasPendingCollections || collected < invoiceNet - CLOSED_PHASE_INVOICE_EPSILON || settled < approved - CLOSED_PHASE_INVOICE_EPSILON;
+};
+
+const moveInvoiceAndCollectionsToPhase = async (invoice, targetPhaseId) => {
+  const invoiceNet = coalescePositiveNumber(invoice.net_amount, invoice.total_amount);
+  const invoicePaid = Number(invoice.paid_amount || 0);
+
+  await execSQL(
+    `INSERT OR IGNORE INTO phase_invoice_carryforwards
+     (id, invoice_id, project_id, source_phase_id, target_phase_id, invoice_number, net_amount, paid_amount, created_at, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    [
+      uuidv4(),
+      invoice.id,
+      invoice.project_id || null,
+      invoice.phase_id || null,
+      targetPhaseId,
+      invoice.invoice_number || null,
+      invoiceNet,
+      invoicePaid,
+      new Date().toISOString(),
+    ]
+  );
+
+  await execSQL(`UPDATE invoices SET phase_id = ?, synced = 0 WHERE id = ?`, [targetPhaseId, invoice.id]);
+  await addToSyncQueue('invoices', 'UPDATE', { phase_id: targetPhaseId }, invoice.id);
+
+  const colsR = await execSQL(
+    `SELECT id FROM collections
+     WHERE invoice_id = ? AND ${ACTIVE_COLLECTION_ROW_CLAUSE}
+       AND (phase_id IS NULL OR phase_id != ?)`,
+    [invoice.id, targetPhaseId]
+  );
+
+  let collectionsMoved = 0;
+  for (const col of (colsR.rows._array || [])) {
+    await execSQL(`UPDATE collections SET phase_id = ?, synced = 0 WHERE id = ?`, [targetPhaseId, col.id]);
+    await addToSyncQueue('collections', 'UPDATE', { phase_id: targetPhaseId }, col.id);
+    collectionsMoved++;
+  }
+
+  return collectionsMoved;
+};
+
 // ═══════════════════════════════════════════════════
 // ── المشروع ──
 // ═══════════════════════════════════════════════════
@@ -130,6 +263,24 @@ export const getPhaseStats = async (phaseId) => {
   );
   const supplies = supR.rows._array?.[0] || { count: 0, total: 0 };
 
+  // الفواتير الملغية
+  const cancelledInvR = await execSQL(
+    `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+     FROM invoices
+     WHERE phase_id = ? AND LOWER(COALESCE(status, '')) IN ('cancelled', 'canceled')`,
+    [phaseId]
+  );
+  const cancelledInvoices = cancelledInvR.rows._array?.[0] || { count: 0, total: 0 };
+
+  // التحصيلات الملغية
+  const cancelledColR = await execSQL(
+    `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+     FROM collections
+     WHERE phase_id = ? AND LOWER(COALESCE(status, '')) IN ('cancelled', 'canceled')`,
+    [phaseId]
+  );
+  const cancelledCollections = cancelledColR.rows._array?.[0] || { count: 0, total: 0 };
+
   // نقاط البيع الجديدة خلال المرحلة (فواتير لنقاط بيع لم يسبق لها فواتير في مراحل سابقة)
   const phase = await getPhaseById(phaseId);
   let newPOSCount = 0;
@@ -158,6 +309,8 @@ export const getPhaseStats = async (phaseId) => {
     collections: { count: Number(collections.count), total: Number(collections.total) },
     collectionsAll: { count: Number(collectionsAll.count), total: Number(collectionsAll.total) },
     supplies: { count: Number(supplies.count), total: Number(supplies.total) },
+    cancelledInvoices: { count: Number(cancelledInvoices.count), total: Number(cancelledInvoices.total) },
+    cancelledCollections: { count: Number(cancelledCollections.count), total: Number(cancelledCollections.total) },
     newPOSCount,
     collectionEfficiency,
   };
@@ -311,19 +464,58 @@ export const updatePhase = async (phaseId, data) => {
 
 /**
  * نقل الفواتير المعلقة وغير المسددة وتحصيلاتها إلى المرحلة الجديدة.
- * يتم نقل:
- * - الفواتير بحالة pending أو partial
- * - التحصيلات المرتبطة بها (pending أو approved غير مورّدة)
+ *
+ * معيار النقل:
+ *   - الفاتورة غير ملغاة
+ *   - ولم تستوف شرط البقاء في المرحلة المغلقة:
+ *     التحصيل كامل، وكل التحصيلات معتمدة، وكل المعتمد مورّد/مسوّى
+ *
+ * يُبقى في المرحلة المغلقة:
+ *   - الفواتير الملغاة
+ *   - الفواتير المستوفية بالكامل مع تحصيلاتها المرتبطة بها
  */
 export const migrateOutstandingToPhase = async (newPhaseId) => {
   console.log(`[Phase] 🔄 Migrating outstanding invoices to phase ${newPhaseId}...`);
+  await ensurePhaseCarryForwardTable();
 
-  // 1) جلب الفواتير المعلقة من مراحل أخرى
+  // 1) جلب الفواتير التي لا يجوز بقاؤها في مرحلة مغلقة.
   const outstandingR = await execSQL(
-    `SELECT id FROM invoices
+    `SELECT invoices.*,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+       ), 0) AS collected_amount,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+       ), 0) AS approved_amount,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         LEFT JOIN supplies s ON s.id = c.supply_id
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+           AND c.supply_id IS NOT NULL
+           AND LOWER(COALESCE(s.status, '')) IN ('approved', 'settled', 'supplied', 'completed')
+       ), 0) AS settled_amount,
+       COALESCE((
+         SELECT COUNT(*)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
+       ), 0) AS pending_collections_count
+     FROM invoices
      WHERE (phase_id IS NULL OR phase_id != ?)
        AND (active = 1 OR active IS NULL)
-       AND status IN ('pending', 'partial')`,
+       AND ${closedPhaseViolationPredicate}`,
     [newPhaseId]
   );
   const outstanding = outstandingR.rows._array || [];
@@ -334,30 +526,94 @@ export const migrateOutstandingToPhase = async (newPhaseId) => {
   }
 
   let collectionsMoved = 0;
+  let invoicesMoved = 0;
 
   for (const inv of outstanding) {
-    // تحديث المرحلة للفاتورة
-    await execSQL(`UPDATE invoices SET phase_id = ?, synced = 0 WHERE id = ?`, [newPhaseId, inv.id]);
-    await addToSyncQueue('invoices', 'UPDATE', { phase_id: newPhaseId }, inv.id);
-
-    // نقل التحصيلات المرتبطة بالفاتورة
-    const colsR = await execSQL(
-      `SELECT id FROM collections
-       WHERE invoice_id = ? AND (active = 1 OR active IS NULL)
-         AND (phase_id IS NULL OR phase_id != ?)`,
-      [inv.id, newPhaseId]
-    );
-    for (const col of (colsR.rows._array || [])) {
-      await execSQL(`UPDATE collections SET phase_id = ?, synced = 0 WHERE id = ?`, [newPhaseId, col.id]);
-      await addToSyncQueue('collections', 'UPDATE', { phase_id: newPhaseId }, col.id);
-      collectionsMoved++;
+    if (!isInvoiceFinanciallyOutstanding(inv)) {
+      console.log(`[Phase] Skip invoice ${inv.id}: already fully paid.`);
+      continue;
     }
+    const movedCollections = await moveInvoiceAndCollectionsToPhase(inv, newPhaseId);
+    invoicesMoved++;
+    collectionsMoved += movedCollections;
   }
 
   notifyDataChanged('invoices');
   notifyDataChanged('collections');
-  console.log(`[Phase] ✅ Migrated ${outstanding.length} invoices and ${collectionsMoved} collections to new phase.`);
-  return { invoicesMoved: outstanding.length, collectionsMoved };
+  notifyDataChanged('phase_invoice_carryforwards');
+  console.log(`[Phase] ✅ Migrated ${invoicesMoved} invoices and ${collectionsMoved} collections to new phase.`);
+  return { invoicesMoved, collectionsMoved };
+};
+
+export const reconcileOutstandingInvoicesToActivePhase = async (projectId) => {
+  if (!projectId) return { invoicesMoved: 0, collectionsMoved: 0, activePhaseId: null };
+  await ensurePhaseCarryForwardTable();
+
+  const activeR = await execSQL(
+    `SELECT id FROM phases WHERE project_id = ? AND status = 'active' ORDER BY datetime(created_at) DESC LIMIT 1`,
+    [projectId]
+  );
+  const activePhaseId = activeR.rows._array?.[0]?.id || null;
+  if (!activePhaseId) return { invoicesMoved: 0, collectionsMoved: 0, activePhaseId: null };
+
+  const outstandingR = await execSQL(
+    `SELECT invoices.*,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+       ), 0) AS collected_amount,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+       ), 0) AS approved_amount,
+       COALESCE((
+         SELECT SUM(c.amount)
+         FROM collections c
+         LEFT JOIN supplies s ON s.id = c.supply_id
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+           AND c.supply_id IS NOT NULL
+           AND LOWER(COALESCE(s.status, '')) IN ('approved', 'settled', 'supplied', 'completed')
+       ), 0) AS settled_amount,
+       COALESCE((
+         SELECT COUNT(*)
+         FROM collections c
+         WHERE c.invoice_id = invoices.id
+           AND ${activeCollectionClause('c')}
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
+       ), 0) AS pending_collections_count
+     FROM invoices
+     WHERE project_id = ?
+       AND ${ACTIVE_ROW_CLAUSE}
+       AND (phase_id IS NULL OR phase_id != ?)
+       AND phase_id IN (SELECT id FROM phases WHERE project_id = ? AND status = 'closed')
+       AND ${closedPhaseViolationPredicate}`,
+    [projectId, activePhaseId, projectId]
+  );
+
+  let invoicesMoved = 0;
+  let collectionsMoved = 0;
+  for (const inv of (outstandingR.rows._array || [])) {
+    if (!isInvoiceFinanciallyOutstanding(inv)) continue;
+    collectionsMoved += await moveInvoiceAndCollectionsToPhase(inv, activePhaseId);
+    invoicesMoved++;
+  }
+
+  if (invoicesMoved > 0 || collectionsMoved > 0) {
+    notifyDataChanged('invoices');
+    notifyDataChanged('collections');
+    notifyDataChanged('phase_invoice_carryforwards');
+    console.log(`[Phase] Reconciled ${invoicesMoved} outstanding invoices to active phase ${activePhaseId}.`);
+  }
+
+  return { invoicesMoved, collectionsMoved, activePhaseId };
 };
 
 // ═══════════════════════════════════════════════════

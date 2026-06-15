@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, RefreshControl, Alert, ScrollView, Linking, Platform, Modal, TextInput, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { View, Text, RefreshControl, Alert, Linking, Platform, Modal, TextInput, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { useTheme } from '../theme';
@@ -7,11 +7,12 @@ import {
   getLocalCollections, deleteLocalCollection, subscribeDataChanges,
   approveLocalCollection, cancelLocalCollectionApproval
 } from '../services/database';
-import { syncNow as syncCollections, setCurrentUser } from '../services/SyncService';
+import { setCurrentUser } from '../services/SyncService';
 import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, Row, ScreenHeader } from '../components/UI';
 import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
+import AdvancedFiltersModal from '../components/AdvancedFiltersModal';
 
 export default function CollectionsScreen({ navigation }) {
   const { user, selectedPhase, projectId } = useAuth();
@@ -24,6 +25,9 @@ export default function CollectionsScreen({ navigation }) {
   const [tab, setTab] = useState('pending');
   const [search, setSearch] = useState('');
   const [expandedColId, setExpandedColId] = useState(null);
+  const [advancedFilters, setAdvancedFilters] = useState({});
+  const [showFiltersModal, setShowFiltersModal] = useState(false);
+  const hasDisplayedLocalDataRef = useRef(false);
   
   useEffect(() => { if (user) setCurrentUser(user); }, [user]);
 
@@ -38,33 +42,35 @@ export default function CollectionsScreen({ navigation }) {
       if (selectedPhase) filters.phase_id = selectedPhase.id;
       if (projectId) filters.project_id = projectId;
 
+      // Merge advanced filters
+      Object.assign(filters, advancedFilters);
+
+      const shouldShowInitialLoader = !quiet && !hasDisplayedLocalDataRef.current;
+      if (shouldShowInitialLoader) setLoading(true);
+      else if (!quiet) setRefreshing(true);
       const localData = await getLocalCollections(filters);
       setCols(localData);
-      if (!quiet) {
-        if (localData.length === 0) setLoading(true);
-        syncCollections(user).catch(e => console.log('SYNC ERROR:', e));
-      }
+      hasDisplayedLocalDataRef.current = true;
 
     } catch (e) {
       console.log('LOAD ERROR:', e);
     } finally {
-      if (!quiet) setLoading(false);
+      setLoading(false);
       setRefreshing(false);
     }
-  }, [user, selectedPhase, projectId]);
+  }, [user, selectedPhase, projectId, advancedFilters]);
 
   useEffect(() => {
-    if (cols.length === 0) setLoading(true);
     load();
-    const unsub = subscribeDataChanges(e => { if (['collections', 'all', 'sync_queue'].includes(e.type)) load(true); });
+    const unsub = subscribeDataChanges(e => { if (['collections', 'all'].includes(e.type)) load(true); });
     return unsub;
   }, [load]);
 
 
   const handleDelete = (id) =>
-    Alert.alert('حذف السند', 'هل أنت متأكد من حذف هذا السند نهائياً؟', [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: 'تأكيد', style: 'destructive', onPress: async () => { await deleteLocalCollection(id, user?.id || null); load(); } },
+    Alert.alert('إلغاء التحصيل', 'هل أنت متأكد من إلغاء هذا التحصيل؟ سيتم تعليمه كملغي ولن يُحذف.', [
+      { text: 'لا', style: 'cancel' },
+      { text: 'تأكيد الإلغاء', style: 'destructive', onPress: async () => { await deleteLocalCollection(id, user?.id || null); load(); } },
     ]);
 
   const handleApprovePress = (id) => {
@@ -87,7 +93,7 @@ export default function CollectionsScreen({ navigation }) {
       { text: 'نعم، إلغاء', style: 'destructive', onPress: async () => { await cancelLocalCollectionApproval(id, user?.id || null); load(); } },
     ]);
 
-  const visibleCollections = cols.filter(c => {
+  const visibleCollections = useMemo(() => cols.filter(c => {
     if (user?.role === 'agent' && c.status === 'approved') {
       const net = Number(c.inv_net || 0);
       const approved = Number(c.inv_approved ?? c.inv_paid ?? 0);
@@ -95,14 +101,18 @@ export default function CollectionsScreen({ navigation }) {
       return !fullyApproved;
     }
     return true;
-  });
+  }), [cols, user?.role]);
 
-  const pending = visibleCollections.filter(c => c.status === 'pending');
-  const approved = visibleCollections.filter(c => c.status === 'approved');
+  const pending = useMemo(() => visibleCollections.filter(c => c.status === 'pending'), [visibleCollections]);
+  const approved = useMemo(() => visibleCollections.filter(c => c.status === 'approved'), [visibleCollections]);
   const display = tab === 'pending' ? pending : tab === 'approved' ? approved : visibleCollections;
-  const filtered = display.filter(c => !search || JSON.stringify(c).toLowerCase().includes(search.toLowerCase()));
-  const totalPending = pending.reduce((s, c) => s + (c.amount || 0), 0);
-  const totalApproved = approved.reduce((s, c) => s + (c.amount || 0), 0);
+  const filtered = useMemo(
+    () => display.filter(c => !search || JSON.stringify(c).toLowerCase().includes(search.toLowerCase())),
+    [display, search]
+  );
+  const totalPending = useMemo(() => pending.reduce((sum, c) => sum + (c.amount || 0), 0), [pending]);
+  const totalApproved = useMemo(() => approved.reduce((sum, c) => sum + (c.amount || 0), 0), [approved]);
+  const keyExtractor = useCallback((item) => String(item.id), []);
   const methodLabel = m => ({ cash: 'نقدي', transfer: 'تحويل', check: 'شيك' }[m] || m);
   const metaChip = {
     flexDirection: 'row-reverse',
@@ -262,6 +272,15 @@ export default function CollectionsScreen({ navigation }) {
         searchPlaceholder="بحث بالرقم أو الاسم..."
         action={selectedPhase?.status !== 'closed' ? "+ سند" : undefined}
         onAction={selectedPhase?.status !== 'closed' ? () => navigation.push('NewCollection') : undefined}
+        onFilter={() => setShowFiltersModal(true)}
+      />
+
+      <AdvancedFiltersModal
+        visible={showFiltersModal}
+        onClose={() => setShowFiltersModal(false)}
+        currentFilters={advancedFilters}
+        onApply={(f) => setAdvancedFilters(f)}
+        type="collections"
       />
 
       {selectedPhase?.status === 'closed' && (
@@ -271,17 +290,29 @@ export default function CollectionsScreen({ navigation }) {
         </View>
       )}
 
-      {loading ? <Loading /> : filtered.length === 0
+      {!loading && refreshing && (
+        <View style={{ position: 'absolute', top: 8, left: 12, zIndex: 5, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.card + 'E6', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 }}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={{ fontSize: 11, color: colors.t2, fontWeight: '700' }}>تحديث...</Text>
+        </View>
+      )}
+
+      {loading && !hasDisplayedLocalDataRef.current ? <Loading /> : filtered.length === 0
         ? <Empty icon="dollar-sign" title="لا توجد تحصيلات" action={selectedPhase?.status !== 'closed' ? "قبض جديد" : undefined} onAction={selectedPhase?.status !== 'closed' ? () => navigation.push('NewCollection') : undefined} />
-        : <ScrollView
+        : <FlatList
+          data={filtered}
+          keyExtractor={keyExtractor}
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.blue} />}
-        >
-          {filtered.map(col => {
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={50}
+          windowSize={7}
+          removeClippedSubviews
+          renderItem={({ item: col }) => {
             const expanded = expandedColId === col.id;
             return (
             <TouchableOpacity 
-              key={col.id} 
               style={s.colCard} 
               activeOpacity={0.85} 
               onPress={() => setExpandedColId(expanded ? null : col.id)}
@@ -432,14 +463,14 @@ export default function CollectionsScreen({ navigation }) {
                         <Btn label="اعتماد" icon="check-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleApprovePress(col.id)} />
                       )}
                       {selectedPhase?.status !== 'closed' && col.status === 'approved' && user?.role === 'admin' && (
-                        <Btn label="تراجع" icon="corner-up-left" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleCancelApproval(col.id)} />
+                        <Btn label="إلغاء التحصيل" icon="x-circle" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleCancelApproval(col.id)} />
                       )}
                     </Row>
                     <Row style={{ gap: 10 }}>
                       <Btn label="واتساب" icon="message-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleWhatsApp(col)} />
                       <Btn label="الرسائل" icon="message-square" variant="outline" size="sm" style={{ flex: 1 }} onPress={() => handleSMS(col)} />
                       {selectedPhase?.status !== 'closed' && col.status === 'pending' && user?.role === 'admin' && (
-                        <Btn label="حذف" icon="trash-2" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleDelete(col.id)} />
+                        <Btn label="إلغاء" icon="x-circle" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleDelete(col.id)} />
                       )}
                     </Row>
                   </View>
@@ -447,8 +478,8 @@ export default function CollectionsScreen({ navigation }) {
               )}
             </TouchableOpacity>
           );
-        })}
-        </ScrollView>
+        }}
+        />
       }
     </View>
   );

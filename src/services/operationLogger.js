@@ -185,9 +185,9 @@ export async function logQueuedOperation({
   recordId = null,
   projectId = null,
   createdAt = null,
+  operationGroupId = null,
 }) {
   if (!tableName || !SUPPORTED_TABLES.has(tableName)) return null;
-  await ensureOperationsLogTable();
 
   if (syncQueueId) {
     const existing = await execSQL(`SELECT id FROM operations_log WHERE sync_queue_id = ? LIMIT 1`, [syncQueueId]);
@@ -221,10 +221,11 @@ export async function logQueuedOperation({
   const createdValue = createdAt || now;
   await execSQL(
     `INSERT INTO operations_log
-      (id, sync_queue_id, actor_user_id, actor_name, actor_role, operation_type, table_name, entity_name, record_id, reference_text, message_ar, old_values, new_values, project_id, phase_id, source, sync_status, sync_error, sync_details, device_id, session_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+      (id, operation_group_id, sync_queue_id, actor_user_id, actor_name, actor_role, operation_type, table_name, entity_name, record_id, reference_text, message_ar, old_values, new_values, project_id, phase_id, source, sync_status, sync_error, sync_details, device_id, session_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
     [
       logId,
+      operationGroupId,
       syncQueueId,
       actorUserId,
       actorName,
@@ -253,7 +254,6 @@ export async function logQueuedOperation({
 
 export async function ensureOperationLogForSyncQueueId(syncQueueId) {
   if (!syncQueueId) return null;
-  await ensureOperationsLogTable();
   const existing = await execSQL(`SELECT id FROM operations_log WHERE sync_queue_id = ? LIMIT 1`, [syncQueueId]);
   if ((existing.rows._array || []).length > 0) return existing.rows._array[0].id;
 
@@ -269,11 +269,11 @@ export async function ensureOperationLogForSyncQueueId(syncQueueId) {
     recordId: item.record_id || null,
     projectId: item.project_id || null,
     createdAt: item.created_at || null,
+    operationGroupId: item.operation_group_id || null,
   });
 }
 
 export async function backfillOperationsFromSyncQueue(limit = 200) {
-  await ensureOperationsLogTable();
   const r = await execSQL(
     `SELECT q.*
      FROM sync_queue q
@@ -294,6 +294,7 @@ export async function backfillOperationsFromSyncQueue(limit = 200) {
       recordId: item.record_id || null,
       projectId: item.project_id || null,
       createdAt: item.created_at || null,
+      operationGroupId: item.operation_group_id || null,
     });
   }
   return rows.length;
@@ -347,7 +348,6 @@ export async function markOperationSyncFailed(syncQueueId, errorMessage = null) 
 }
 
 export async function getPendingOfflineOperationsForUser(userId, { projectId = null, limit = 400 } = {}) {
-  await ensureOperationsLogTable();
   if (!projectId) {
     console.log('[Operations] blocked pending load without project_id');
     return [];
@@ -369,7 +369,6 @@ export async function getPendingOfflineOperationsForUser(userId, { projectId = n
 }
 
 export async function getGeneralOperationsLog({ projectId = null, phaseId = null, limit = 500 } = {}) {
-  await ensureOperationsLogTable();
   if (!projectId) {
     console.log('[Operations] blocked general load without project_id');
     return [];
@@ -391,38 +390,7 @@ export async function getGeneralOperationsLog({ projectId = null, phaseId = null
 }
 
 export async function ensureOperationsLogTable() {
-  await execSQL(
-    `CREATE TABLE IF NOT EXISTS operations_log (
-      id TEXT PRIMARY KEY NOT NULL,
-      sync_queue_id INTEGER,
-      actor_user_id TEXT,
-      actor_name TEXT,
-      actor_role TEXT,
-      operation_type TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      entity_name TEXT,
-      record_id TEXT,
-      reference_text TEXT,
-      message_ar TEXT NOT NULL,
-      old_values TEXT,
-      new_values TEXT,
-      project_id TEXT,
-      phase_id TEXT,
-      source TEXT DEFAULT 'sqlite',
-      sync_status TEXT DEFAULT 'pending',
-      sync_error TEXT,
-      sync_details TEXT,
-      device_id TEXT,
-      session_id TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      synced_at TEXT
-    )`
-  );
-  await execSQL(`CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_log_sync_queue ON operations_log(sync_queue_id)`);
-  await execSQL(`CREATE INDEX IF NOT EXISTS idx_operations_log_actor_created ON operations_log(actor_user_id, created_at DESC)`);
-  await execSQL(`CREATE INDEX IF NOT EXISTS idx_operations_log_project_phase ON operations_log(project_id, phase_id, created_at DESC)`);
-  await execSQL(`CREATE INDEX IF NOT EXISTS idx_operations_log_status ON operations_log(sync_status, created_at DESC)`);
+  return true;
 }
 
 export function getOperationTypeArabic(type) {

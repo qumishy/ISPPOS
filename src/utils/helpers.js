@@ -15,7 +15,7 @@ export const formatDateShort = (d) => {
 export const todayISO = () => new Date().toISOString().split('T')[0];
 
 export const statusLabel = (s) => ({
-  paid: 'مسددة', pending: 'معلقة', overdue: 'متأخرة', partial: 'جزئي', cancelled: 'ملغاة',
+  paid: 'مسددة', pending: 'معلقة', overdue: 'متأخرة', partial: 'جزئي', cancelled: 'ملغية',
   approved: 'معتمد', rejected: 'مرفوض', unapproved: 'غير معتمدة', approval_partial: 'معتمد جزئي',
   active: 'نشط', depleted: 'منتهي', critical: 'حرج',
   cash: 'نقدي', credit: 'آجل',
@@ -32,14 +32,14 @@ export const invoicePaymentStatusMeta = (status) => ({
   pending: { label: 'معلقة', color: '#f59e0b' },
   partial: { label: 'مسددة جزئياً', color: '#3b82f6' },
   paid: { label: 'مسددة', color: '#10b981' },
-  cancelled: { label: 'ملغاة', color: '#ef4444' },
+  cancelled: { label: 'ملغية', color: '#ef4444' },
 }[status] || { label: status || '—', color: '#64748b' });
 
 export const invoiceApprovalStatusMeta = (status) => ({
   unapproved: { label: 'غير معتمدة', color: '#f59e0b' },
   approval_partial: { label: 'معتمد جزئي', color: '#3b82f6' },
   approved: { label: 'معتمدة', color: '#10b981' },
-  cancelled: { label: 'ملغاة', color: '#ef4444' },
+  cancelled: { label: 'ملغية', color: '#ef4444' },
 }[status] || { label: status || '—', color: '#64748b' });
 
 export const creditPercent = (used, limit) => {

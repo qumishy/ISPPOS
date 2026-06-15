@@ -3,51 +3,7 @@ import { execSQL, notifyDataChanged, uuidv4 } from './dbCore';
 const TABLE_NAME = 'invoice_notifications_log';
 const normalizeText = (value) => String(value || '');
 
-const ensureTable = async () => {
-  await execSQL(`
-    CREATE TABLE IF NOT EXISTS invoice_notifications_log (
-      id TEXT PRIMARY KEY NOT NULL,
-      invoice_id TEXT NOT NULL,
-      notification_type TEXT NOT NULL,
-      recipient_user_id TEXT,
-      recipient_role TEXT,
-      project_id TEXT,
-      phase_id TEXT,
-      delivery_status TEXT DEFAULT 'pending',
-      error_message TEXT,
-      sent_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `);
-
-  await execSQL(`
-    DELETE FROM invoice_notifications_log
-    WHERE notification_type = 'overdue'
-      AND id NOT IN (
-        SELECT MIN(id)
-        FROM invoice_notifications_log
-        WHERE notification_type = 'overdue'
-        GROUP BY invoice_id, notification_type, COALESCE(project_id, ''), COALESCE(phase_id, '')
-      )
-  `);
-
-  await execSQL(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_notifications_log_unique
-    ON invoice_notifications_log (invoice_id, notification_type, recipient_user_id, recipient_role, project_id, phase_id)
-  `);
-
-  await execSQL(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_notifications_log_overdue_once
-    ON invoice_notifications_log (invoice_id, notification_type, COALESCE(project_id, ''), COALESCE(phase_id, ''))
-    WHERE notification_type = 'overdue'
-  `);
-
-  await execSQL(`
-    CREATE INDEX IF NOT EXISTS idx_invoice_notifications_log_invoice
-    ON invoice_notifications_log (invoice_id, notification_type, created_at DESC)
-  `);
-};
+const ensureTable = async () => true;
 
 export const ensureInvoiceNotificationLogTable = ensureTable;
 

@@ -20,13 +20,13 @@ const COLS = [
 ];
 export default function WalletDetailScreen({ route, navigation }) {
   const { agentId, name } = route.params;
-  const { projectId } = useAuth();
+  const { projectId, selectedPhase, allPhases } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ category_id: '', batch_id: '', pos_id: '', date: '' });
+  const [filters, setFilters] = useState({ category_id: '', batch_id: '', pos_id: '', date: '', phase_id: '' });
   const [search, setSearch] = useState('');
   const [filterVisible, setFilterVisible] = useState(false);
   const [totalSummary, setTotalSummary] = useState({ total: 0, sold: 0, rem: 0 });
@@ -38,6 +38,14 @@ export default function WalletDetailScreen({ route, navigation }) {
   const [sortAsc, setSortAsc] = useState(false);
 
   const activeCount = Object.values(filters).filter(Boolean).length;
+
+  useEffect(() => {
+    setFilters(prev => {
+      const nextPhaseId = selectedPhase?.id || '';
+      if (prev.phase_id === nextPhaseId) return prev;
+      return { ...prev, phase_id: nextPhaseId };
+    });
+  }, [selectedPhase?.id]);
 
   useEffect(() => {
     async function init() {
@@ -209,12 +217,13 @@ export default function WalletDetailScreen({ route, navigation }) {
         cats={cats} 
         batches={batches} 
         poses={poses} 
+        phases={allPhases || []}
       />
     </View>
   );
 }
 
-function FilterSheet({ visible, onClose, filters, onApply, colors, items, cats, batches, poses }) {
+function FilterSheet({ visible, onClose, filters, onApply, colors, items, cats, batches, poses, phases }) {
   const [local, setLocal] = useState(filters);
   const set = (k, v) => setLocal(p => ({ ...p, [k]: v }));
   useEffect(() => { if (visible) setLocal(filters); }, [visible, filters]);
@@ -238,6 +247,15 @@ function FilterSheet({ visible, onClose, filters, onApply, colors, items, cats, 
                 options={[{ label: 'الكل', value: '' }, ...Array.from(new Set(items.map(i => i.invoice_date))).filter(Boolean).sort().reverse().map(d => ({ label: d, value: d }))]} 
                 value={local.date} 
                 onChange={v => set('date', v)} 
+              />
+            </View>
+            <View style={{ marginBottom: 16 }}>
+              <Picker
+                label="المرحلة"
+                options={[{ label: 'الكل', value: '' }, ...(phases || []).map(p => ({ label: p.name, value: p.id }))]}
+                value={local.phase_id}
+                onChange={v => set('phase_id', v)}
+                searchable={true}
               />
             </View>
             <View style={{ marginBottom: 16 }}>
@@ -270,7 +288,7 @@ function FilterSheet({ visible, onClose, filters, onApply, colors, items, cats, 
 
           <View style={{ flexDirection: 'row', gap: 10, paddingTop: 8 }}>
             <TouchableOpacity
-              onPress={() => { onApply({ category_id: '', batch_id: '', pos_id: '', date: '' }); onClose(); }}
+              onPress={() => { onApply({ category_id: '', batch_id: '', pos_id: '', date: '', phase_id: '' }); onClose(); }}
               style={{ flex: 1, padding: 13, borderRadius: 11, borderWidth: 1, borderColor: colors.border + '60', alignItems: 'center' }}>
               <Text style={{ color: colors.t3, fontWeight: '700' }}>إعادة تعيين</Text>
             </TouchableOpacity>

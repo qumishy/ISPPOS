@@ -356,7 +356,7 @@ export function Avatar({ name, size = 40, color, style }) {
   );
 }
 
-export function ScreenHeader({ kpis, tabs, activeTab, onTabSelect, search, onSearch, searchPlaceholder = 'بحث...', action, onAction }) {
+export function ScreenHeader({ kpis, tabs, activeTab, onTabSelect, search, onSearch, searchPlaceholder = 'بحث...', action, onAction, onFilter }) {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   return (
@@ -387,7 +387,7 @@ export function ScreenHeader({ kpis, tabs, activeTab, onTabSelect, search, onSea
           })}
         </View>
       )}
-      {(onSearch || action) && (
+      {(onSearch || action || onFilter) && (
         <View style={s.shToolbar}>
           {onSearch && (
             <View style={s.shSearchBox}>
@@ -395,6 +395,11 @@ export function ScreenHeader({ kpis, tabs, activeTab, onTabSelect, search, onSea
               <TextInput style={s.shSearchInput} value={search} onChangeText={onSearch} placeholder={searchPlaceholder} placeholderTextColor={colors.t3} />
               {!!search && <TouchableOpacity onPress={() => onSearch('')}><Feather name="x" size={16} color={colors.t3} /></TouchableOpacity>}
             </View>
+          )}
+          {onFilter && (
+            <TouchableOpacity onPress={onFilter} style={{ padding: 8, backgroundColor: colors.bg2, borderRadius: radius.md, marginLeft: 8, borderWidth: 1, borderColor: colors.border }}>
+              <Feather name="filter" size={16} color={colors.t2} />
+            </TouchableOpacity>
           )}
           {action && (
             <TouchableOpacity style={s.shActionBtn} onPress={onAction} activeOpacity={0.82}>

@@ -15,6 +15,7 @@ import { todayISO, formatCurrency } from '../utils/helpers';
 import { Input, Btn, Loading, Row, Picker } from '../components/UI';
 import { makeStyles } from '../styles/form.styles';
 import { useLoading } from '../services/LoadingContext';
+import { uuidv4 } from '../services/dbCore';
 
 
 export default function NewInvoiceScreen({ navigation }) {
@@ -173,6 +174,7 @@ export default function NewInvoiceScreen({ navigation }) {
     console.log('[InvoiceSave] save start');
 
     try {
+      const operationGroupId = uuidv4();
       const sub = items.reduce((s, i) => s + i.total, 0);
       const { id } = await createLocalInvoice({
         ...form,
@@ -183,6 +185,7 @@ export default function NewInvoiceScreen({ navigation }) {
         project_id: projectId,
         phase_id: selectedPhase?.id || null,
         agent_id: form.agent_id || user?.id || null,
+        operation_group_id: operationGroupId,
       });
       console.log('[InvoiceSave] invoice saved', id);
 
@@ -195,7 +198,8 @@ export default function NewInvoiceScreen({ navigation }) {
             wallet_id: item.wallet_id || '',
             unit_price: item.unit_price,
             quantity: item.quantity,
-            total_price: item.unit_price * item.quantity
+            total_price: item.unit_price * item.quantity,
+            operation_group_id: operationGroupId,
           });
         }
         console.log('[InvoiceSave] items saved');
@@ -234,6 +238,7 @@ export default function NewInvoiceScreen({ navigation }) {
       { text: 'إلغاء', style: 'cancel', onPress: () => { savePromptOpenRef.current = false; } },
       {
         text: 'تأكيد وحفظ', onPress: async () => {
+          if (saveInFlightRef.current) return;
           savePromptOpenRef.current = false;
           await confirmAndSaveInvoice();
         }
@@ -259,7 +264,7 @@ export default function NewInvoiceScreen({ navigation }) {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={s.screen} contentContainerStyle={{ padding: spacing.md, paddingBottom: 100 }}>
+      <ScrollView pointerEvents={isSaving ? 'none' : 'auto'} style={s.screen} contentContainerStyle={{ padding: spacing.md, paddingBottom: 100 }}>
         <View style={s.invoiceHeader}><Text style={s.invoiceTitle}>🧾 مبيعات</Text><Text style={s.invoiceDate}>{form.invoice_date}</Text></View>
         <View style={s.section}>
           <Picker label="نقطة البيع *" options={pos.map(p => ({ value: p.id, label: p.name }))} value={form.pos_id} onChange={v => setForm({ ...form, pos_id: v })} placeholder="اختر العميل..." searchable={true} />

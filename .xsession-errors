@@ -1,0 +1,99 @@
+# Phase-Closing Audit Report & Implementation Plan
+
+## 1. Root Cause Analysis
+
+### The Bug: `migrateOutstandingToPhase` — Overly Broad Status Filter
+
+In `phaseService.js`, the `migrateOutstandingToPhase` function uses the `status` column stored on the invoice row to decide what to migrate:
+
+```js
+SELECT id FROM invoices
+WHERE (phase_id IS NULL OR phase_id != ?)
+  AND (active = 1 OR active IS NULL)
+  AND status IN ('pending', 'partial')
+```
+
+**Problem:** The `status` field on the `invoices` table is a **cached/denormalized** value, updated by `updateInvoiceStatus()` which sums collections. At the moment `closePhase` is called and then `createPhase` triggers migration:
+
+1. **Newly collected invoices** may still show `status = 'pending'` if `updateInvoiceStatus()` hasn't run yet for the last collection batch — meaning a fully-paid invoice gets incorrectly migrated.
+2. **Late-created collections** submitted just before phase close have `status = 'pending'` on the collection itself (pending cashier approval) even though the invoice is actually paid — those collections get stranded in the closed phase.
+
+There is **no check against `paid_amount >= net_amount`** — the system trusts the potentially stale `status` column.
+
+---
+
+## 2. Affected Tables
+
+| Table | Issue |
+|---|---|
+| `invoices` | 1 paid invoice (`INV-2026-0563`) incorrectly migrated to active phase `019d5d54` |
+| `invoices` | 1 pending invoice (`INV-2026-0639`) left stranded in closed phase `00000000` |
+| `collections` | 25 pending collections left in closed phase `00000000` whose parent invoices are **paid** — these should stay in the closed phase (they belong to paid invoices) |
+| `collections` | 1 collection (`COL-2026-0638`) incorrectly migrated to active phase alongside its paid invoice |
+| `phases` | 3 duplicate/ghost phases exist besides the original closed phase — architectural violation |
+
+---
+
+## 3. Current Data State
+
+### Phases
+| ID (short) | Name | Status |
+|---|---|---|
+| `00000000` | المرحلة الأولى | **closed** (correct) |
+| `5a9bf38a` | المرحلة الاولى\n | active (duplicate/ghost — no data) |
+| `8ee19f15` | المرحلة الأولى | active (duplicate/ghost — no data) |
+| `019d5d54` | اول مرحله | **active** (current) |
+
+### Invoices
+| Phase | Status | Count | Notes |
+|---|---|---|---|
+| `00000000` closed | `paid` | 94 | ✅ Correct |
+| `00000000` closed | `pending` | 1 | ❌ INV-2026-0639 — should be in active phase |
+| `019d5d54` active | `pending` | 41 | ✅ Correct |
+| `019d5d54` active | `paid` | 1 | ❌ INV-2026-0563 — paid on 2026-05-11, belongs in closed phase |
+
+### Collections
+| Phase | Status | Count | Notes |
+|---|---|---|---|
+| `00000000` closed | `approved` | 71 | ✅ Correct |
+| `00000000` closed | `pending` | 25 | ⚠️ All belong to **paid** invoices in closed phase — **correct phase but need approval** |
+| `019d5d54` active | `pending` | 1 | ❌ COL-2026-0638 — belongs to paid INV-2026-0563, should be in closed phase |
+
+### Supplies
+| Phase | Status | Count | Notes |
+|---|---|---|---|
+| `00000000` closed | `approved` | 5 | ✅ Correct — fully approved, stay in closed phase |
+
+---
+
+## 4. Repair Strategy (Safe, Idempotent)
+
+### Repair #1 — Move orphaned pending invoice to active phase
+**Target:** `INV-2026-0639` (status=`pending`, phase=closed `00000000`)
+**Action:** `UPDATE invoices SET phase_id = '019d5d54-cd75-4939-97af-ee8e0ec4c3a6' WHERE id = '3ef25f42-5ea0-4d34-8c8f-937868ddea37'`
+→ Also move any of its collections.
+
+### Repair #2 — Move misplaced paid invoice back to closed phase
+**Target:** `INV-2026-0563` (status=`paid`, created 2026-05-11, phase=active `019d5d54`)
+**Action:** `UPDATE invoices SET phase_id = '00000000-0000-4000-b000-000000000001' WHERE id = '8a7726f1-91ef-4f67-bce5-5bb2aef1fda4'`
+→ Also move its collection `COL-2026-0638` back to closed phase.
+
+### Repair #3 — 25 pending collections in closed phase
+These all belong to **paid** invoices that are correctly in the closed phase.
+**Decision:** Leave them in the closed phase — they are financially tied to closed invoices. The `pending` status means they haven't been approved by the cashier yet, but the invoice `paid_amount` already reflects the payment. They correctly stay in the closed phase.
+
+### Fix #4 — `migrateOutstandingToPhase` logic
+Replace status-based check with a financial reality check: `paid_amount < net_amount - 0.1` AND `status NOT IN ('cancelled')`.
+
+---
+
+## 5. Implementation Checklist
+
+- [x] Supabase data repair (Repair #1 and #2)
+- [ ] Fix `migrateOutstandingToPhase` in `phaseService.js`
+- [ ] Add phase filtering to Queries Screen (`ReportsScreen.js` audit tab — already has phase filter, verify it defaults to active)
+- [ ] Add phase filtering to Wallet Movement Screen (`WalletDetailScreen.js`)
+- [ ] Add phase filtering to Inventory Tracking Screen (`inventoryService.getInventoryTracking`)
+- [ ] Add "Phase Report" button in AdminScreen `PhasesTab`
+- [ ] Create `PhaseReportScreen.js`
+- [ ] Register `PhaseReportScreen` in `AppNavigator.js`

@@ -1,28 +1,26 @@
 # Roles And Permissions
 
-Roles are defined/enforced through `AuthContext.js`, `permissionsService.js`, and navigation filtering in `AppNavigator.js`.
+Roles are enforced through `AuthContext.js`, `permissionsService.js`, and navigation filtering in `AppNavigator.js`. Critical restrictions must also be enforced in services.
 
-## Admin
-- Full operational access.
-- Manages phases, users, categories, settings, permissions, reports, discount approvals.
-- Can close/resume phases and perform higher-risk deletes/approvals.
+## Admin / Manager
+- Manages projects/phases, users, categories, settings, permissions, reports, discount approvals.
+- Can close/resume phases under rules.
+- Can perform higher-risk approvals/deletes.
+- Has access to general operations log.
 
 ## Cashier / Accountant
-- Focuses on collection approval, supplies, and financial flows.
-- Can approve pending collections.
-- Uses cashier/dashboard collection widgets.
+- Handles collections approval, supplies/deposits, financial flows.
+- Can approve pending collections if permission allows.
+- Should not bypass project/phase restrictions.
 
 ## Agent
-- Creates invoices and collections for own scope.
-- Views own wallets/inventory and assigned POS context.
+- Creates invoices and collections within own scope.
+- Views own wallet/inventory/POS context.
 - Cannot approve own collections.
+- Dashboard wallet values must be scoped by `agent_id`, `project_id`, `phase_id`.
 
-## Project And Phase
-- User/session is tied to `project_id`.
-- UI filters most data by selected phase.
-- Closed phase shows read-only banner and disables create/approve/delete actions in relevant screens.
-
-## Permission Notes
-- `ROLE_PERMISSIONS` provides default screen access.
-- `app_permissions` supports local custom permission data.
-- Always enforce critical business restrictions in services, not only UI.
+## Project + Phase
+- User session is tied to `project_id`.
+- All screens and service queries must respect current project.
+- Selected/current phase filters most operational data.
+- Closed phases are view-only.

@@ -1,29 +1,34 @@
 # Project Root
 
-ISPPOS is an offline-first Expo React Native app for ISP card inventory, sales invoices, collections, cashier approval, supplies, and operational reporting.
+ISPPOS is an offline-first Expo React Native app for ISP card inventory, invoice sales, collections, cashier approval, supplies, project/phase management, operations logs, notifications, and reports.
 
-## Entry Points
-- `App.js`: initializes SQLite, starts network monitor/update checks, registers push token, wraps providers.
-- `src/navigation/AppNavigator.js`: active navigation tree, role-filtered drawer/tabs, phase selector, notification/operations shortcuts.
-- `src/services/database.js`: barrel export for local services.
+## Active Source Tree
+- `src/components`: shared UI, loading overlay, sync bar, export components.
+- `src/hooks`: sync/network hooks.
+- `src/navigation`: active navigation, mainly `AppNavigator.js`.
+- `src/screens`: all screens including dashboard, invoices, collections, inventory, reports, operations, settings, license/login, phases/admin.
+- `src/services`: SQLite core, Supabase sync, domain services, auth, notifications, operations, cache, update service.
+- `src/styles`, `src/theme`, `src/utils`.
 
-## Current Active Areas
-- Screens: `src/screens/*ListScreen.js`, `New*Screen.js`, `InvoiceDetailScreen.js`, `DashboardScreen.js`, `ReportsScreen.js`, `AdminScreen.js`, `OperationsScreen.js`.
-- Services: `dbCore.js`, `SyncService.js`, `AuthContext.js`, domain services for invoices, collections, inventory, wallets, POS, users, supplies, phases, permissions, notifications, operations.
-- Theme/styles: `src/theme/`, `src/styles/*.styles.js`.
+## Important Current Screens
+- `LicenseScreen.js`: project license authentication before login.
+- `LoginScreen.js`: user login under resolved project.
+- `DashboardScreen.js`: role-aware KPIs, phase-aware data, wallet and inventory summaries.
+- `InvoicesListScreen.js`, `NewInvoiceScreen.js`, `InvoiceDetailScreen.js`.
+- `CollectionsListScreen.js`, `NewCollectionScreen.js`, `CashierScreen.js`.
+- `InventoryListScreen.js`, `InventoryScreen.js`, `BatchStockDetailScreen.js`, `AddBatchScreen.js`, `AssignWalletScreen.js`.
+- `ReportsScreen.js`: SQLite-first reports/queries.
+- `OperationsScreen.js`: pending operations + general operations log.
+- `NotificationsListScreen.js`.
+- `SettingsScreen.js`, `UpdatesScreen.js`.
+- `AdminScreen.js`, `PermissionsScreen.js`, user/POS/wallet/supply screens.
 
-## Major Screens
-- `DashboardScreen.js`: role-aware KPIs, overdue/unpaid widgets, inventory health, weekly/agent trend widgets.
-- `InvoicesListScreen.js` / `InvoiceDetailScreen.js`: invoice status, remaining amount, discount state, detail/print/share.
-- `CollectionsListScreen.js` / `CashierScreen.js`: collection entry review, invoice payment/approval status display, cashier approval.
-- `InventoryListScreen.js` / `BatchStockDetailScreen.js`: batch stock, category health, batch financial summary.
-- `ReportsScreen.js`: SQLite audit, inventory, and wallet reports.
-- `AdminScreen.js`: phases, users, categories, settings, permissions.
+## Important Services
+- `dbCore.js`: SQLite open/init/migrations/indexes, DB ready, data change notifications.
+- `database.js`: service barrel/helpers used by screens.
+- `SyncService.js`: sync queue, Supabase pull/push, payload sanitization, initial sync.
+- `AuthContext.js`: session, project/license, active phase, permissions.
+- `invoiceService.js`, `collectionService.js`, `inventoryService.js`, `walletService.js`, `supplyService.js`, `phaseService.js`, `operationLogger.js`, `NotificationService.js`, `invoiceNotificationLogService.js`, `updateService.js`.
 
-## Project/Phase Context
-- `project_id` is required for project-scoped business data.
-- `phase_id` scopes operational periods and most dashboards/lists.
-- Admin manages phases. Closed phases become read-only in UI and service guards prevent new operational writes from forms.
-
-## Legacy Files
-Inactive wrappers/old modules are under `old/`. Do not reintroduce imports from `old/` unless intentionally restoring a file.
+## Cleanup Rule
+Do not delete files. If asked to organize, first build a dependency map from `App.js` and navigation. Move only files proven unused to `src/old/` preserving subfolders. If uncertain, leave in place and report as uncertain.

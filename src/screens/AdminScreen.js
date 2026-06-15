@@ -79,7 +79,7 @@ export default function AdminScreen({ navigation }) {
         ))}
       </ScrollView>
 
-      {tab === 'phases'     && <PhasesTab s={s} />}
+      {tab === 'phases'     && <PhasesTab s={s} navigation={navigation} />}
       {tab === 'users'      && <UsersTab s={s} />}
       {tab === 'categories' && <CategoriesTab s={s} />}
       {tab === 'network'    && <NetworkTab s={s} />}
@@ -89,7 +89,7 @@ export default function AdminScreen({ navigation }) {
 }
 
 // ── تبويب المراحل وبيانات المشروع
-function PhasesTab({ s }) {
+function PhasesTab({ s, navigation }) {
   const { user, projectId } = useAuth();
   const { colors, spacing, radius } = useTheme();
   const [phases, setPhases] = useState([]);
@@ -216,6 +216,13 @@ function PhasesTab({ s }) {
               </View>
             ))}
           </View>
+
+          <TouchableOpacity
+            onPress={() => navigation.navigate('PhaseReport', { phaseId: activePhase.id, phaseName: activePhase.name })}
+            style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: 10, paddingVertical: 10, alignItems: 'center' }}
+          >
+            <Text style={{ color: '#fff', fontSize: 12, fontWeight: '900' }}>تقرير المرحلة</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -263,6 +270,9 @@ function PhasesTab({ s }) {
                 <Text style={[s.userName, { fontSize: 15 }]}>{ph.name}</Text>
                 <Text style={s.userMeta}>{ph.start_date || '—'} → {ph.end_date || 'مفتوحة'}</Text>
                 {ph.description ? <Text style={{ fontSize: 11, color: colors.t3, marginTop: 2 }}>{ph.description}</Text> : null}
+                <TouchableOpacity onPress={() => navigation.navigate('PhaseReport', { phaseId: ph.id, phaseName: ph.name })} style={{ alignSelf: 'flex-start', marginTop: 8, backgroundColor: colors.blue + '15', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: colors.blue }}>تقرير المرحلة</Text>
+                </TouchableOpacity>
               </View>
               <View style={{ alignItems: 'flex-end', gap: 4 }}>
                 <View style={[s.roleBadge, { backgroundColor: stColor + '18', borderColor: stColor + '40' }]}>

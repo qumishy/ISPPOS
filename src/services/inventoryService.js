@@ -160,9 +160,15 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
  *   received_date, distributor_name, agent_name,
  *   invoice_number, pos_name, sale_date, tracking_status
  */
-export const getInventoryTracking = async (projectId) => {
+export const getInventoryTracking = async (projectId, phaseId = null) => {
   if (!projectId) return [];
-  return getCached(`reports:inventory_tracking:${projectId}`, async () => {
+  const cacheKey = `reports:inventory_tracking:${projectId}:${phaseId || 'all'}`;
+  return getCached(cacheKey, async () => {
+  const walletPhaseClause = phaseId ? ` AND (aw1.phase_id = '${phaseId}' OR aw1.phase_id IS NULL OR aw1.phase_id = '')` : '';
+  const walletPhaseClause2 = phaseId ? ` AND (aw2.phase_id = '${phaseId}' OR aw2.phase_id IS NULL OR aw2.phase_id = '')` : '';
+  const walletPhaseClause3 = phaseId ? ` AND (aw3.phase_id = '${phaseId}' OR aw3.phase_id IS NULL OR aw3.phase_id = '')` : '';
+  const walletPhaseClause4 = phaseId ? ` AND (aw4.phase_id = '${phaseId}' OR aw4.phase_id IS NULL OR aw4.phase_id = '')` : '';
+  const walletPhaseClause5 = phaseId ? ` AND (aw5.phase_id = '${phaseId}' OR aw5.phase_id IS NULL OR aw5.phase_id = '')` : '';
   // ── Query A: batch + wallet + distributor + agent ──────────────────────────
   const batchSQL = `
     SELECT
@@ -175,7 +181,7 @@ export const getInventoryTracking = async (projectId) => {
       COALESCE((
         SELECT SUM(COALESCE(aw1.total_cards, 0))
         FROM agent_wallets aw1
-        WHERE aw1.batch_id = b.id AND aw1.project_id = '${projectId}'
+        WHERE aw1.batch_id = b.id AND aw1.project_id = '${projectId}'${walletPhaseClause}
       ), 0)                                             AS wallet_assigned_total,
       COALESCE((
         SELECT SUM(COALESCE(ws3.sold_qty, 0))
@@ -187,7 +193,7 @@ export const getInventoryTracking = async (projectId) => {
           WHERE ${ACTIVE_INVOICE_CLAUSE('i')} AND i.project_id = '${projectId}'
           GROUP BY ii.wallet_id
         ) ws3 ON ws3.wallet_id = aw2.id
-        WHERE aw2.batch_id = b.id AND aw2.project_id = '${projectId}'
+        WHERE aw2.batch_id = b.id AND aw2.project_id = '${projectId}'${walletPhaseClause2}
       ), 0)                                             AS wallet_sold_total,
       COALESCE((
         SELECT SUM(MAX(0, COALESCE(aw3.total_cards, 0) - COALESCE(ws4.sold_qty, 0)))
@@ -199,13 +205,13 @@ export const getInventoryTracking = async (projectId) => {
           WHERE ${ACTIVE_INVOICE_CLAUSE('i')} AND i.project_id = '${projectId}'
           GROUP BY ii.wallet_id
         ) ws4 ON ws4.wallet_id = aw3.id
-        WHERE aw3.batch_id = b.id AND aw3.project_id = '${projectId}'
+        WHERE aw3.batch_id = b.id AND aw3.project_id = '${projectId}'${walletPhaseClause3}
       ), 0)                                             AS wallet_remaining_total,
       COALESCE((
         SELECT u1.name
         FROM agent_wallets aw4
         LEFT JOIN users u1 ON u1.id = aw4.issued_by
-        WHERE aw4.batch_id = b.id AND aw4.project_id = '${projectId}'
+        WHERE aw4.batch_id = b.id AND aw4.project_id = '${projectId}'${walletPhaseClause4}
         ORDER BY aw4.created_at DESC
         LIMIT 1
       ), '—')                                           AS distributor_name,
@@ -213,13 +219,14 @@ export const getInventoryTracking = async (projectId) => {
         SELECT u2.name
         FROM agent_wallets aw5
         LEFT JOIN users u2 ON u2.id = aw5.agent_id
-        WHERE aw5.batch_id = b.id AND aw5.project_id = '${projectId}'
+        WHERE aw5.batch_id = b.id AND aw5.project_id = '${projectId}'${walletPhaseClause5}
         ORDER BY aw5.created_at DESC
         LIMIT 1
       ), '—')                                           AS agent_name
     FROM batches b
     LEFT JOIN card_categories cc   ON cc.id    = b.category_id
     WHERE (b.active = 1 OR b.active IS NULL) AND b.project_id = '${projectId}'
+      ${phaseId ? `AND (b.phase_id = '${phaseId}' OR b.phase_id IS NULL OR b.phase_id = '')` : ''}
     ORDER BY b.received_date DESC, b.created_at DESC
   `;
 
@@ -235,6 +242,7 @@ export const getInventoryTracking = async (projectId) => {
     JOIN  invoices      inv ON inv.id = ii.invoice_id AND ${ACTIVE_INVOICE_CLAUSE('inv')}
     LEFT JOIN pos_customers pos ON pos.id = inv.pos_id
     WHERE ii.batch_id IS NOT NULL AND inv.project_id = '${projectId}'
+      ${phaseId ? `AND (inv.phase_id = '${phaseId}' OR inv.phase_id IS NULL OR inv.phase_id = '')` : ''}
     ORDER BY ii.batch_id, inv.invoice_date ASC, ii.rowid ASC
   `;
 

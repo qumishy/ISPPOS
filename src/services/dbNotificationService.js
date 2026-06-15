@@ -1,21 +1,56 @@
-import { execSQL, notifyDataChanged, uuidv4 } from './dbCore';
+import { execSQL, notifyDataChanged, uuidv4, isDbReady, waitForDbReady } from './dbCore';
 
 export const saveLocalNotificationBox = async (notification) => {
+  if (!isDbReady()) {
+    await waitForDbReady();
+    if (!isDbReady()) return;
+  }
   const idValue = notification.id || uuidv4();
-  const { project_id = null, user_id = null, title, body, type = '', reference_id = '', route = '', params = '{}', is_read = 0, created_at = new Date().toISOString() } = notification;
+  const {
+    project_id = null,
+    user_id = null,
+    title,
+    body,
+    type = '',
+    reference_id = '',
+    event_key = '',
+    route = '',
+    params = '{}',
+    is_read = 0,
+    created_at = new Date().toISOString()
+  } = notification;
   if (!project_id) {
     console.log('[Notifications] blocked save without project_id');
     return;
   }
-  console.log(`[Notifications] save project_id=${project_id} user_id=${user_id || 'all'} type=${type || 'general'}`);
+
+  if (event_key) {
+    const existing = await execSQL(
+      `SELECT id
+       FROM app_notifications
+       WHERE project_id = ?
+         AND COALESCE(user_id, '') = COALESCE(?, '')
+         AND event_key = ?
+       LIMIT 1`,
+      [project_id, user_id, event_key]
+    );
+    if ((existing.rows._array || []).length > 0) {
+      return existing.rows._array[0];
+    }
+  }
+
   await execSQL(`
-    INSERT OR REPLACE INTO app_notifications (id, project_id, user_id, title, body, type, reference_id, route, params, is_read, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [idValue, project_id, user_id, title, body, type, reference_id, route, params, is_read, created_at]);
+    INSERT OR REPLACE INTO app_notifications (id, project_id, user_id, title, body, type, reference_id, event_key, route, params, is_read, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [idValue, project_id, user_id, title, body, type, reference_id, event_key || null, route, params, is_read, created_at]);
   notifyDataChanged('notifications');
 };
 
 export const getLocalNotificationsBox = async (userId = null, projectId = null) => {
+  if (!isDbReady()) {
+    await waitForDbReady();
+    if (!isDbReady()) return [];
+  }
   if (!projectId) {
     console.log('[Notifications] blocked load without project_id');
     return [];
@@ -33,12 +68,20 @@ export const getLocalNotificationsBox = async (userId = null, projectId = null) 
 };
 
 export const markNotificationRead = async (id, projectId = null) => {
+  if (!isDbReady()) {
+    await waitForDbReady();
+    if (!isDbReady()) return;
+  }
   if (!projectId) return;
   await execSQL(`UPDATE app_notifications SET is_read = 1 WHERE id = ? AND project_id = ?`, [id, projectId]);
   notifyDataChanged('notifications');
 };
 
 export const markAllNotificationsRead = async (userId = null, projectId = null) => {
+  if (!isDbReady()) {
+    await waitForDbReady();
+    if (!isDbReady()) return;
+  }
   if (!projectId) return;
   if (userId) {
      await execSQL(`UPDATE app_notifications SET is_read = 1 WHERE project_id = ? AND (user_id = ? OR user_id IS NULL)`, [projectId, userId]);

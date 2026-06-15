@@ -70,7 +70,7 @@ export const createLocalSupply = async (data, collectionIds = []) => {
         reference_id: payload.id,
         projectId: payload.project_id,
         targetRoles: ['admin'],
-        targetUserIds: [],
+        targetUserIds: payload.agent_id ? [payload.agent_id] : [],
         excludeUserIds: [actor.id],
       });
     }

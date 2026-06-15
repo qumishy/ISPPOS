@@ -1,6 +1,6 @@
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from './supabase';
-import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged } from './database';
+import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged, isDbReady, waitForDbReady } from './database';
 import { saveNotificationHistory } from './NotificationService';
 import {
   markOperationSyncing,
@@ -17,13 +17,28 @@ let _syncInterval = null;
 let _listeners = [];
 let _currentUser = null;
 let _realtimeChannel = null;
+let _realtimeSubscriptionKey = '';
 let _initialSyncPromise = null;
 let _INITIAL_SYNC_IN_PROGRESS = false;
 let _INITIAL_SYNC_READY = false;
+let _pullPromise = null;
+const REMOTE_SYNC_TIMEOUT_MS = 45000;
 
 export const isInitialSyncInProgress = () => _INITIAL_SYNC_IN_PROGRESS;
 export const isInitialSyncReady = () => _INITIAL_SYNC_READY;
 export const setInitialSyncReady = (v) => { _INITIAL_SYNC_READY = !!v; };
+
+async function ensureDbReadyForSync() {
+  if (isDbReady()) return true;
+  await waitForDbReady();
+  return isDbReady();
+}
+
+const withRemoteTimeout = async (promise, label = 'sync operation', timeoutMs = REMOTE_SYNC_TIMEOUT_MS) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)),
+  ]);
 
 export async function hasLocalRequiredData(projectId) {
   if (!projectId) return false;
@@ -73,29 +88,35 @@ function normalizeRejectionReason(reason) {
 }
 
 export function setCurrentUser(user) {
+  const nextKey = user?.project_id && user?.id ? `${user.project_id}:${user.id}` : '';
+  const sameRealtimeContext = nextKey && nextKey === _realtimeSubscriptionKey;
   _currentUser = user;
-  // عند تعيين المستخدم، أعد تشغيل الاشتراك الفوري
-  if (user && _isOnline) {
+  if (user && _isOnline && !sameRealtimeContext) {
     startRealtimeSubscription();
   }
 }
 
 // ── الاشتراك الفوري في Supabase Realtime ──
 function startRealtimeSubscription() {
-  // إلغاء الاشتراك السابق
-  if (_realtimeChannel) {
-    supabase.removeChannel(_realtimeChannel);
-    _realtimeChannel = null;
-  }
-
   const user = _currentUser;
   if (!user?.project_id) {
     console.log('[Realtime] blocked subscription without project_id');
     return;
   }
+  const nextKey = `${user.project_id}:${user.id || 'anonymous'}`;
+  if (_realtimeChannel && _realtimeSubscriptionKey === nextKey) {
+    console.log('[Realtime] subscription already active for current user/project');
+    return;
+  }
+
+  if (_realtimeChannel) {
+    supabase.removeChannel(_realtimeChannel);
+    _realtimeChannel = null;
+    _realtimeSubscriptionKey = '';
+  }
 
   _realtimeChannel = supabase
-    .channel('db-changes')
+    .channel(`db-changes:${user.project_id}:${user.id || 'anonymous'}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'invoices' }, async (payload) => {
       const inv = payload.new;
       if (!inv.project_id || inv.project_id !== user.project_id) return;
@@ -211,6 +232,7 @@ function startRealtimeSubscription() {
     .subscribe((status) => {
       console.log('[Realtime] subscription status:', status);
     });
+  _realtimeSubscriptionKey = nextKey;
 
   console.log('[Realtime] subscribed to invoices + collections changes');
 }
@@ -230,7 +252,7 @@ export const TABLE_FIELDS = {
   phases: 'id,project_id,name,description,start_date,end_date,target_new_pos,expected_total_sales,expected_total_collections,status,created_by,created_at,closed_at'
 };
 
-const REQUIRED_INITIAL_SYNC_TABLES = [
+const CRITICAL_TABLES = [
   'project',
   'phases',
   'app_permissions',
@@ -239,11 +261,16 @@ const REQUIRED_INITIAL_SYNC_TABLES = [
   'card_categories',
   'batches',
   'agent_wallets',
+];
+
+const NON_CRITICAL_TABLES = [
   'invoices',
   'invoice_items',
   'collections',
   'supplies',
 ];
+
+const REQUIRED_INITIAL_SYNC_TABLES = CRITICAL_TABLES;
 
 const INITIAL_TABLE_PROGRESS_LABELS_AR = {
   project: 'جاري جلب بيانات المشروع',
@@ -569,6 +596,7 @@ async function updateOnlineState(online, source = 'unknown') {
   console.log(`[Sync] online=${_isOnline} source=${source}`);
 
   if (changed && _isOnline) {
+    if (!await ensureDbReadyForSync()) return;
     if (_INITIAL_SYNC_IN_PROGRESS) return;
     const exists = await syncQueueTableExists();
     if (!exists) return;
@@ -579,6 +607,10 @@ async function updateOnlineState(online, source = 'unknown') {
 }
 
 export async function startNetworkMonitor(onStatusChange) {
+  if (!await ensureDbReadyForSync()) {
+    console.log('[Sync] startNetworkMonitor deferred: DB not ready');
+    return;
+  }
   try {
     const initial = await NetInfo.fetch();
     const initialOnline = !!(initial.isConnected && initial.isInternetReachable !== false);
@@ -596,6 +628,7 @@ export async function startNetworkMonitor(onStatusChange) {
   if (_syncInterval) clearInterval(_syncInterval);
   _syncInterval = setInterval(async () => {
     if (_isOnline) {
+      if (!isDbReady()) return;
       if (_INITIAL_SYNC_IN_PROGRESS) return;
       const exists = await syncQueueTableExists();
       if (!exists) return;
@@ -625,10 +658,112 @@ export function stopNetworkMonitor() {
   if (_realtimeChannel) {
     supabase.removeChannel(_realtimeChannel);
     _realtimeChannel = null;
+    _realtimeSubscriptionKey = '';
   }
 }
 
 export const isOnline = () => _isOnline;
+
+const processQueueGroup = async (groupId) => {
+  try {
+    const r = await execSQL(
+      `SELECT * FROM sync_queue
+       WHERE operation_group_id = ?
+       ORDER BY
+         CASE
+           WHEN table_name = 'invoices' AND operation = 'INSERT' THEN 10
+           WHEN table_name = 'collections' AND operation = 'INSERT' THEN 20
+           WHEN table_name = 'invoice_items' AND operation = 'INSERT' THEN 30
+           WHEN table_name = 'agent_wallets' THEN 40
+           ELSE 100
+         END,
+         id ASC`,
+      [groupId]
+    );
+    const items = r.rows._array || [];
+    if (items.length === 0) return;
+
+    console.log(`[Sync] processing group id=${groupId} with ${items.length} items`);
+
+    let groupSuccess = true;
+    let errorMsg = null;
+
+    // Mark operations as syncing
+    await execSQL(`UPDATE operations_log SET sync_status = 'syncing', updated_at = ? WHERE operation_group_id = ?`, [new Date().toISOString(), groupId]);
+
+    for (const item of items) {
+      try {
+        const rawPayload = JSON.parse(item.payload || '{}');
+        const payload = sanitizePayload(item.table_name, rawPayload);
+        
+        if (item.table_name !== 'project' && !payload.project_id && item.record_id) {
+          try {
+            const projectR = await execSQL(`SELECT project_id FROM ${item.table_name} WHERE id = ? LIMIT 1`, [item.record_id]);
+            const resolvedProjectId = projectR.rows._array?.[0]?.project_id;
+            if (resolvedProjectId) payload.project_id = resolvedProjectId;
+          } catch (e) { }
+        }
+
+        if (item.table_name !== 'project' && payload.project_id !== _currentUser?.project_id) {
+           console.log(`[Sync] skip foreign-project group item id=${item.id} table=${item.table_name}`);
+           continue; 
+        }
+
+        let e = null;
+        if (item.operation === 'INSERT') {
+          console.log(`[Sync] Group -> Pushing INSERT to ${item.table_name} [${item.record_id}]`);
+          const { error: upsertError } = await supabase.from(item.table_name).upsert(payload, { onConflict: 'id' });
+          e = upsertError;
+        } else if (item.operation === 'UPDATE') {
+          console.log(`[Sync] Group -> Pushing UPDATE to ${item.table_name} [${item.record_id}]`);
+          let updateQuery = supabase.from(item.table_name).update(payload).eq('id', item.record_id);
+          if (item.table_name !== 'project') updateQuery = updateQuery.eq('project_id', _currentUser.project_id);
+          const { error: updateError } = await updateQuery;
+          e = updateError;
+        } else if (item.operation === 'DELETE') {
+          console.log(`[Sync] Group -> Pushing DELETE to ${item.table_name} [${item.record_id}]`);
+          let deleteQuery = supabase.from(item.table_name).delete().eq('id', item.record_id);
+          if (item.table_name !== 'project') deleteQuery = deleteQuery.eq('project_id', _currentUser.project_id);
+          const { error: deleteError } = await deleteQuery;
+          e = deleteError;
+        }
+
+        if (e) {
+          console.error(`[Sync] Group failed at table ${item.table_name}:`, e);
+          groupSuccess = false;
+          errorMsg = e.message;
+          break; // Stop processing children
+        }
+      } catch (err) {
+        console.error(`[Sync] Group exception at table ${item.table_name}:`, err);
+        groupSuccess = false;
+        errorMsg = err.message;
+        break;
+      }
+    }
+
+    const ids = items.map(i => i.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    if (groupSuccess) {
+      await execSQL(`DELETE FROM sync_queue WHERE id IN (${placeholders})`, ids);
+      
+      for (const item of items) {
+        try { await execSQL(`UPDATE ${item.table_name} SET synced=1 WHERE id=?`, [item.record_id]); } catch(e){}
+        notifyDataChanged(item.table_name);
+      }
+      
+      await execSQL(`UPDATE operations_log SET sync_status = 'synced', synced_at = ?, updated_at = ? WHERE operation_group_id = ?`, [new Date().toISOString(), new Date().toISOString(), groupId]);
+      console.log(`[Sync] success group id=${groupId}`);
+    } else {
+      await execSQL(`UPDATE sync_queue SET attempts = attempts + 1 WHERE id IN (${placeholders})`, ids);
+      await execSQL(`UPDATE operations_log SET sync_status = 'failed', sync_error = ?, updated_at = ? WHERE operation_group_id = ?`, [errorMsg || 'فشل غير معروف', new Date().toISOString(), groupId]);
+      console.log(`[Sync] failed group id=${groupId}: ${errorMsg}`);
+    }
+  } catch (err) {
+    console.error(`[Sync] Fatal error in processQueueGroup:`, err);
+  }
+};
 
 const processQueueItem = async (item) => {
   try {
@@ -675,6 +810,8 @@ const processQueueItem = async (item) => {
             const placeholders = ids.map(() => '?').join(',');
             await execSQL(`DELETE FROM sync_queue WHERE table_name = 'invoice_items' AND record_id IN (${placeholders})`, ids);
             await execSQL(`UPDATE invoice_items SET synced = 1 WHERE id IN (${placeholders})`, ids);
+            // Also update operations_log to mark these items as synced
+            await execSQL(`UPDATE operations_log SET sync_status = 'synced', synced_at = ?, updated_at = ? WHERE table_name = 'invoice_items' AND record_id IN (${placeholders})`, [new Date().toISOString(), new Date().toISOString(), ...ids]);
             console.log(`[Sync] Atomic invoice sync: cleared ${localItems.length} items from local sync_queue`);
           }
         } catch (err) {
@@ -769,6 +906,7 @@ function notifyListeners() {
 }
 
 export async function processSyncQueue() {
+  if (!await ensureDbReadyForSync()) return;
   if (_isSyncing || !_isOnline) return;
   if (!_currentUser?.project_id) {
     console.log('[Sync] blocked queue processing without project_id');
@@ -785,21 +923,22 @@ export async function processSyncQueue() {
     const count = await getSyncQueueCount();
     console.log(`[Sync] queue count before processing: ${count}`);
 
-    const r = await execSQL(
-      `SELECT * FROM sync_queue
-       WHERE attempts < 5
-       ORDER BY
-         CASE
-           WHEN table_name = 'invoices' AND operation = 'INSERT' THEN 10
-           WHEN table_name = 'invoice_items' AND operation = 'INSERT' THEN 20
-           WHEN table_name = 'collections' AND operation = 'INSERT' THEN 30
-           WHEN table_name = 'agent_wallets' THEN 40
-           ELSE 100
-         END,
-         id ASC
-       LIMIT 30`
+    const rGroups = await execSQL(
+      `SELECT DISTINCT operation_group_id FROM sync_queue
+       WHERE attempts < 5 AND operation_group_id IS NOT NULL
+       ORDER BY id ASC LIMIT 10`
     );
-    const queued = r.rows._array || [];
+    const groups = rGroups.rows._array || [];
+    for (const g of groups) {
+      await processQueueGroup(g.operation_group_id);
+    }
+
+    const rIsolated = await execSQL(
+      `SELECT * FROM sync_queue
+       WHERE attempts < 5 AND operation_group_id IS NULL
+       ORDER BY id ASC LIMIT 20`
+    );
+    const queued = rIsolated.rows._array || [];
 
     for (const item of queued) await processQueueItem(item);
 
@@ -815,6 +954,7 @@ export async function processSyncQueue() {
 }
 
 export async function retryFailedSyncQueueRecord(syncQueueId) {
+  if (!await ensureDbReadyForSync()) throw new Error('قاعدة البيانات ليست جاهزة بعد');
   if (!_isOnline) throw new Error('لا يوجد اتصال بالإنترنت');
   if (_isSyncing) throw new Error('المزامنة جارية حالياً');
   if (!_currentUser?.project_id) throw new Error('لا يمكن المزامنة بدون مشروع نشط');
@@ -830,8 +970,13 @@ export async function retryFailedSyncQueueRecord(syncQueueId) {
     );
     const item = r.rows._array?.[0];
     if (!item) throw new Error('العنصر غير موجود في طابور المزامنة');
-    await execSQL(`UPDATE sync_queue SET attempts = 0 WHERE id = ?`, [syncQueueId]);
-    await processQueueItem(item);
+    if (item.operation_group_id) {
+      await execSQL(`UPDATE sync_queue SET attempts = 0 WHERE operation_group_id = ?`, [item.operation_group_id]);
+      await processQueueGroup(item.operation_group_id);
+    } else {
+      await execSQL(`UPDATE sync_queue SET attempts = 0 WHERE id = ?`, [syncQueueId]);
+      await processQueueItem(item);
+    }
     notifyDataChanged('sync_queue');
   } finally {
     _isSyncing = false;
@@ -841,6 +986,11 @@ export async function retryFailedSyncQueueRecord(syncQueueId) {
 
 
 export async function syncAll(user) {
+  if (!await ensureDbReadyForSync()) return;
+  if (_isSyncing) {
+    console.log('[Sync] syncAll skipped: sync already running');
+    return;
+  }
   if (user) _currentUser = user;
   console.log("  SYNC START");
 
@@ -859,7 +1009,7 @@ export async function syncAll(user) {
     await processSyncQueue();
 
     // 2) سحب التغييرات البعيدة
-    await pullRemoteChanges(user);
+    await pullRemoteChanges(user, { timeoutMs: REMOTE_SYNC_TIMEOUT_MS });
 
     console.log("  SYNC DONE");
 
@@ -867,11 +1017,30 @@ export async function syncAll(user) {
 
   } catch (e) {
     console.log("  SYNC ERROR:", e);
+    try {
+      await backfillOperationsFromSyncQueue(100);
+    } catch (err) { }
   }
 }
 
 
 export const syncNow = syncAll;
+
+async function runStartupSyncInBackground(user) {
+  if (!user?.project_id) return;
+  setTimeout(async () => {
+    try {
+      if (!await ensureDbReadyForSync()) return;
+      if (_isOnline) {
+        await processSyncQueue();
+        await pullRemoteChanges(user, { timeoutMs: REMOTE_SYNC_TIMEOUT_MS });
+        notifyListeners();
+      }
+    } catch (e) {
+      console.log('[Sync] background startup sync skipped:', e?.message || e);
+    }
+  }, 0);
+}
 
 // 🛡️ دالة التعافي: رفع الفاتورة الأم المفقودة في السيرفر فوراً لإصلاح خطأ Foreign Key
 async function tryRecoverMissingInvoice(invoiceId) {
@@ -903,7 +1072,7 @@ async function tryRecoverMissingInvoice(invoiceId) {
   }
 }
 
-async function pullRemoteChanges(user, opts = {}) {
+async function pullRemoteChangesInternal(user, opts = {}) {
   const onTableProgress = typeof opts.onTableProgress === 'function' ? opts.onTableProgress : () => {};
   const includeTables = Array.isArray(opts.includeTables) && opts.includeTables.length
     ? opts.includeTables
@@ -915,219 +1084,232 @@ async function pullRemoteChanges(user, opts = {}) {
   }
   const metaR = await execSQL("SELECT value FROM sync_meta WHERE key='last_pull'");
   const lastPull = metaR.rows._array[0]?.value || '2000-01-01T00:00:00Z';
-  console.log(`[Sync] pullRemoteChanges start project_id=${user.project_id} last_pull=${lastPull}`);
-
+  console.log(`[InitialSync] start`);
   const tableNames = includeTables || Object.keys(TABLE_FIELDS);
   const tables = tableNames.map(name => ({
     name,
-    fields: TABLE_FIELDS[name]
+    fields: TABLE_FIELDS[name],
+    isCritical: CRITICAL_TABLES.includes(name)
   }));
 
   const totalTables = tables.length || 1;
   let completedTables = 0;
   let totalFetchedRows = 0;
+  let lastSuccessful = null;
 
-  for (const t of tables) {
+  for (let i = 0; i < tables.length; i++) {
+    const t = tables[i];
     let fetchedCount = 0;
     let appliedCount = 0;
     let status = 'ok';
+    let failedReason = null;
+
+    console.log(`[InitialSync] table start ${t.name}`);
+
+    onTableProgress({
+      table: t.name,
+      currentIndex: i + 1,
+      totalTables,
+      lastSuccessful,
+      status: 'loading'
+    });
 
     try {
+      const applyFilters = async (q) => {
+        if (t.name === 'project') {
+          q = q.eq('id', user.project_id);
+        } else {
+          q = q.eq('project_id', user.project_id);
+        }
+
+        if (opts.activePhaseId) {
+          if (['invoices', 'collections', 'supplies', 'agent_wallets'].includes(t.name)) {
+            q = q.eq('phase_id', opts.activePhaseId);
+          } else if (t.name === 'invoice_items') {
+            const invR = await execSQL(`SELECT id FROM invoices WHERE phase_id = ?`, [opts.activePhaseId]);
+            const invIds = invR.rows._array.map(r => r.id);
+            if (invIds.length > 0) {
+              // PostgREST IN filter supports large arrays, but we limit chunks if necessary.
+              q = q.in('invoice_id', invIds);
+            } else {
+              q = q.eq('id', 'NONE');
+            }
+          }
+        } else if (opts.historicalPhasesExcluding) {
+          if (['invoices', 'collections', 'supplies', 'agent_wallets'].includes(t.name)) {
+            q = q.neq('phase_id', opts.historicalPhasesExcluding);
+          } else if (t.name === 'invoice_items') {
+            const invR = await execSQL(`SELECT id FROM invoices WHERE phase_id != ? OR phase_id IS NULL`, [opts.historicalPhasesExcluding]);
+            const invIds = invR.rows._array.map(r => r.id);
+            if (invIds.length > 0) {
+              q = q.in('invoice_id', invIds);
+            } else {
+              q = q.eq('id', 'NONE');
+            }
+          }
+        }
+        return q;
+      };
+
       let query = supabase
         .from(t.name)
         .select(t.fields)
         .order('created_at', { ascending: false })
         .limit(2000);
 
-      if (t.name === 'project') {
-         query = query.eq('id', user.project_id);
-      } else {
-         query = query.eq('project_id', user.project_id);
-      }
+      query = await applyFilters(query);
 
-      let { data, error } = await query;
+      let queryPromise = query;
+      let { data, error } = await withRemoteTimeout(
+        queryPromise,
+        `pull_${t.name}`,
+        opts.tableTimeoutMs || 15000
+      ).catch(e => ({ error: e }));
 
       // Fallback for schema drift between app and remote DB (missing selected columns).
       if (error) {
         console.log(`[Sync] pull error ${t.name} (strict fields): ${error.message} -> fallback to select(*)`);
         let fallbackQuery = supabase.from(t.name).select('*').limit(2000);
-        if (t.name === 'project') {
-           fallbackQuery = fallbackQuery.eq('id', user.project_id);
-        } else {
-           fallbackQuery = fallbackQuery.eq('project_id', user.project_id);
-        }
-        const fallback = await fallbackQuery;
-        data = fallback.data;
+        fallbackQuery = await applyFilters(fallbackQuery);
+        const fallback = await withRemoteTimeout(
+          fallbackQuery,
+          `pull_fallback_${t.name}`,
+          opts.tableTimeoutMs || 15000
+        ).catch(e => ({ error: e }));
+        data = fallback.data || [];
         error = fallback.error;
       }
 
       if (error) {
-        console.log(`[Sync] pull error ${t.name} (fallback failed): ${error.message}`);
+        failedReason = error.message || 'Unknown network/timeout error';
+        console.log(`[InitialSync] table failed ${t.name} error=${failedReason}`);
         status = 'error';
         completedTables += 1;
         onTableProgress({
           table: t.name,
+          currentIndex: i + 1,
           completedTables,
           totalTables,
           fetchedRows: fetchedCount,
           appliedRows: appliedCount,
           totalFetchedRows,
           status,
+          errorMsg: failedReason,
+          lastSuccessful
         });
+        if (opts.isInitialSync && t.isCritical) {
+           throw new Error(`فشل جلب بيانات ${INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name}: ${failedReason}`);
+        }
         continue;
       }
 
       if (!data || data.length === 0) {
-        completedTables += 1;
         onTableProgress({
           table: t.name,
+          currentIndex: i + 1,
           completedTables,
           totalTables,
           fetchedRows: fetchedCount,
           appliedRows: appliedCount,
           totalFetchedRows,
           status,
+          lastSuccessful
         });
+        console.log(`[InitialSync] table success ${t.name} count=0`);
+        lastSuccessful = INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name;
         continue;
       }
       fetchedCount = data.length;
       totalFetchedRows += fetchedCount;
       console.log(`[Sync] pull ${t.name}: fetched=${fetchedCount}`);
 
-      for (const row of data) {
-        if (t.name === 'project') {
-          if (row.id !== user.project_id) continue;
-        } else if (!row.project_id || row.project_id !== user.project_id) {
-          console.log(`[Sync] skip pulled ${t.name}/${row.id || 'unknown'} foreign/missing project_id=${row.project_id || 'none'} current=${user.project_id}`);
-          continue;
-        }
-        if (t.name === 'agent_wallets') {
-          const skipWalletOverwrite = await hasPendingLocalWalletMutations(row.id);
-          if (skipWalletOverwrite) {
-            console.log(`[Sync] Skipping pull overwrite for wallet ${row.id} due to pending local wallet mutations`);
-            continue;
+      const BATCH_SIZE = 50;
+      const totalBatches = Math.ceil(data.length / BATCH_SIZE);
+      console.log(`[Sync] applying ${t.name} in ${totalBatches} batches (batch size: ${BATCH_SIZE})`);
+
+      for (let j = 0; j < data.length; j += BATCH_SIZE) {
+        const batchIndex = Math.floor(j / BATCH_SIZE) + 1;
+        const batch = data.slice(j, j + BATCH_SIZE);
+        console.log(`[Sync] ${t.name} batch ${batchIndex}/${totalBatches} start`);
+
+        const batchPromise = (async () => {
+          for (const row of batch) {
+            if (t.name === 'project') {
+              if (row.id !== user.project_id) continue;
+            } else if (!row.project_id || row.project_id !== user.project_id) {
+              continue;
+            }
+            if (t.name === 'agent_wallets') {
+              const skipWalletOverwrite = await hasPendingLocalWalletMutations(row.id);
+              if (skipWalletOverwrite) continue;
+            }
+            if (t.name === 'invoices') {
+              const skipInvoiceDiscountOverwrite = await hasPendingLocalInvoiceDiscountMutations(row.id);
+              if (skipInvoiceDiscountOverwrite) continue;
+            }
+
+            const inQueue = await hasPendingSyncForTableRecord(t.name, row.id);
+            if (inQueue) continue;
+
+            const clean = sanitizePayload(t.name, row);
+            if (t.name === 'invoice_items' && row && Object.prototype.hasOwnProperty.call(row, 'total_price')) {
+              clean.total_price = row.total_price;
+            }
+            if (t.name === 'invoices') {
+              if (!clean.net_amount) {
+                clean.net_amount = Math.max(0, Number(clean.total_amount || 0));
+              }
+            }
+
+            if ('is_active' in clean) {
+              clean.active = clean.is_active;
+              delete clean.is_active;
+            }
+
+            if (Object.keys(clean).length === 0) continue;
+
+            try {
+              await applyLocalRow(t.name, clean);
+              appliedCount += 1;
+            } catch (e) {
+              console.log(`[Sync] local insert error ${t.name} (id=${clean.id}): ${e.message}`);
+            }
           }
-        }
-        if (t.name === 'invoices') {
-          const skipInvoiceDiscountOverwrite = await hasPendingLocalInvoiceDiscountMutations(row.id);
-          if (skipInvoiceDiscountOverwrite) {
-            console.log(`[Sync] Skipping pull overwrite for invoice ${row.id} due to pending local discount mutations`);
-            continue;
-          }
-        }
+        })();
 
-        const inQueue = await hasPendingSyncForTableRecord(t.name, row.id);
-        if (inQueue) {
-          console.log(`[Sync] Skipping pull overwrite for ${t.name}/${row.id} as it is pending push`);
-          continue;
-        }
-
-        // normalize + drop unknown fields to avoid local schema mismatch on fallback pulls
-        const clean = sanitizePayload(t.name, row);
-        if (t.name === 'invoice_items' && row && Object.prototype.hasOwnProperty.call(row, 'total_price')) {
-          clean.total_price = row.total_price;
-        }
-        if (t.name === 'invoices') {
-          // net_amount يأتي مباشرة من Supabase؛ نحسبه فقط إذا غاب
-          if (!clean.net_amount) {
-            clean.net_amount = Math.max(0, Number(clean.total_amount || 0));
-          }
-        }
-
-        // =====       is_active   active =====
-        if ('is_active' in clean) {
-          clean.active = clean.is_active;
-          delete clean.is_active;
-        }
-
-        if (Object.keys(clean).length === 0) continue;
-
-        // =====               =====
         try {
-          // 🚀 إطلاق تنبيهات عند سحب بيانات جديدة
-          if (t.name === 'collections') {
-            const oldR = await execSQL(`SELECT status FROM collections WHERE id=?`, [row.id]);
-            const oldStatus = oldR.rows._array[0]?.status;
-
-            // أ) تنبيه المندوب عند تغيير حالة تحصيله (اعتماد/رفض)
-            if (user?.role === 'agent' && row.agent_id === user.id) {
-              const actorName = await getUserName(row.approved_by, 'الإدارة');
-              const posName = await getPOSName(row.pos_id);
-              if (oldStatus === 'pending' && row.status === 'approved') {
-                await saveNotificationHistory('✅ تم اعتماد تحصيلك', `${actorName} اعتمد تحصيلاً من (${posName}) بقيمة ${row.amount} ر.ي.`, { project_id: user.project_id });
-              } else if (oldStatus === 'pending' && row.status === 'rejected') {
-                await saveNotificationHistory('❌ تم رفض تحصيلك', `${actorName} رفض تحصيلاً من (${posName}) بقيمة ${row.amount} ر.ي. السبب: ${normalizeRejectionReason(row.rejection_reason)}`, { project_id: user.project_id });
-              } else if (!oldStatus && row.status === 'approved') {
-                // حالة نادرة (أول سحبة)
-                await saveNotificationHistory('✅ تم استلام تحصيل معتمد', `${actorName} اعتمد تحصيلاً من (${posName}) بقيمة ${row.amount} ر.ي.`, { project_id: user.project_id });
-              }
-            }
-
-            // ب) تنبيه المحاسب/المدير عند وصول تحصيل جديد ينتظر الاعتماد
-            if ((user?.role === 'cashier' || user?.role === 'admin') && row.status === 'pending') {
-              if (!oldStatus) { // سجل جديد تماماً
-                const actorName = await getUserName(row.agent_id, 'مندوب');
-                const posName = await getPOSName(row.pos_id);
-                await saveNotificationHistory('📥 تحصيل جديد بانتظار الاعتماد', `${actorName} سجّل تحصيلاً من (${posName}) بقيمة ${row.amount} ر.ي.`, { project_id: user.project_id });
-              }
-            }
-          }
-
-          // ج) تنبيه المدير/المحاسب عند وصول فاتورة جديدة من مندوب
-          if (t.name === 'invoices' && (user?.role === 'admin' || user?.role === 'cashier')) {
-            const oldInv = await execSQL(`SELECT id FROM invoices WHERE id=?`, [row.id]);
-            if (!oldInv.rows._array[0] && row.agent_id !== user.id) {
-              const actorName = await getUserName(row.agent_id, 'مندوب');
-              const posName = await getPOSName(row.pos_id);
-              await saveNotificationHistory('📄 فاتورة جديدة وردت', `${actorName} سجّل عملية بيع لنقطة (${posName}) بقيمة ${Number(row.net_amount || row.total_amount || 0)} ر.ي.`, { project_id: user.project_id });
-            }
-          }
-
-          // د) تنبيهات شاشة الإيرادات (التوريدات المالية)
-          if (t.name === 'supplies') {
-            const oldSR = await execSQL(`SELECT status FROM supplies WHERE id=?`, [row.id]);
-            const oldStatus = oldSR.rows._array[0]?.status;
-
-            // 1. وصول توريد جديد للمدير (بشرط أن المُنشئ ليس المدير نفسه)
-            if (user?.role === 'admin' && row.user_id !== user?.id) {
-              if (!oldStatus && row.status === 'pending') {
-                const actorName = await getUserName(row.user_id, 'محاسب');
-                await saveNotificationHistory('💰 توريد مالي جديد', `${actorName} رفع توريدًا بقيمة ${row.amount} ر.ي بانتظار اعتمادك.`, { project_id: user.project_id });
-              }
-            }
-
-            // 2. إشعار المحاسب عند اعتماد التوريد الخاص به (يصل لصاحب التوريد فقط)
-            if (row.user_id === user?.id) {
-              if (oldStatus === 'pending' && row.status === 'approved') {
-                await saveNotificationHistory('✅ تم اعتماد توريدك', `قام المدير باعتماد إيرادك المالي بقيمة ${row.amount} ر.ي.`, { project_id: user.project_id });
-              } else if (oldStatus === 'pending' && row.status === 'rejected') {
-                await saveNotificationHistory('❌ توريد مرفوض', `تم رفض الإيراد الذي رفعته بقيمة ${row.amount} ر.ي.`, { project_id: user.project_id });
-              }
-            }
-          }
-
-          await applyLocalRow(t.name, clean);
-          appliedCount += 1;
+          await withRemoteTimeout(batchPromise, `apply_batch_${t.name}_${batchIndex}`, 15000);
         } catch (e) {
-          console.log(`[Sync] local insert error ${t.name}: ${e.message}`);
+          console.log(`[Sync] batch ${batchIndex} apply timed out/failed: ${e.message}`);
+          throw new Error(`تعذر تطبيق بيانات ${INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name} محلياً`);
         }
+        
+        console.log(`[Sync] ${t.name} batch ${batchIndex}/${totalBatches} end (applied so far: ${appliedCount})`);
       }
 
       notifyDataChanged(t.name);
+      console.log(`[Sync] pull ${t.name}: fetched=${fetchedCount} applied=${appliedCount}`);
     } catch (e) {
-      console.log(`[Sync] pull exception ${t.name}: ${e.message}`);
+      console.log(`[InitialSync] table failed ${t.name} error=${e.message}`);
       status = 'error';
+      if (opts.isInitialSync && t.isCritical) {
+         throw new Error(e.message || `تعذر معالجة بيانات ${INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name}`);
+      }
     } finally {
       completedTables += 1;
       onTableProgress({
         table: t.name,
+        currentIndex: i + 1,
         completedTables,
         totalTables,
         fetchedRows: fetchedCount,
         appliedRows: appliedCount,
         totalFetchedRows,
         status,
+        lastSuccessful
       });
+      console.log(`[InitialSync] table success ${t.name} count=${appliedCount}`);
+      lastSuccessful = INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name;
     }
   }
 
@@ -1136,11 +1318,36 @@ async function pullRemoteChanges(user, opts = {}) {
     [new Date().toISOString()]
   );
 
+  try {
+    const { reconcileOutstandingInvoicesToActivePhase } = require('./phaseService');
+    await reconcileOutstandingInvoicesToActivePhase(user.project_id);
+  } catch (e) {
+    console.log('[Sync] phase reconciliation skipped:', e?.message || e);
+  }
+
   notifyDataChanged('reports_ready');
   console.log('[Sync] pullRemoteChanges completed');
 }
 
+async function pullRemoteChanges(user, opts = {}) {
+  if (!await ensureDbReadyForSync()) return;
+  if (_pullPromise) {
+    console.log('[Sync] pullRemoteChanges joined existing pull');
+    return _pullPromise;
+  }
+  _pullPromise = withRemoteTimeout(
+    pullRemoteChangesInternal(user, opts),
+    'pullRemoteChanges',
+    Number(opts.timeoutMs || REMOTE_SYNC_TIMEOUT_MS)
+  )
+    .finally(() => {
+      _pullPromise = null;
+    });
+  return _pullPromise;
+}
+
 export async function initialSync() {
+  if (!await ensureDbReadyForSync()) return;
   if (!_isOnline) return;
   if (!_currentUser?.project_id) {
     console.log('[Sync] blocked initialSync without project_id');
@@ -1156,8 +1363,18 @@ export async function initialSync() {
 }
 
 export async function runRequiredInitialSync(user, opts = {}) {
+  if (opts.forceRetry) {
+    console.log('[InitialSync] retry pressed');
+    _initialSyncPromise = null;
+    _pullPromise = null;
+    _INITIAL_SYNC_IN_PROGRESS = false;
+  }
+
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : () => {};
   const timeoutMs = Number(opts.timeoutMs || 90000);
+  if (!await ensureDbReadyForSync()) {
+    throw new Error('قاعدة البيانات لا تزال قيد التهيئة.');
+  }
 
   if (!user?.project_id) {
     throw new Error('لا يمكن بدء المزامنة الأولية بدون مشروع.');
@@ -1178,39 +1395,89 @@ export async function runRequiredInitialSync(user, opts = {}) {
     };
 
     try {
-      onProgress({ message: 'جاري تهيئة قاعدة البيانات 10%', percent: 10 });
+      const hasLocal = await hasLocalRequiredData(user.project_id);
+      if (hasLocal) {
+        _INITIAL_SYNC_READY = true;
+        onProgress({ message: 'تم تحميل البيانات المحلية 100%', percent: 100 });
+        runStartupSyncInBackground(user);
+        return { ready: true, offlineFallback: !_isOnline };
+      }
 
       if (!_isOnline) {
-        const hasLocal = await hasLocalRequiredData(user.project_id);
-        if (hasLocal) {
-          _INITIAL_SYNC_READY = true;
-          onProgress({ message: 'وضع عدم الاتصال - سيتم استخدام البيانات المحلية 100%', percent: 100 });
-          return { ready: true, offlineFallback: true };
-        }
         throw new Error('لا يوجد اتصال بالإنترنت ولا توجد بيانات محلية كافية لبدء التطبيق.');
       }
 
-      onProgress({ message: 'جاري تجهيز البيانات المحلية قبل المزامنة 15%', percent: 15 });
+      onProgress({ message: 'جاري تهيئة قاعدة البيانات...', percent: 10 });
       await withTimeout(processSyncQueue());
-      await withTimeout(
-        pullRemoteChanges(user, {
-          includeTables: REQUIRED_INITIAL_SYNC_TABLES,
-          onTableProgress: ({ table, completedTables, totalTables }) => {
-            const base = 15;
-            const syncRange = 75;
-            const progressRatio = totalTables > 0 ? (completedTables / totalTables) : 1;
-            const percent = Math.min(90, Math.max(base, Math.round(base + (progressRatio * syncRange))));
-            const label = INITIAL_TABLE_PROGRESS_LABELS_AR[table] || 'جاري مزامنة البيانات';
-            onProgress({ message: `${label} ${percent}%`, percent });
+      
+      // Priority 1: Bootstrap Sync
+      const bootstrapDone = await getSetting('bootstrap_done', '0');
+      if (bootstrapDone !== '1') {
+        console.log('[BootstrapSync] start');
+        const bootstrapOpts = {
+          timeoutMs: 180000,
+          tableTimeoutMs: 15000,
+          isInitialSync: true,
+          includeTables: CRITICAL_TABLES,
+          onTableProgress: ({ table, currentIndex, totalTables }) => {
+            const percent = Math.min(45, Math.round(10 + ((currentIndex / totalTables) * 35)));
+            const label = INITIAL_TABLE_PROGRESS_LABELS_AR[table] || table;
+            onProgress({ message: `جاري جلب: ${label}\nتم جلب ${currentIndex - 1} من ${totalTables}`, percent });
           },
-        })
-      );
+        };
+        await withTimeout(pullRemoteChangesInternal(user, bootstrapOpts));
+        console.log('[BootstrapSync] complete');
+        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('bootstrap_done', '1')");
+      } else {
+        console.log('[BootstrapSync] already done, skipping');
+      }
 
-      onProgress({ message: 'جاري تجهيز البيانات محلياً 92%', percent: 92 });
+      // Find Active Phase
+      const phasesResult = await execSQL("SELECT id FROM phases WHERE status = 'active' AND project_id = ? LIMIT 1", [user.project_id]);
+      const activePhaseId = phasesResult.rows.length > 0 ? phasesResult.rows._array[0].id : null;
+      
+      const activePhaseDone = await getSetting('active_phase_synced', '0');
+
+      // Priority 2: Active Phase Sync
+      if (activePhaseId && activePhaseDone !== '1') {
+        console.log('[ActivePhaseSync] start phase=' + activePhaseId);
+        const activePhaseOpts = {
+          timeoutMs: 180000,
+          tableTimeoutMs: 15000,
+          isInitialSync: true,
+          includeTables: NON_CRITICAL_TABLES,
+          activePhaseId: activePhaseId,
+          onTableProgress: ({ table, currentIndex, totalTables }) => {
+            const percent = Math.min(90, Math.round(50 + ((currentIndex / totalTables) * 40)));
+            const label = INITIAL_TABLE_PROGRESS_LABELS_AR[table] || table;
+            onProgress({ message: `جاري تجهيز بيانات المرحلة الحالية (${label})...`, percent });
+          },
+        };
+        await withTimeout(pullRemoteChangesInternal(user, activePhaseOpts));
+        console.log('[ActivePhaseSync] complete');
+        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('active_phase_synced', '1')");
+        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES (?, '1')", [`phase_synced_${activePhaseId}`]);
+      } else if (activePhaseId && activePhaseDone === '1') {
+        console.log('[ActivePhaseSync] already done, skipping');
+      } else {
+        console.log('[ActivePhaseSync] skipped (no active phase)');
+      }
+
+      onProgress({ message: 'جاري تجهيز البيانات محلياً...', percent: 95 });
       try { await backfillOperationsFromSyncQueue(300); } catch (e) { }
 
       _INITIAL_SYNC_READY = true;
+      console.log('[InitialSync] critical complete');
+      console.log('[InitialSync] background continue');
       onProgress({ message: 'اكتملت المزامنة 100%', percent: 100 });
+      
+      // Priority 3: Historical Phase Sync (Background)
+      if (activePhaseId) {
+        setTimeout(() => {
+          pullHistoricalPhases(user, activePhaseId).catch(() => {});
+        }, 1000);
+      }
+
       return { ready: true, offlineFallback: false };
     } finally {
       _INITIAL_SYNC_IN_PROGRESS = false;
@@ -1219,4 +1486,26 @@ export async function runRequiredInitialSync(user, opts = {}) {
   })();
 
   return _initialSyncPromise;
+}
+
+export async function pullHistoricalPhases(user, excludePhaseId) {
+  try {
+    console.log('[HistoricalPhaseSync] start background');
+    await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('historical_sync_started', '1')");
+    notifyDataChanged('historical_sync_started');
+    
+    // Attempt background sync for older phases
+    await pullRemoteChangesInternal(user, {
+      includeTables: NON_CRITICAL_TABLES,
+      historicalPhasesExcluding: excludePhaseId,
+      tableTimeoutMs: 30000
+    });
+
+    await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('historical_sync_completed', '1')");
+    console.log('[HistoricalPhaseSync] complete');
+    notifyDataChanged('historical_sync_completed');
+  } catch (e) {
+    console.log('[HistoricalPhaseSync] failed:', e.message);
+    notifyDataChanged('historical_sync_failed');
+  }
 }

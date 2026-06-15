@@ -423,7 +423,7 @@ export default function InvoiceDetailScreen({ route, navigation }) {
                   </View>
                   <Badge 
                     status={pm.status} 
-                    label={pm.status === 'approved' ? 'معتمد' : pm.status === 'cancelled' ? 'ملغى' : 'معلق'} 
+                    label={pm.status === 'approved' ? 'معتمد' : pm.status === 'cancelled' ? 'ملغية' : 'معلق'} 
                     size="sm" 
                     color={pm.status === 'approved' ? colors.green : pm.status === 'cancelled' ? colors.red : colors.orange}
                   />

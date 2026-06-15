@@ -70,9 +70,28 @@ export const getLocalCollections = async (filters = {}) => {
     params.push(filters.project_id);
     if (filters.status) { sql += ` AND c.status = ?`; params.push(filters.status); }
     if (filters.agent_id) { sql += ` AND c.agent_id = ?`; params.push(filters.agent_id); }
+    if (filters.approved_by) { sql += ` AND c.approved_by = ?`; params.push(filters.approved_by); }
     if (filters.invoice_id) { sql += ` AND c.invoice_id = ?`; params.push(filters.invoice_id); }
     if (filters.pos_id) { sql += ` AND c.pos_id = ?`; params.push(filters.pos_id); }
     if (filters.phase_id) { sql += ` AND c.phase_id = ?`; params.push(filters.phase_id); }
+    
+    if (filters.from_date) {
+      sql += ` AND date(COALESCE(c.collection_date, c.created_at)) >= date(?)`;
+      params.push(filters.from_date);
+    }
+    if (filters.to_date) {
+      sql += ` AND date(COALESCE(c.collection_date, c.created_at)) <= date(?)`;
+      params.push(filters.to_date);
+    }
+    if (filters.amount_min !== undefined && filters.amount_min !== '') {
+      sql += ` AND c.amount >= ?`;
+      params.push(Number(filters.amount_min));
+    }
+    if (filters.amount_max !== undefined && filters.amount_max !== '') {
+      sql += ` AND c.amount <= ?`;
+      params.push(Number(filters.amount_max));
+    }
+
     sql += ` ORDER BY c.created_at DESC`;
     const r = await execSQL(sql, params);
     return (r.rows._array || []).map((row) => {
@@ -176,7 +195,8 @@ export const createLocalCollection = async (data) => {
   }
 
   if (payload.invoice_id) await updateInvoiceStatus(payload.invoice_id);
-  await addToSyncQueue('collections', 'INSERT', payload, id);
+  const operationGroupId = data.operation_group_id || null;
+  await addToSyncQueue('collections', 'INSERT', payload, id, operationGroupId);
   notifyDataChanged('collections', payload);
   const { saveNotificationHistory } = require('./NotificationService');
   try { await saveNotificationHistory('💰 تحصيل جديد', `تم تسجيل تحصيل بمبلغ ${payload.amount} ر.ي بنجاح`, { project_id: payload.project_id }); } catch (e) { }
@@ -248,7 +268,7 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
         reference_id: id,
         projectId: ctx?.project_id || null,
         targetRoles: ['admin'],
-        targetUserIds: [],
+        targetUserIds: ctx?.agent_id ? [ctx.agent_id] : [],
         excludeUserIds: [actor.id],
       });
     }
@@ -329,8 +349,8 @@ export const rejectLocalCollection = async (id, reason = 'مرفوض') => {
 };
 
 export const deleteLocalCollection = async (id, actorId = null) => {
-  await execSQL('UPDATE collections SET active=0, synced=0 WHERE id=?', [id]);
-  await addToSyncQueue('collections', 'UPDATE', { active: 0 }, id);
+  await execSQL("UPDATE collections SET active=0, status='cancelled', synced=0 WHERE id=?", [id]);
+  await addToSyncQueue('collections', 'UPDATE', { active: 0, status: 'cancelled' }, id);
   const colR = await execSQL(`SELECT invoice_id FROM collections WHERE id=?`, [id]);
   if (colR.rows._array[0]?.invoice_id) await updateInvoiceStatus(colR.rows._array[0].invoice_id);
   notifyDataChanged('collections');
@@ -341,8 +361,8 @@ export const deleteLocalCollection = async (id, actorId = null) => {
     const actorName = actor?.name || 'مستخدم النظام';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
-      title: '🗑️ حذف تحصيل',
-      body: `${actorName} حذف تحصيلاً من (${ctx?.pos_name || 'نقطة غير محددة'}) بقيمة ${Number(ctx?.amount || 0)} ر.ي.`,
+      title: '🚫 إلغاء تحصيل',
+      body: `${actorName} ألغى تحصيلاً من (${ctx?.pos_name || 'نقطة غير محددة'}) بقيمة ${Number(ctx?.amount || 0)} ر.ي.`,
       targetUserIds: ctx?.agent_id ? [ctx.agent_id] : [],
       excludeUserIds: actor?.id ? [actor.id] : [],
       data: {
@@ -351,7 +371,7 @@ export const deleteLocalCollection = async (id, actorId = null) => {
         actor_id: actor?.id || null,
         actor_name: actorName,
         actor_role: actor?.role || null,
-        action: 'delete_collection',
+        action: 'cancel_collection',
         collection_id: id,
         affected_agent_id: ctx?.agent_id || null,
         delivery_channel: 'push',
