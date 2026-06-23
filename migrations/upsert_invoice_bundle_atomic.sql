@@ -357,7 +357,7 @@ BEGIN
 
   INSERT INTO public.invoice_items (
     id, project_id, invoice_id, category_id, batch_id, wallet_id,
-    quantity, unit_price, total_price, created_at
+    quantity, unit_price, created_at
   )
   SELECT
     NULLIF(x.id, '')::uuid,
@@ -368,7 +368,6 @@ BEGIN
     NULLIF(x.wallet_id, '')::uuid,
     x.quantity,
     x.unit_price,
-    x.quantity * x.unit_price,
     x.created_at
   FROM jsonb_to_recordset(p_invoice_items) AS x(
     id text,
@@ -390,7 +389,6 @@ BEGIN
     wallet_id = EXCLUDED.wallet_id,
     quantity = EXCLUDED.quantity,
     unit_price = EXCLUDED.unit_price,
-    total_price = EXCLUDED.total_price,
     created_at = EXCLUDED.created_at;
 
   FOR v_wallet IN
