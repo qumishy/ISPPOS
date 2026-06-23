@@ -1,6 +1,6 @@
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from './supabase';
-import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged, isDbReady, waitForDbReady } from './database';
+import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged, isDbReady, waitForDbReady, getSetting, saveSetting } from './database';
 import { saveNotificationHistory } from './NotificationService';
 import {
   markOperationSyncing,
@@ -23,6 +23,7 @@ let _INITIAL_SYNC_IN_PROGRESS = false;
 let _INITIAL_SYNC_READY = false;
 let _pullPromise = null;
 const REMOTE_SYNC_TIMEOUT_MS = 45000;
+const INVOICE_BUNDLE_RPC = 'upsert_invoice_bundle_atomic';
 
 export const isInitialSyncInProgress = () => _INITIAL_SYNC_IN_PROGRESS;
 export const isInitialSyncReady = () => _INITIAL_SYNC_READY;
@@ -664,6 +665,88 @@ export function stopNetworkMonitor() {
 
 export const isOnline = () => _isOnline;
 
+const syncInvoiceBundleGroup = async (items, groupId) => {
+  const invoiceQueueItem = items.find(item => item.table_name === 'invoices' && item.operation === 'INSERT');
+  if (!invoiceQueueItem) return false;
+
+  const rawInvoice = JSON.parse(invoiceQueueItem.payload || '{}');
+  const invoicePayload = sanitizePayload('invoices', rawInvoice);
+  if (!invoicePayload.project_id && invoiceQueueItem.record_id) {
+    const projectR = await execSQL(`SELECT project_id FROM invoices WHERE id = ? LIMIT 1`, [invoiceQueueItem.record_id]);
+    invoicePayload.project_id = projectR.rows._array?.[0]?.project_id || invoicePayload.project_id;
+  }
+  if (invoicePayload.project_id !== _currentUser?.project_id) {
+    throw new Error('تم تجاهل فاتورة تخص مشروعاً آخر على هذا الجهاز.');
+  }
+
+  const localItemsR = await execSQL(`SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at ASC`, [invoiceQueueItem.record_id]);
+  const localItems = localItemsR.rows._array || [];
+  if (localItems.length === 0) {
+    throw new Error('لا يمكن مزامنة الفاتورة قبل حفظ بنودها محلياً.');
+  }
+
+  const localItemsPayloads = localItems.map((it) => {
+    const p = sanitizePayload('invoice_items', it);
+    if (!p.project_id) p.project_id = invoicePayload.project_id;
+    return p;
+  });
+
+  const walletItems = items.filter(item => item.table_name === 'agent_wallets');
+  const itemWalletIds = Array.from(new Set(localItems.map(it => it.wallet_id).filter(Boolean)));
+  const queuedWalletIds = new Set(walletItems.map(item => item.record_id).filter(Boolean));
+  const missingWalletIds = itemWalletIds.filter(walletId => !queuedWalletIds.has(walletId));
+  if (missingWalletIds.length > 0) {
+    throw new Error(`بيانات تحديث المحفظة مفقودة للفواتير: ${missingWalletIds.join(',')}`);
+  }
+  const walletPayloads = walletItems.map((walletItem) => {
+    const walletPayload = sanitizePayload('agent_wallets', JSON.parse(walletItem.payload || '{}'));
+    if (!walletPayload.project_id && walletItem.record_id) walletPayload.project_id = invoicePayload.project_id;
+    if (walletPayload.project_id !== _currentUser?.project_id) {
+      throw new Error('تم تجاهل تحديث محفظة يخص مشروعاً آخر على هذا الجهاز.');
+    }
+    console.log(`[WalletDeduct] bundle project_id=${walletPayload.project_id} phase_id=${walletPayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} wallet_id=${walletItem.record_id} sold_cards=${walletPayload.sold_cards}`);
+    return walletPayload;
+  });
+
+  console.log(`[InvoiceSyncBundle] start rpc=${INVOICE_BUNDLE_RPC} project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} wallet_updates=${walletPayloads.length} group_id=${groupId}`);
+  const { error: rpcError } = await supabase.rpc(INVOICE_BUNDLE_RPC, {
+    p_invoice: invoicePayload,
+    p_invoice_items: localItemsPayloads,
+    p_wallet_updates: walletPayloads,
+  });
+  if (rpcError) {
+    console.log(`[InvoiceSyncBundle] failed invoice_id=${invoiceQueueItem.record_id} reason=${rpcError.message || rpcError}`);
+    throw rpcError;
+  }
+
+  const queueIds = items.map(i => i.id);
+  const queuePlaceholders = queueIds.map(() => '?').join(',');
+  await execSQL(`DELETE FROM sync_queue WHERE id IN (${queuePlaceholders})`, queueIds);
+  await execSQL(`UPDATE invoices SET synced = 1 WHERE id = ?`, [invoiceQueueItem.record_id]);
+
+  const itemIds = localItems.map(it => it.id);
+  if (itemIds.length) {
+    const itemPlaceholders = itemIds.map(() => '?').join(',');
+    await execSQL(`UPDATE invoice_items SET synced = 1 WHERE id IN (${itemPlaceholders})`, itemIds);
+  }
+
+  for (const walletItem of walletItems) {
+    try { await execSQL(`UPDATE agent_wallets SET synced = 1 WHERE id = ?`, [walletItem.record_id]); } catch (e) { }
+  }
+
+  await execSQL(
+    `UPDATE operations_log SET sync_status = 'synced', synced_at = ?, updated_at = ? WHERE operation_group_id = ?`,
+    [new Date().toISOString(), new Date().toISOString(), groupId]
+  );
+
+  notifyDataChanged('invoices');
+  notifyDataChanged('invoice_items');
+  notifyDataChanged('agent_wallets');
+  notifyDataChanged('sync_queue');
+  console.log(`[InvoiceSyncBundle] success project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} group_id=${groupId}`);
+  return true;
+};
+
 const processQueueGroup = async (groupId) => {
   try {
     const r = await execSQL(
@@ -690,6 +773,22 @@ const processQueueGroup = async (groupId) => {
 
     // Mark operations as syncing
     await execSQL(`UPDATE operations_log SET sync_status = 'syncing', updated_at = ? WHERE operation_group_id = ?`, [new Date().toISOString(), groupId]);
+
+    const hasInvoiceInsert = items.some(item => item.table_name === 'invoices' && item.operation === 'INSERT');
+    if (hasInvoiceInsert) {
+      try {
+        await syncInvoiceBundleGroup(items, groupId);
+        return;
+      } catch (bundleError) {
+        const ids = items.map(i => i.id);
+        const placeholders = ids.map(() => '?').join(',');
+        const errorMsg = bundleError?.message || 'فشل مزامنة الفاتورة مع بنودها.';
+        await execSQL(`UPDATE sync_queue SET attempts = attempts + 1 WHERE id IN (${placeholders})`, ids);
+        await execSQL(`UPDATE operations_log SET sync_status = 'failed', sync_error = ?, updated_at = ? WHERE operation_group_id = ?`, [errorMsg, new Date().toISOString(), groupId]);
+        console.log(`[InvoiceSyncBundle] failed group_id=${groupId} reason=${errorMsg}`);
+        return;
+      }
+    }
 
     for (const item of items) {
       try {
@@ -794,15 +893,42 @@ const processQueueItem = async (item) => {
         try {
           const itemsR = await execSQL(`SELECT * FROM invoice_items WHERE invoice_id = ?`, [item.record_id]);
           const localItems = itemsR.rows._array || [];
+          if (localItems.length === 0) {
+            throw new Error('لا يمكن مزامنة الفاتورة قبل حفظ بنودها محلياً.');
+          }
           const localItemsPayloads = localItems.map(it => {
             const p = sanitizePayload('invoice_items', it);
             if (!p.project_id) p.project_id = payload.project_id;
             return p;
           });
-          console.log(`[Sync] upsert_invoice_atomic: invoice_id=${item.record_id} items_count=${localItemsPayloads.length}`);
-          const { error: rpcError } = await supabase.rpc('upsert_invoice_atomic', {
+          const walletIds = Array.from(new Set(localItems.map(it => it.wallet_id).filter(Boolean)));
+          let walletQueueItems = [];
+          if (walletIds.length > 0) {
+            const placeholders = walletIds.map(() => '?').join(',');
+            const walletQueueR = await execSQL(
+              `SELECT * FROM sync_queue
+               WHERE table_name = 'agent_wallets'
+                 AND record_id IN (${placeholders})
+                 AND COALESCE(attempts, 0) < 5`,
+              walletIds
+            );
+            walletQueueItems = walletQueueR.rows._array || [];
+          }
+          const queuedWalletIds = new Set(walletQueueItems.map(w => w.record_id).filter(Boolean));
+          const missingWalletIds = walletIds.filter(walletId => !queuedWalletIds.has(walletId));
+          if (missingWalletIds.length > 0) {
+            throw new Error(`بيانات تحديث المحفظة مفقودة للفواتير: ${missingWalletIds.join(',')}`);
+          }
+          const walletPayloads = walletQueueItems.map((walletItem) => {
+            const walletPayload = sanitizePayload('agent_wallets', JSON.parse(walletItem.payload || '{}'));
+            if (!walletPayload.project_id) walletPayload.project_id = payload.project_id;
+            return walletPayload;
+          });
+          console.log(`[InvoiceSyncBundle] isolated start rpc=${INVOICE_BUNDLE_RPC} project_id=${payload.project_id || ''} phase_id=${payload.phase_id || ''} invoice_id=${item.record_id} invoice_number=${payload.invoice_number || ''} item_count=${localItemsPayloads.length} wallet_updates=${walletPayloads.length} queue_id=${item.id}`);
+          const { error: rpcError } = await supabase.rpc(INVOICE_BUNDLE_RPC, {
             p_invoice: payload,
-            p_invoice_items: localItemsPayloads
+            p_invoice_items: localItemsPayloads,
+            p_wallet_updates: walletPayloads
           });
           e = rpcError;
           if (!e && localItems.length > 0) {
@@ -812,10 +938,20 @@ const processQueueItem = async (item) => {
             await execSQL(`UPDATE invoice_items SET synced = 1 WHERE id IN (${placeholders})`, ids);
             // Also update operations_log to mark these items as synced
             await execSQL(`UPDATE operations_log SET sync_status = 'synced', synced_at = ?, updated_at = ? WHERE table_name = 'invoice_items' AND record_id IN (${placeholders})`, [new Date().toISOString(), new Date().toISOString(), ...ids]);
-            console.log(`[Sync] Atomic invoice sync: cleared ${localItems.length} items from local sync_queue`);
+            const walletQueueIds = walletQueueItems.map(w => w.id);
+            if (walletQueueIds.length > 0) {
+              const walletQueuePlaceholders = walletQueueIds.map(() => '?').join(',');
+              await execSQL(`DELETE FROM sync_queue WHERE id IN (${walletQueuePlaceholders})`, walletQueueIds);
+              const walletRecordIds = walletQueueItems.map(w => w.record_id).filter(Boolean);
+              if (walletRecordIds.length > 0) {
+                const walletRecordPlaceholders = walletRecordIds.map(() => '?').join(',');
+                await execSQL(`UPDATE agent_wallets SET synced = 1 WHERE id IN (${walletRecordPlaceholders})`, walletRecordIds);
+              }
+            }
+            console.log(`[InvoiceSyncBundle] isolated cleared_items invoice_id=${item.record_id} item_count=${localItems.length}`);
           }
         } catch (err) {
-          console.error('[Sync] Atomic invoice sync failed locally:', err);
+          console.error('[InvoiceSyncBundle] isolated failed:', err);
           e = err;
         }
       } else {
@@ -1056,8 +1192,39 @@ async function tryRecoverMissingInvoice(invoiceId) {
     if (inv) {
       const safeInvoicePayload = sanitizePayload('invoices', inv);
       console.log(`[Sync-Recovery] 🟢 Local record found! Forcing push to Supabase...`, JSON.stringify(safeInvoicePayload));
-      // نقوم برفع الفاتورة فوراً بـ upsert لضمان وجودها
-      const { error } = await supabase.from('invoices').upsert(safeInvoicePayload, { onConflict: 'id' });
+      const itemsR = await execSQL(`SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at ASC`, [invoiceId]);
+      const localItems = itemsR.rows._array || [];
+      if (localItems.length === 0) {
+        throw new Error('لا يمكن استعادة الفاتورة في السحابة بدون بنودها المحلية.');
+      }
+      const safeItemsPayload = localItems.map((it) => {
+        const p = sanitizePayload('invoice_items', it);
+        if (!p.project_id) p.project_id = safeInvoicePayload.project_id;
+        return p;
+      });
+      const walletIds = Array.from(new Set(localItems.map(it => it.wallet_id).filter(Boolean)));
+      let walletPayloads = [];
+      if (walletIds.length > 0) {
+        const placeholders = walletIds.map(() => '?').join(',');
+        const walletQueueR = await execSQL(
+          `SELECT payload FROM sync_queue
+           WHERE table_name = 'agent_wallets'
+             AND record_id IN (${placeholders})
+             AND COALESCE(attempts, 0) < 5`,
+          walletIds
+        );
+        walletPayloads = (walletQueueR.rows._array || []).map((row) => {
+          const p = sanitizePayload('agent_wallets', JSON.parse(row.payload || '{}'));
+          if (!p.project_id) p.project_id = safeInvoicePayload.project_id;
+          return p;
+        });
+      }
+      console.log(`[InvoiceSyncBundle] recovery rpc=${INVOICE_BUNDLE_RPC} project_id=${safeInvoicePayload.project_id || ''} phase_id=${safeInvoicePayload.phase_id || ''} invoice_id=${invoiceId} invoice_number=${safeInvoicePayload.invoice_number || ''} item_count=${safeItemsPayload.length} wallet_updates=${walletPayloads.length}`);
+      const { error } = await supabase.rpc(INVOICE_BUNDLE_RPC, {
+        p_invoice: safeInvoicePayload,
+        p_invoice_items: safeItemsPayload,
+        p_wallet_updates: walletPayloads
+      });
 
       if (error) {
         console.error(`[Sync-Recovery] ❌ Force push failed:`, error.message);
@@ -1411,9 +1578,10 @@ export async function runRequiredInitialSync(user, opts = {}) {
       await withTimeout(processSyncQueue());
       
       // Priority 1: Bootstrap Sync
-      const bootstrapDone = await getSetting('bootstrap_done', '0');
+      const bootstrapFlagKey = `bootstrap_done_${user.project_id}`;
+      const bootstrapDone = await getSetting(bootstrapFlagKey, '0');
       if (bootstrapDone !== '1') {
-        console.log('[BootstrapSync] start');
+        console.log(`[InitialSync] bootstrap start project_id=${user.project_id}`);
         const bootstrapOpts = {
           timeoutMs: 180000,
           tableTimeoutMs: 15000,
@@ -1426,21 +1594,22 @@ export async function runRequiredInitialSync(user, opts = {}) {
           },
         };
         await withTimeout(pullRemoteChangesInternal(user, bootstrapOpts));
-        console.log('[BootstrapSync] complete');
-        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('bootstrap_done', '1')");
+        console.log(`[InitialSync] bootstrap complete project_id=${user.project_id}`);
+        await saveSetting(bootstrapFlagKey, '1');
       } else {
-        console.log('[BootstrapSync] already done, skipping');
+        console.log(`[InitialSync] bootstrap already done project_id=${user.project_id}`);
       }
 
       // Find Active Phase
       const phasesResult = await execSQL("SELECT id FROM phases WHERE status = 'active' AND project_id = ? LIMIT 1", [user.project_id]);
       const activePhaseId = phasesResult.rows.length > 0 ? phasesResult.rows._array[0].id : null;
       
-      const activePhaseDone = await getSetting('active_phase_synced', '0');
+      const activePhaseFlagKey = activePhaseId ? `active_phase_synced_${user.project_id}_${activePhaseId}` : null;
+      const activePhaseDone = activePhaseFlagKey ? await getSetting(activePhaseFlagKey, '0') : '0';
 
       // Priority 2: Active Phase Sync
       if (activePhaseId && activePhaseDone !== '1') {
-        console.log('[ActivePhaseSync] start phase=' + activePhaseId);
+        console.log(`[InitialSync] active phase start project_id=${user.project_id} phase_id=${activePhaseId}`);
         const activePhaseOpts = {
           timeoutMs: 180000,
           tableTimeoutMs: 15000,
@@ -1454,13 +1623,13 @@ export async function runRequiredInitialSync(user, opts = {}) {
           },
         };
         await withTimeout(pullRemoteChangesInternal(user, activePhaseOpts));
-        console.log('[ActivePhaseSync] complete');
-        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('active_phase_synced', '1')");
-        await execSQL("INSERT OR REPLACE INTO sync_meta (key,value) VALUES (?, '1')", [`phase_synced_${activePhaseId}`]);
+        console.log(`[InitialSync] active phase complete project_id=${user.project_id} phase_id=${activePhaseId}`);
+        await saveSetting(activePhaseFlagKey, '1');
+        await saveSetting(`phase_synced_${user.project_id}_${activePhaseId}`, '1');
       } else if (activePhaseId && activePhaseDone === '1') {
-        console.log('[ActivePhaseSync] already done, skipping');
+        console.log(`[InitialSync] active phase already done project_id=${user.project_id} phase_id=${activePhaseId}`);
       } else {
-        console.log('[ActivePhaseSync] skipped (no active phase)');
+        console.log(`[InitialSync] active phase skipped project_id=${user.project_id} reason=no_active_phase`);
       }
 
       onProgress({ message: 'جاري تجهيز البيانات محلياً...', percent: 95 });

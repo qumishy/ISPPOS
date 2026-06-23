@@ -572,6 +572,267 @@ export const createLocalInvoice = async (data) => {
   return payload;
 };
 
+export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) => {
+  const id = data.id || uuidv4();
+  const created_at = data.created_at || new Date().toISOString();
+  const operationGroupId = data.operation_group_id || uuidv4();
+  const projectId = data.project_id || null;
+  let phaseId = data.phase_id || null;
+
+  if (!projectId) throw new Error('تعذر تحديد المشروع الحالي. الرجاء تسجيل الدخول بالترخيص أولاً.');
+  if (!phaseId) {
+    try {
+      const { getActivePhase } = require('./phaseService');
+      const activePhase = await getActivePhase(projectId);
+      if (activePhase) phaseId = activePhase.id;
+    } catch (e) {
+      console.log('[InvoiceCreate] active phase lookup failed', e?.message || e);
+    }
+  }
+  if (!phaseId) throw new Error('لا توجد مرحلة نشطة للمشروع الحالي. لا يمكن حفظ الفاتورة.');
+  if (!data.pos_id) throw new Error('يرجى اختيار نقطة البيع.');
+  if (!data.agent_id) throw new Error('تعذر تحديد المندوب. لا يمكن حفظ الفاتورة.');
+  if (!Array.isArray(invoiceItems) || invoiceItems.length === 0) throw new Error('أضف بنداً واحداً على الأقل.');
+
+  const posRes = await execSQL(
+    `SELECT id, name, credit_limit FROM pos_customers
+     WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+    [data.pos_id, projectId]
+  );
+  const pos = posRes.rows._array?.[0];
+  if (!pos) throw new Error('نقطة البيع غير موجودة أو غير فعالة.');
+
+  const agentRes = await execSQL(
+    `SELECT id, name, role FROM users
+     WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+    [data.agent_id, projectId]
+  );
+  const agent = agentRes.rows._array?.[0];
+  if (!agent) throw new Error('المندوب غير موجود أو غير فعال.');
+
+  const normalizedItems = invoiceItems.map((item, index) => {
+    const qty = Number(item.quantity || 0);
+    const unitPrice = Number(item.unit_price || 0);
+    if (!item.category_id) throw new Error(`يرجى اختيار الفئة للبند رقم ${index + 1}.`);
+    if (!item.batch_id) throw new Error(`يرجى اختيار الدفعة للبند رقم ${index + 1}.`);
+    if (!item.wallet_id) throw new Error(`يرجى اختيار المحفظة للبند رقم ${index + 1}.`);
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error(`كمية البند رقم ${index + 1} غير صحيحة.`);
+    if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`سعر البند رقم ${index + 1} غير صحيح.`);
+    return {
+      id: item.id && String(item.id).length > 20 ? item.id : uuidv4(),
+      invoice_id: id,
+      project_id: projectId,
+      phase_id: phaseId,
+      category_id: item.category_id,
+      batch_id: item.batch_id,
+      wallet_id: item.wallet_id,
+      quantity: qty,
+      unit_price: unitPrice,
+      total_price: Number(item.total_price ?? item.total ?? (qty * unitPrice)),
+      created_at,
+      synced: 0,
+    };
+  });
+
+  const totalAmt = Number(data.total_amount ?? normalizedItems.reduce((sum, item) => sum + item.total_price, 0));
+  const requestedDiscount = Math.max(0, Number(data.discount_requested_value ?? data.discount ?? 0));
+  const requestedReason = String(data.discount_requested_reason || data.discount_reason || '').trim();
+  const discountStatus = String(data.discount_status || '').trim() || (requestedDiscount > 0 ? 'pending_discount_approval' : 'none');
+  const appliedDiscount = (discountStatus === 'auto_approved' || discountStatus === 'approved')
+    ? Math.max(0, Number(data.discount_applied_value ?? requestedDiscount))
+    : Math.max(0, Number(data.discount_applied_value || 0));
+  const netAmt = Math.max(0, totalAmt - appliedDiscount);
+
+  if (Number(pos.credit_limit || 0) > 0) {
+    const { getPOSRemainingCredit } = require('./posService');
+    const { remainingCredit } = await getPOSRemainingCredit(data.pos_id);
+    if (netAmt > remainingCredit + 0.01) {
+      throw new Error('تجاوزت الفاتورة الحد الائتماني المتبقي لنقطة البيع');
+    }
+  }
+
+  let invoiceNumber = data.invoice_number || await getMonthlySequentialCode({
+    table: 'invoices',
+    column: 'invoice_number',
+    prefix: 'INV',
+    dateValue: data.invoice_date || created_at,
+  });
+
+  const payload = {
+    id,
+    invoice_number: invoiceNumber,
+    pos_id: data.pos_id,
+    agent_id: data.agent_id,
+    type: data.type || 'credit',
+    total_amount: totalAmt,
+    net_amount: netAmt,
+    paid_amount: Number(data.paid_amount || 0),
+    status: data.status || 'pending',
+    notes: data.notes || '',
+    invoice_date: data.invoice_date || created_at,
+    active: data.active ?? 1,
+    created_at,
+    is_deleted: Number(data.is_deleted || 0),
+    deleted_at: data.deleted_at || null,
+    deleted_by: data.deleted_by || null,
+    delete_reason: data.delete_reason || null,
+    discount_requested_value: requestedDiscount,
+    discount_applied_value: appliedDiscount,
+    discount_status: discountStatus,
+    discount_requested_reason: requestedReason,
+    discount_requested_by: data.discount_requested_by || data.agent_id || null,
+    discount_approved_by: data.discount_approved_by || null,
+    discount_approved_at: data.discount_approved_at || null,
+    phase_id: phaseId,
+    project_id: projectId,
+    synced: 0,
+  };
+
+  const result = await withTransaction(function* () {
+    const phaseR = yield {
+      sql: `SELECT id, status FROM phases WHERE id = ? AND project_id = ? LIMIT 1`,
+      params: [phaseId, projectId],
+    };
+    const phase = phaseR.rows._array?.[0];
+    if (!phase) throw new Error('المرحلة النشطة غير موجودة.');
+    if (phase.status === 'closed') throw new Error('لا يمكن إضافة فاتورة في مرحلة مغلقة.');
+
+    const walletUpdates = new Map();
+    const requestedByWallet = new Map();
+
+    for (const item of normalizedItems) {
+      const catR = yield {
+        sql: `SELECT id FROM card_categories
+              WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+        params: [item.category_id, projectId],
+      };
+      if (!catR.rows._array?.[0]?.id) throw new Error('الفئة غير موجودة أو غير فعالة.');
+
+      const batchR = yield {
+        sql: `SELECT id FROM batches
+              WHERE id = ? AND project_id = ? AND (phase_id = ? OR phase_id IS NULL) AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+        params: [item.batch_id, projectId, phaseId],
+      };
+      if (!batchR.rows._array?.[0]?.id) throw new Error('الدفعة غير موجودة أو لا تخص المرحلة الحالية.');
+
+      const walletR = yield {
+        sql: `SELECT id, total_cards, agent_id, batch_id, category_id, project_id, phase_id
+              FROM agent_wallets
+              WHERE id = ? AND project_id = ? AND (phase_id = ? OR phase_id IS NULL) LIMIT 1`,
+        params: [item.wallet_id, projectId, phaseId],
+      };
+      const wallet = walletR.rows._array?.[0];
+      if (!wallet) throw new Error('المحفظة غير موجودة.');
+      if (wallet.agent_id !== data.agent_id) throw new Error('المحفظة لا تخص المندوب المحدد.');
+      if (wallet.batch_id !== item.batch_id || wallet.category_id !== item.category_id) {
+        throw new Error('المحفظة لا تطابق الدفعة أو الفئة المحددة.');
+      }
+
+      const alreadyRequested = Number(requestedByWallet.get(item.wallet_id) || 0);
+      requestedByWallet.set(item.wallet_id, alreadyRequested + item.quantity);
+
+      if (!walletUpdates.has(item.wallet_id)) {
+        const soldR = yield {
+          sql: `SELECT COALESCE(SUM(ii.quantity), 0) as sold_qty
+                FROM invoice_items ii
+                JOIN invoices i ON i.id = ii.invoice_id
+                WHERE ii.wallet_id = ? AND ${ACTIVE_INVOICE_WHERE_CLAUSE}`,
+          params: [item.wallet_id],
+        };
+        walletUpdates.set(item.wallet_id, {
+          wallet,
+          soldDerived: Number(soldR.rows._array?.[0]?.sold_qty || 0),
+          requested: 0,
+        });
+      }
+
+      const update = walletUpdates.get(item.wallet_id);
+      update.requested += item.quantity;
+      const remaining = Number(update.wallet.total_cards || 0) - update.soldDerived - update.requested;
+      if (remaining < 0) {
+        throw new Error(`الكمية المطلوبة أكبر من المتاح في المحفظة. المتاح: ${Math.max(0, remaining + item.quantity)}`);
+      }
+    }
+
+    yield {
+      sql: `INSERT INTO invoices (id, project_id, invoice_number, pos_id, agent_id, type, total_amount, net_amount, paid_amount, status, notes, invoice_date, active, created_at, is_deleted, deleted_at, deleted_by, delete_reason, discount_requested_value, discount_applied_value, discount_status, discount_requested_reason, discount_requested_by, discount_approved_by, discount_approved_at, phase_id, synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [payload.id, payload.project_id, payload.invoice_number, payload.pos_id, payload.agent_id, payload.type, payload.total_amount, payload.net_amount, payload.paid_amount, payload.status, payload.notes, payload.invoice_date, payload.active, payload.created_at, payload.is_deleted, payload.deleted_at, payload.deleted_by, payload.delete_reason, payload.discount_requested_value, payload.discount_applied_value, payload.discount_status, payload.discount_requested_reason, payload.discount_requested_by, payload.discount_approved_by, payload.discount_approved_at, payload.phase_id, payload.synced],
+    };
+
+    yield {
+      sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+            VALUES (?, 'invoices', 'INSERT', ?, ?, ?, 0, datetime('now'))`,
+      params: [operationGroupId, JSON.stringify(payload), id, projectId],
+    };
+
+    for (const item of normalizedItems) {
+      yield {
+        sql: `INSERT INTO invoice_items (id, project_id, phase_id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        params: [item.id, item.project_id, item.phase_id, item.invoice_id, item.category_id, item.batch_id, item.wallet_id, item.quantity, item.unit_price, item.total_price, item.created_at, item.synced],
+      };
+      yield {
+        sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+              VALUES (?, 'invoice_items', 'INSERT', ?, ?, ?, 0, datetime('now'))`,
+        params: [operationGroupId, JSON.stringify(item), item.id, projectId],
+      };
+    }
+
+    const walletPayloads = [];
+    for (const [walletId, update] of walletUpdates.entries()) {
+      const nextSoldAbsolute = update.soldDerived + update.requested;
+      if (nextSoldAbsolute > Number(update.wallet.total_cards || 0)) {
+        throw new Error('لا يمكن أن يصبح رصيد المحفظة سالباً.');
+      }
+      yield {
+        sql: `UPDATE agent_wallets SET sold_cards = ?, synced = 0 WHERE id = ?`,
+        params: [nextSoldAbsolute, walletId],
+      };
+      const walletPayload = {
+        id: walletId,
+        project_id: projectId,
+        phase_id: update.wallet.phase_id || phaseId,
+        sold_cards: nextSoldAbsolute,
+      };
+      walletPayloads.push(walletPayload);
+      yield {
+        sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+              VALUES (?, 'agent_wallets', 'UPDATE', ?, ?, ?, 0, datetime('now'))`,
+        params: [operationGroupId, JSON.stringify(walletPayload), walletId, projectId],
+      };
+    }
+
+    return { invoice: payload, items: normalizedItems, walletPayloads };
+  });
+
+  console.log(`[InvoiceCreate] project_id=${projectId} phase_id=${phaseId} invoice_id=${id} invoice_number=${invoiceNumber} item_count=${normalizedItems.length} group_id=${operationGroupId}`);
+  result.items.forEach(item => {
+    console.log(`[InvoiceItemsCreate] project_id=${projectId} phase_id=${phaseId} invoice_id=${id} item_id=${item.id} wallet_id=${item.wallet_id} batch_id=${item.batch_id} category_id=${item.category_id} quantity=${item.quantity}`);
+  });
+  result.walletPayloads.forEach(w => {
+    console.log(`[WalletDeduct] project_id=${projectId} phase_id=${w.phase_id || phaseId} invoice_id=${id} wallet_id=${w.id} sold_cards=${w.sold_cards}`);
+  });
+
+  notifyDataChanged('invoices', payload);
+  notifyDataChanged('invoice_items');
+  notifyDataChanged('agent_wallets');
+  notifyDataChanged('sync_queue');
+
+  backfillOperationsFromSyncQueue(50).catch((e) => {
+    console.log('[SyncQueue] invoice bundle operation backfill skipped:', e?.message || e);
+  });
+
+  try {
+    const { recalculatePOSCreditBalance } = require('./posService');
+    await recalculatePOSCreditBalance(payload.pos_id);
+  } catch (e) {
+    console.log('[InvoiceCreate] POS credit recalculation skipped', e?.message || e);
+  }
+
+  return payload;
+};
+
 export const addInvoiceItem = async (data) => {
   const id = data.id || uuidv4();
   const qty = Number(data.quantity || 0);
@@ -586,22 +847,36 @@ export const addInvoiceItem = async (data) => {
     }
 
     const bR = yield {
-      sql: `SELECT id FROM batches WHERE id = ? LIMIT 1`,
+      sql: `SELECT id, project_id, phase_id FROM batches WHERE id = ? LIMIT 1`,
       params: [batchId]
     };
-    if (!bR.rows._array?.[0]?.id) {
+    const batch = bR.rows._array?.[0];
+    if (!batch?.id) {
       throw new Error('يرجى اختيار الدفعة');
     }
+
+    const invR = yield {
+      sql: `SELECT project_id, phase_id, agent_id FROM invoices WHERE id = ? LIMIT 1`,
+      params: [data.invoice_id]
+    };
+    const invoice = invR.rows._array?.[0];
+    if (!invoice?.project_id) throw new Error('تعذر تحديد مشروع الفاتورة.');
+    if (!invoice?.phase_id) throw new Error('تعذر تحديد مرحلة الفاتورة.');
 
     if (walletId) {
       // 1) Read wallet total and derive sold strictly from invoice_items (active invoices)
       const wR = yield {
-        sql: `SELECT total_cards FROM agent_wallets WHERE id = ?`,
+        sql: `SELECT total_cards, agent_id, batch_id, category_id, project_id, phase_id FROM agent_wallets WHERE id = ?`,
         params: [walletId]
       };
       const wallet = wR.rows._array?.[0];
       if (!wallet) {
         throw new Error('المحفظة غير موجودة');
+      }
+      if (wallet.project_id !== invoice.project_id) throw new Error('المحفظة لا تخص المشروع الحالي.');
+      if (wallet.agent_id !== invoice.agent_id) throw new Error('المحفظة لا تخص مندوب الفاتورة.');
+      if (wallet.batch_id !== batchId || wallet.category_id !== data.category_id) {
+        throw new Error('المحفظة لا تطابق الدفعة أو الفئة المحددة.');
       }
 
       const soldR = yield {
@@ -625,6 +900,18 @@ export const addInvoiceItem = async (data) => {
         sql: `UPDATE agent_wallets SET sold_cards = ?, synced = 0 WHERE id = ?`,
         params: [nextSoldAbsolute, walletId]
       };
+      const opGroupId = data.operation_group_id || null;
+      const walletPayload = {
+        id: walletId,
+        project_id: invoice.project_id,
+        phase_id: wallet.phase_id || invoice.phase_id,
+        sold_cards: nextSoldAbsolute,
+      };
+      yield {
+        sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+              VALUES (?, 'agent_wallets', 'UPDATE', ?, ?, ?, 0, datetime('now'))`,
+        params: [opGroupId, JSON.stringify(walletPayload), walletId, invoice.project_id]
+      };
     }
 
     // 8) Build invoice_item payload
@@ -634,13 +921,15 @@ export const addInvoiceItem = async (data) => {
       quantity: qty,
       unit_price: Number(data.unit_price || 0),
       total_price: Number(data.total_price || 0),
-      created_at, synced: 0
+      created_at, synced: 0,
+      project_id: invoice.project_id,
+      phase_id: invoice.phase_id
     };
 
     // 9) Insert invoice_item (inside same tx)
     yield {
-      sql: `INSERT INTO invoice_items (id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [itemPayload.id, itemPayload.invoice_id, itemPayload.category_id, itemPayload.batch_id, itemPayload.wallet_id, itemPayload.quantity, itemPayload.unit_price, itemPayload.total_price, itemPayload.created_at, itemPayload.synced]
+      sql: `INSERT INTO invoice_items (id, project_id, phase_id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [itemPayload.id, itemPayload.project_id, itemPayload.phase_id, itemPayload.invoice_id, itemPayload.category_id, itemPayload.batch_id, itemPayload.wallet_id, itemPayload.quantity, itemPayload.unit_price, itemPayload.total_price, itemPayload.created_at, itemPayload.synced]
     };
 
     // 10) Sync queue entry for invoice_item (inside same tx)

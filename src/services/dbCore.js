@@ -273,6 +273,7 @@ export const addToSyncQueue = async (tableName, operation, payload, recordId = n
     });
   } catch (e) { }
   notifyDataChanged('sync_queue');
+  console.log(`[SyncQueue] queued id=${ins.insertId} table=${tableName} operation=${operation} record_id=${recordId || ''} project_id=${projectId || ''} phase_id=${enhancedPayload.phase_id || ''} group_id=${operationGroupId || ''}`);
   return ins.insertId;
 };
 
@@ -306,17 +307,28 @@ export const getSetting = async (key, defaultValue) => {
   try {
     const r = await execSQL("SELECT value FROM sync_meta WHERE key = ?", [key]);
     if (r.rows._array && r.rows._array.length > 0) return r.rows._array[0].value;
-    return defaultValue;
-  } catch (e) { return defaultValue; }
+  } catch (e) { }
+  try {
+    const r = await execSQL("SELECT value FROM app_config WHERE key = ?", [key]);
+    if (r.rows._array && r.rows._array.length > 0) return r.rows._array[0].value;
+  } catch (e) { }
+  return defaultValue;
 };
 
 export const saveSetting = async (key, value) => {
+  const normalized = String(value);
   try {
-    await execSQL("INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)", [key, String(value)]);
+    await execSQL("INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)", [key, normalized]);
+  } catch (e) { }
+  try {
+    await execSQL("INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)", [key, normalized]);
   } catch (e) { }
 };
 
+export const setSetting = saveSetting;
+
 const createTables = async () => {
+  await execSQL(`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS sync_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_group_id TEXT, table_name TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT, record_id TEXT, attempts INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, project_id TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS operations_log (id TEXT PRIMARY KEY NOT NULL, operation_group_id TEXT, sync_queue_id INTEGER, actor_user_id TEXT, actor_name TEXT, actor_role TEXT, operation_type TEXT NOT NULL, table_name TEXT NOT NULL, entity_name TEXT, record_id TEXT, reference_text TEXT, message_ar TEXT NOT NULL, old_values TEXT, new_values TEXT, project_id TEXT, phase_id TEXT, source TEXT DEFAULT 'sqlite', sync_status TEXT DEFAULT 'pending', sync_error TEXT, sync_details TEXT, device_id TEXT, session_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, synced_at TEXT)`);

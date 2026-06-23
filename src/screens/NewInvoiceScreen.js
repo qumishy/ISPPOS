@@ -8,7 +8,7 @@ import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
 import {
   getLocalUsers, getLocalCategories, getLocalWallets, getLocalInvoices,
-  getBatchesByAgent, createLocalInvoice, addInvoiceItem, getLocalInvoiceItems,
+  getBatchesByAgent, createLocalInvoiceWithItems, getLocalInvoiceItems,
   getLocalPosDB, subscribeDataChanges, getPOSRemainingCredit
 } from '../services/database';
 import { todayISO, formatCurrency } from '../utils/helpers';
@@ -176,7 +176,7 @@ export default function NewInvoiceScreen({ navigation }) {
     try {
       const operationGroupId = uuidv4();
       const sub = items.reduce((s, i) => s + i.total, 0);
-      const { id } = await createLocalInvoice({
+      const { id } = await createLocalInvoiceWithItems({
         ...form,
         total_amount: sub,
         discount_requested_value: discountAmount,
@@ -186,30 +186,15 @@ export default function NewInvoiceScreen({ navigation }) {
         phase_id: selectedPhase?.id || null,
         agent_id: form.agent_id || user?.id || null,
         operation_group_id: operationGroupId,
-      });
-      console.log('[InvoiceSave] invoice saved', id);
-
-      try {
-        for (const item of items) {
-          await addInvoiceItem({
-            invoice_id: id,
-            category_id: item.category_id,
-            batch_id: item.batch_id || '',
-            wallet_id: item.wallet_id || '',
-            unit_price: item.unit_price,
-            quantity: item.quantity,
-            total_price: item.unit_price * item.quantity,
-            operation_group_id: operationGroupId,
-          });
-        }
-        console.log('[InvoiceSave] items saved');
-        console.log('[InvoiceSave] inventory updated');
-        console.log('[InvoiceSave] sync queued');
-        console.log('[InvoiceSave] operation logged');
-      } catch (itemsErr) {
-        console.log('[InvoiceSave] items/inventory failed:', itemsErr?.message || itemsErr);
-        throw new Error(itemsErr?.message || 'فشل تحديث المخزون أثناء حفظ بنود الفاتورة.');
-      }
+      }, items.map(item => ({
+        category_id: item.category_id,
+        batch_id: item.batch_id || '',
+        wallet_id: item.wallet_id || '',
+        unit_price: item.unit_price,
+        quantity: item.quantity,
+        total_price: item.unit_price * item.quantity,
+      })));
+      console.log('[InvoiceCreate] screen saved invoice_id=' + id + ' item_count=' + items.length);
 
       await openSavedInvoiceDetails(id);
     } catch (e) {

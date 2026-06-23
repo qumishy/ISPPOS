@@ -150,6 +150,7 @@ export function AuthProvider({ children }) {
       const syncFlagKey = `initial_sync_completed_${projectId}`;
       const completedFlag = (await getSetting(syncFlagKey, '0')) === '1';
       const localDataReady = await hasLocalRequiredData(user.project_id);
+      console.log(`[StartupConfig] project_id=${projectId} user_id=${user.id} dbReady=${isDbReady()} localDataReady=${localDataReady} initialSyncFlag=${completedFlag} online=${isOnline()}`);
 
       // Fast path: open immediately from SQLite on normal launches.
       if (localDataReady) {
@@ -180,6 +181,7 @@ export function AuthProvider({ children }) {
       setLoadingProgress('جاري جلب البيانات...', null);
 
       if (!isOnline() && !localDataReady) {
+        console.log(`[InitialSync] blocked offline project_id=${projectId} reason=no_local_data`);
         throw new Error('لا يوجد اتصال بالإنترنت ولا توجد بيانات محلية كافية. يرجى الاتصال بالإنترنت لإجراء المزامنة الأولية.');
       }
 
@@ -194,10 +196,12 @@ export function AuthProvider({ children }) {
       setOfflineMode(!!result?.offlineFallback);
       if (result?.ready) {
         try { await saveSetting(syncFlagKey, '1'); } catch (e) {}
+        console.log(`[InitialSync] ready project_id=${projectId}`);
       }
       setTimeout(() => hideLoading(), 250);
     } catch (e) {
       const msg = e?.message || 'فشلت المزامنة الأولية.';
+      console.log(`[InitialSync] failed project_id=${user?.project_id || ''} reason=${msg}`);
       setStartupError(msg);
       setInitialSyncReady(false);
       setInitialSyncReadyState(false);
