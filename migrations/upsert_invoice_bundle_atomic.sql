@@ -2,12 +2,10 @@
 -- Deploy this to Supabase before using app versions that call
 -- public.upsert_invoice_bundle_atomic().
 --
--- This function is intentionally defensive:
--- - invoice + items + wallet counters commit together or roll back together.
--- - item retries are idempotent by item id.
--- - wallet counters are set to an absolute value derived from active remote
---   invoice_items for the affected wallets, not incremented.
--- - existing invoice item sets are not silently changed on retry.
+-- Fixes:
+-- - Casts JSON text UUIDs to uuid before comparing/inserting.
+-- - Keeps invoice + items + wallet counters atomic.
+-- - Recalculates wallet sold_cards from active non-cancelled invoice_items.
 
 CREATE OR REPLACE FUNCTION public.upsert_invoice_bundle_atomic(
   p_invoice jsonb,
@@ -20,9 +18,9 @@ SECURITY INVOKER
 SET search_path = public
 AS $$
 DECLARE
-  v_invoice_id text;
-  v_project_id text;
-  v_phase_id text;
+  v_invoice_id uuid;
+  v_project_id uuid;
+  v_phase_id uuid;
   v_item_count integer;
   v_wallet_update_count integer;
   v_wallet_count integer;
@@ -45,9 +43,9 @@ BEGIN
     RAISE EXCEPTION 'p_wallet_updates must be an array';
   END IF;
 
-  v_invoice_id := NULLIF(p_invoice->>'id', '');
-  v_project_id := NULLIF(p_invoice->>'project_id', '');
-  v_phase_id := NULLIF(p_invoice->>'phase_id', '');
+  v_invoice_id := NULLIF(p_invoice->>'id', '')::uuid;
+  v_project_id := NULLIF(p_invoice->>'project_id', '')::uuid;
+  v_phase_id := NULLIF(p_invoice->>'phase_id', '')::uuid;
   v_item_count := COALESCE(jsonb_array_length(p_invoice_items), 0);
   v_wallet_update_count := COALESCE(jsonb_array_length(p_wallet_updates), 0);
 
@@ -77,8 +75,8 @@ BEGIN
       total_price numeric
     )
     WHERE NULLIF(x.id, '') IS NULL
-       OR x.invoice_id IS DISTINCT FROM v_invoice_id
-       OR x.project_id IS DISTINCT FROM v_project_id
+       OR NULLIF(x.invoice_id, '')::uuid IS DISTINCT FROM v_invoice_id
+       OR NULLIF(x.project_id, '')::uuid IS DISTINCT FROM v_project_id
        OR NULLIF(x.category_id, '') IS NULL
        OR NULLIF(x.batch_id, '') IS NULL
        OR COALESCE(x.quantity, 0) <= 0
@@ -112,7 +110,7 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_invoice_items) AS x(category_id text)
     LEFT JOIN public.card_categories c
-      ON c.id = x.category_id
+      ON c.id = NULLIF(x.category_id, '')::uuid
      AND c.project_id = v_project_id
     WHERE c.id IS NULL
   ) THEN
@@ -123,14 +121,14 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_invoice_items) AS x(batch_id text, category_id text)
     LEFT JOIN public.batches b
-      ON b.id = x.batch_id
+      ON b.id = NULLIF(x.batch_id, '')::uuid
      AND b.project_id = v_project_id
     WHERE b.id IS NULL
-       OR b.category_id IS DISTINCT FROM x.category_id
+       OR b.category_id IS DISTINCT FROM NULLIF(x.category_id, '')::uuid
        OR (
             v_phase_id IS NOT NULL
         AND NULLIF(to_jsonb(b)->>'phase_id', '') IS NOT NULL
-        AND NULLIF(to_jsonb(b)->>'phase_id', '') IS DISTINCT FROM v_phase_id
+        AND NULLIF(to_jsonb(b)->>'phase_id', '')::uuid IS DISTINCT FROM v_phase_id
        )
   ) THEN
     RAISE EXCEPTION 'invoice item batch_id does not exist in this project/phase or does not match category_id';
@@ -140,7 +138,7 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_invoice_items) AS x(wallet_id text)
     LEFT JOIN public.agent_wallets aw
-      ON aw.id = x.wallet_id
+      ON aw.id = NULLIF(x.wallet_id, '')::uuid
      AND aw.project_id = v_project_id
     WHERE NULLIF(x.wallet_id, '') IS NOT NULL
       AND aw.id IS NULL
@@ -152,10 +150,13 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_invoice_items) AS x(batch_id text, category_id text, wallet_id text)
     JOIN public.agent_wallets aw
-      ON aw.id = x.wallet_id
+      ON aw.id = NULLIF(x.wallet_id, '')::uuid
      AND aw.project_id = v_project_id
     WHERE NULLIF(x.wallet_id, '') IS NOT NULL
-      AND (aw.batch_id IS DISTINCT FROM x.batch_id OR aw.category_id IS DISTINCT FROM x.category_id)
+      AND (
+        aw.batch_id IS DISTINCT FROM NULLIF(x.batch_id, '')::uuid
+        OR aw.category_id IS DISTINCT FROM NULLIF(x.category_id, '')::uuid
+      )
   ) THEN
     RAISE EXCEPTION 'invoice item wallet does not match batch/category';
   END IF;
@@ -164,17 +165,17 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_invoice_items) AS x(wallet_id text)
     JOIN public.agent_wallets aw
-      ON aw.id = x.wallet_id
+      ON aw.id = NULLIF(x.wallet_id, '')::uuid
      AND aw.project_id = v_project_id
     WHERE NULLIF(x.wallet_id, '') IS NOT NULL
       AND v_phase_id IS NOT NULL
       AND NULLIF(to_jsonb(aw)->>'phase_id', '') IS NOT NULL
-      AND NULLIF(to_jsonb(aw)->>'phase_id', '') IS DISTINCT FROM v_phase_id
+      AND NULLIF(to_jsonb(aw)->>'phase_id', '')::uuid IS DISTINCT FROM v_phase_id
   ) THEN
     RAISE EXCEPTION 'invoice item wallet does not belong to invoice phase';
   END IF;
 
-  SELECT COUNT(DISTINCT wallet_id)
+  SELECT COUNT(DISTINCT NULLIF(wallet_id, '')::uuid)
     INTO v_wallet_count
   FROM jsonb_to_recordset(p_invoice_items) AS x(wallet_id text)
   WHERE NULLIF(wallet_id, '') IS NOT NULL;
@@ -186,14 +187,14 @@ BEGIN
   IF EXISTS (
     SELECT 1
     FROM (
-      SELECT DISTINCT wallet_id
+      SELECT DISTINCT NULLIF(wallet_id, '')::uuid AS wallet_id
       FROM jsonb_to_recordset(p_invoice_items) AS x(wallet_id text)
       WHERE NULLIF(wallet_id, '') IS NOT NULL
     ) iw
     LEFT JOIN (
-      SELECT DISTINCT id
+      SELECT DISTINCT NULLIF(id, '')::uuid AS id
       FROM jsonb_to_recordset(p_wallet_updates) AS x(id text, project_id text, sold_cards integer)
-      WHERE x.project_id = v_project_id
+      WHERE NULLIF(x.project_id, '')::uuid = v_project_id
         AND COALESCE(x.sold_cards, -1) >= 0
     ) wu ON wu.id = iw.wallet_id
     WHERE wu.id IS NULL
@@ -205,7 +206,7 @@ BEGIN
     SELECT 1
     FROM jsonb_to_recordset(p_wallet_updates) AS x(id text, project_id text, sold_cards integer)
     WHERE NULLIF(x.id, '') IS NULL
-       OR x.project_id IS DISTINCT FROM v_project_id
+       OR NULLIF(x.project_id, '')::uuid IS DISTINCT FROM v_project_id
        OR COALESCE(x.sold_cards, -1) < 0
   ) THEN
     RAISE EXCEPTION 'wallet updates must include id, matching project_id, and non-negative sold_cards';
@@ -222,7 +223,15 @@ BEGIN
 
   IF v_existing_item_count > 0 THEN
     WITH incoming AS (
-      SELECT *
+      SELECT
+        NULLIF(x.id, '')::uuid AS id,
+        NULLIF(x.project_id, '')::uuid AS project_id,
+        NULLIF(x.invoice_id, '')::uuid AS invoice_id,
+        NULLIF(x.category_id, '')::uuid AS category_id,
+        NULLIF(x.batch_id, '')::uuid AS batch_id,
+        NULLIF(x.wallet_id, '')::uuid AS wallet_id,
+        x.quantity,
+        x.unit_price
       FROM jsonb_to_recordset(p_invoice_items) AS x(
         id text,
         project_id text,
@@ -269,12 +278,31 @@ BEGIN
     discount_approved_by, discount_approved_at
   )
   SELECT
-    id, project_id, invoice_number, pos_id, agent_id, type,
-    total_amount, net_amount, paid_amount, approved_amount, status,
-    notes, invoice_date, due_date, approval_notes, active, phase_id,
-    created_at, discount_requested_value, discount_applied_value,
-    discount_status, discount_requested_reason, discount_requested_by,
-    discount_approved_by, discount_approved_at
+    NULLIF(x.id, '')::uuid,
+    NULLIF(x.project_id, '')::uuid,
+    x.invoice_number,
+    NULLIF(x.pos_id, '')::uuid,
+    NULLIF(x.agent_id, '')::uuid,
+    x.type,
+    x.total_amount,
+    x.net_amount,
+    x.paid_amount,
+    x.approved_amount,
+    x.status,
+    x.notes,
+    x.invoice_date,
+    x.due_date,
+    x.approval_notes,
+    COALESCE(x.active, true),
+    NULLIF(x.phase_id, '')::uuid,
+    x.created_at,
+    x.discount_requested_value,
+    x.discount_applied_value,
+    x.discount_status,
+    x.discount_requested_reason,
+    NULLIF(x.discount_requested_by, '')::uuid,
+    NULLIF(x.discount_approved_by, '')::uuid,
+    x.discount_approved_at
   FROM jsonb_to_record(p_invoice) AS x(
     id text,
     project_id text,
@@ -332,8 +360,16 @@ BEGIN
     quantity, unit_price, total_price, created_at
   )
   SELECT
-    id, project_id, invoice_id, category_id, batch_id, wallet_id,
-    quantity, unit_price, quantity * unit_price, created_at
+    NULLIF(x.id, '')::uuid,
+    NULLIF(x.project_id, '')::uuid,
+    NULLIF(x.invoice_id, '')::uuid,
+    NULLIF(x.category_id, '')::uuid,
+    NULLIF(x.batch_id, '')::uuid,
+    NULLIF(x.wallet_id, '')::uuid,
+    x.quantity,
+    x.unit_price,
+    x.quantity * x.unit_price,
+    x.created_at
   FROM jsonb_to_recordset(p_invoice_items) AS x(
     id text,
     project_id text,
@@ -358,7 +394,10 @@ BEGIN
     created_at = EXCLUDED.created_at;
 
   FOR v_wallet IN
-    SELECT DISTINCT id, project_id, phase_id
+    SELECT DISTINCT
+      NULLIF(x.id, '')::uuid AS id,
+      NULLIF(x.project_id, '')::uuid AS project_id,
+      NULLIF(x.phase_id, '')::uuid AS phase_id
     FROM jsonb_to_recordset(p_wallet_updates) AS x(
       id text,
       project_id text,
@@ -367,13 +406,13 @@ BEGIN
     )
   LOOP
     PERFORM 1
-    FROM public.agent_wallets
-    WHERE id = v_wallet.id
-      AND project_id = v_wallet.project_id
+    FROM public.agent_wallets aw
+    WHERE aw.id = v_wallet.id
+      AND aw.project_id = v_wallet.project_id
       AND (
            v_wallet.phase_id IS NULL
-        OR NULLIF(to_jsonb(agent_wallets)->>'phase_id', '') IS NULL
-        OR NULLIF(to_jsonb(agent_wallets)->>'phase_id', '') IS NOT DISTINCT FROM v_wallet.phase_id
+        OR NULLIF(to_jsonb(aw)->>'phase_id', '') IS NULL
+        OR NULLIF(to_jsonb(aw)->>'phase_id', '')::uuid IS NOT DISTINCT FROM v_wallet.phase_id
       )
     FOR UPDATE;
 
@@ -382,7 +421,7 @@ BEGIN
       RAISE EXCEPTION 'wallet lock failed for wallet %', v_wallet.id;
     END IF;
 
-    SELECT COALESCE(SUM(ii.quantity), 0)::integer
+    SELECT COALESCE(SUM(ABS(ii.quantity)), 0)::integer
       INTO v_sold_cards
     FROM public.invoice_items ii
     JOIN public.invoices i ON i.id = ii.invoice_id
@@ -391,15 +430,15 @@ BEGIN
       AND COALESCE(i.active, true) = true
       AND COALESCE(i.status, 'pending') NOT IN ('cancelled', 'canceled', 'rejected', 'deleted');
 
-    UPDATE public.agent_wallets
+    UPDATE public.agent_wallets aw
     SET sold_cards = v_sold_cards
-    WHERE id = v_wallet.id
-      AND project_id = v_wallet.project_id
-      AND COALESCE(total_cards, 0) >= v_sold_cards
+    WHERE aw.id = v_wallet.id
+      AND aw.project_id = v_wallet.project_id
+      AND COALESCE(aw.total_cards, 0) >= v_sold_cards
       AND (
            v_wallet.phase_id IS NULL
-        OR NULLIF(to_jsonb(agent_wallets)->>'phase_id', '') IS NULL
-        OR NULLIF(to_jsonb(agent_wallets)->>'phase_id', '') IS NOT DISTINCT FROM v_wallet.phase_id
+        OR NULLIF(to_jsonb(aw)->>'phase_id', '') IS NULL
+        OR NULLIF(to_jsonb(aw)->>'phase_id', '')::uuid IS NOT DISTINCT FROM v_wallet.phase_id
       );
 
     GET DIAGNOSTICS v_rows = ROW_COUNT;
@@ -419,5 +458,9 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.upsert_invoice_bundle_atomic(jsonb, jsonb, jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.upsert_invoice_bundle_atomic(jsonb, jsonb, jsonb) FROM anon;
+GRANT USAGE ON SCHEMA public TO anon;
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT EXECUTE ON FUNCTION public.upsert_invoice_bundle_atomic(jsonb, jsonb, jsonb) TO anon;
 GRANT EXECUTE ON FUNCTION public.upsert_invoice_bundle_atomic(jsonb, jsonb, jsonb) TO authenticated;
+
+NOTIFY pgrst, 'reload schema';
