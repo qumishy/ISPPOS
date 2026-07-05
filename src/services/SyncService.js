@@ -24,6 +24,14 @@ let _INITIAL_SYNC_READY = false;
 let _pullPromise = null;
 const REMOTE_SYNC_TIMEOUT_MS = 45000;
 const INVOICE_BUNDLE_RPC = 'upsert_invoice_bundle_atomic';
+const DUPLICATE_INVOICE_NUMBER_RE = /duplicate key value violates unique constraint \"invoices_invoice_number_key\"|invoices_invoice_number_key|duplicate key.*invoice_number/i;
+
+const localUuid = () =>
+  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : ((r & 0x3) | 0x8);
+    return v.toString(16);
+  });
 
 export const isInitialSyncInProgress = () => _INITIAL_SYNC_IN_PROGRESS;
 export const isInitialSyncReady = () => _INITIAL_SYNC_READY;
@@ -40,6 +48,134 @@ const withRemoteTimeout = async (promise, label = 'sync operation', timeoutMs = 
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)),
   ]);
+
+const isDuplicateInvoiceNumberError = (error) => {
+  const text = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`;
+  return DUPLICATE_INVOICE_NUMBER_RE.test(text);
+};
+
+const nextProjectInvoiceNumber = async ({ projectId, dateValue }) => {
+  const d = new Date(dateValue || new Date().toISOString());
+  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
+  const yyyy = safeDate.getFullYear();
+  const mm = String(safeDate.getMonth() + 1).padStart(2, '0');
+  const prefix = `INV-${yyyy}-${mm}`;
+  let maxSeq = 0;
+
+  try {
+    const localR = await execSQL(
+      `SELECT invoice_number FROM invoices WHERE project_id = ? AND invoice_number LIKE ?`,
+      [projectId, `${prefix}%`]
+    );
+    for (const row of localR.rows._array || []) {
+      const m = String(row.invoice_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
+    }
+  } catch (e) { }
+
+  try {
+    const { data } = await supabase
+      .from('invoices')
+      .select('invoice_number')
+      .eq('project_id', projectId)
+      .like('invoice_number', `${prefix}%`)
+      .limit(2000);
+    for (const row of data || []) {
+      const m = String(row.invoice_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
+    }
+  } catch (e) { }
+
+  return `${prefix}${String(maxSeq + 1).padStart(2, '0')}`;
+};
+
+const logInvoiceRenumber = async ({ invoiceId, projectId, phaseId, oldNumber, newNumber, reason }) => {
+  try {
+    const now = new Date().toISOString();
+    await execSQL(
+      `INSERT INTO operations_log
+        (id, operation_group_id, actor_user_id, actor_name, actor_role, operation_type, table_name, entity_name, record_id, reference_text, message_ar, old_values, new_values, project_id, phase_id, source, sync_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'edit', 'invoices', 'فاتورة', ?, ?, ?, ?, ?, ?, ?, 'sqlite', 'pending', ?, ?)`,
+      [
+        localUuid(),
+        null,
+        _currentUser?.id || null,
+        _currentUser?.name || 'مستخدم النظام',
+        _currentUser?.role || null,
+        invoiceId,
+        newNumber,
+        `تم تغيير رقم الفاتورة من ${oldNumber || '—'} إلى ${newNumber} بسبب تعارض رقم فاتورة أثناء المزامنة.`,
+        JSON.stringify({ invoice_number: oldNumber || null, reason }),
+        JSON.stringify({ invoice_number: newNumber, reason }),
+        projectId || null,
+        phaseId || null,
+        now,
+        now,
+      ]
+    );
+  } catch (e) { }
+};
+
+const repairDuplicateInvoiceNumberConflict = async ({ invoiceId, invoicePayload, queueItemId = null, operationGroupId = null, error }) => {
+  if (!invoiceId || !invoicePayload?.invoice_number || !invoicePayload?.project_id) return false;
+
+  const { data: remoteRows, error: lookupError } = await supabase
+    .from('invoices')
+    .select('id,project_id,phase_id,invoice_number,created_at')
+    .eq('invoice_number', invoicePayload.invoice_number)
+    .limit(10);
+  if (lookupError) return false;
+
+  const sameId = (remoteRows || []).find(row => String(row.id) === String(invoiceId));
+  if (sameId) {
+    await execSQL(`UPDATE invoices SET synced = 1 WHERE id = ?`, [invoiceId]);
+    await execSQL(`UPDATE invoice_items SET synced = 1 WHERE invoice_id = ?`, [invoiceId]);
+    if (queueItemId) await execSQL(`DELETE FROM sync_queue WHERE id = ?`, [queueItemId]);
+    if (operationGroupId) {
+      await execSQL(`DELETE FROM sync_queue WHERE operation_group_id = ?`, [operationGroupId]);
+      await execSQL(`UPDATE operations_log SET sync_status='synced', synced_at=?, updated_at=? WHERE operation_group_id=?`, [new Date().toISOString(), new Date().toISOString(), operationGroupId]);
+    }
+    notifyDataChanged('invoices');
+    notifyDataChanged('sync_queue');
+    return true;
+  }
+
+  const differentRemote = (remoteRows || []).find(row => String(row.id) !== String(invoiceId));
+  if (!differentRemote) return false;
+
+  const oldNumber = invoicePayload.invoice_number;
+  const newNumber = await nextProjectInvoiceNumber({
+    projectId: invoicePayload.project_id,
+    dateValue: invoicePayload.invoice_date || invoicePayload.created_at,
+  });
+  const nextPayload = { ...invoicePayload, invoice_number: newNumber };
+  await execSQL(`UPDATE invoices SET invoice_number = ?, synced = 0 WHERE id = ?`, [newNumber, invoiceId]);
+
+  if (queueItemId) {
+    await execSQL(`UPDATE sync_queue SET payload = ?, attempts = 0 WHERE id = ?`, [JSON.stringify(nextPayload), queueItemId]);
+  }
+  if (operationGroupId) {
+    await execSQL(
+      `UPDATE sync_queue SET payload = CASE WHEN table_name='invoices' AND record_id=? THEN ? ELSE payload END, attempts = 0 WHERE operation_group_id = ?`,
+      [invoiceId, JSON.stringify(nextPayload), operationGroupId]
+    );
+    await execSQL(`UPDATE operations_log SET sync_status='pending', sync_error=NULL, updated_at=? WHERE operation_group_id=?`, [new Date().toISOString(), operationGroupId]);
+  }
+
+  await logInvoiceRenumber({
+    invoiceId,
+    projectId: invoicePayload.project_id,
+    phaseId: invoicePayload.phase_id || null,
+    oldNumber,
+    newNumber,
+    reason: error?.message || 'duplicate invoice_number',
+  });
+
+  notifyDataChanged('invoices');
+  notifyDataChanged('sync_queue');
+  console.log(`[InvoiceSyncBundle] renumbered duplicate invoice_number invoice_id=${invoiceId} old=${oldNumber} new=${newNumber} remote_conflict_id=${differentRemote.id}`);
+  return true;
+};
 
 export async function hasLocalRequiredData(projectId) {
   if (!projectId) return false;
@@ -240,12 +376,13 @@ function startRealtimeSubscription() {
 
 export const TABLE_FIELDS = {
   pos_customers: 'id,project_id,name,owner_name,phone,city,credit_limit,credit_used,is_blocked,assigned_agent_id,notes,active,created_at',
-  card_categories: 'id,project_id,name,price,is_active,active,created_at',
+  card_categories: 'id,project_id,name,price,card_value,cards_per_sheet,is_active,active,created_at',
   batches: 'id,project_id,batch_number,category_id,serial_number,total_cards,available_cards,received_date,status,active,created_at',
   users: 'id,project_id,name,username,role,phone,is_active,password_hash,created_at,push_token',
   invoices: 'id,project_id,invoice_number,pos_id,agent_id,type,total_amount,net_amount,paid_amount,approved_amount,status,notes,invoice_date,due_date,approval_notes,active,phase_id,created_at,discount_requested_value,discount_applied_value,discount_status,discount_requested_reason,discount_requested_by,discount_approved_by,discount_approved_at',
   invoice_items: 'id,project_id,invoice_id,category_id,batch_id,wallet_id,quantity,unit_price,total_price,created_at',
   collections: 'id,project_id,collection_number,agent_id,pos_id,invoice_id,amount,method,reference_number,status,approved_at,approved_by,approval_notes,rejection_reason,collection_date,notes,active,supply_id,phase_id,created_at',
+  invoice_card_returns: 'id,project_id,phase_id,invoice_id,collection_id,invoice_item_id,category_id,batch_id,wallet_id,returned_cards_count,card_value,return_amount,reason,status,approval_notes,rejection_notes,active,created_by,approved_by,approved_at,rejected_by,rejected_at,created_at,updated_at',
   agent_wallets: 'id,project_id,agent_id,batch_id,category_id,total_cards,sold_cards,issued_by,notes,phase_id,created_at',
   supplies: 'id,project_id,supply_number,user_id,agent_id,amount,notes,type,status,approved_at,approval_notes,phase_id,created_at',
   app_permissions: 'id,project_id,entity_type,entity_id,screen_name,can_view,can_add,can_edit,can_delete,created_at,updated_at',
@@ -268,6 +405,7 @@ const NON_CRITICAL_TABLES = [
   'invoices',
   'invoice_items',
   'collections',
+  'invoice_card_returns',
   'supplies',
 ];
 
@@ -285,6 +423,7 @@ const INITIAL_TABLE_PROGRESS_LABELS_AR = {
   invoices: 'جاري مزامنة الفواتير',
   invoice_items: 'جاري مزامنة عناصر الفواتير',
   collections: 'جاري مزامنة التحصيلات',
+  invoice_card_returns: 'جاري مزامنة مرتجعات الكروت',
   supplies: 'جاري مزامنة التوريدات',
 };
 
@@ -293,6 +432,7 @@ const SQLITE_ONLY_FIELDS = {
   invoices:        ['synced', 'notified_overdue', 'notified_overdue_warning', 'is_deleted', 'deleted_at', 'deleted_by', 'delete_reason', 'sync_status', 'pending_sync', 'pending_upload'],
   agent_wallets:   ['synced', 'remaining_cards'], // remaining_cards هو GENERATED ALWAYS في Supabase
   collections:     ['synced'],
+  invoice_card_returns: ['synced'],
   supplies:        ['synced'],
   users:           ['synced'],
   batches:         ['synced', 'is_deleted', 'deleted_at', 'deleted_by', 'delete_reason'],
@@ -529,6 +669,16 @@ export async function getPendingSyncOwnerIds() {
         }
       }
 
+      if (item.table_name === 'invoice_card_returns') {
+        const owner = payload.created_by || payload.approved_by || payload.rejected_by;
+        if (owner) ids.add(String(owner));
+        if (!owner && payload.invoice_id) {
+          const invR = await execSQL(`SELECT agent_id FROM invoices WHERE id = ? LIMIT 1`, [payload.invoice_id]);
+          const dbOwner = invR.rows._array?.[0]?.agent_id;
+          if (dbOwner) ids.add(String(dbOwner));
+        }
+      }
+
       if (item.table_name === 'invoice_items') {
         let invoiceId = payload.invoice_id;
         if (!invoiceId && item.record_id) {
@@ -716,6 +866,17 @@ const syncInvoiceBundleGroup = async (items, groupId) => {
   });
   if (rpcError) {
     console.log(`[InvoiceSyncBundle] failed invoice_id=${invoiceQueueItem.record_id} reason=${rpcError.message || rpcError}`);
+    if (isDuplicateInvoiceNumberError(rpcError)) {
+      const repaired = await repairDuplicateInvoiceNumberConflict({
+        invoiceId: invoiceQueueItem.record_id,
+        invoicePayload,
+        operationGroupId: groupId,
+        error: rpcError,
+      });
+      if (repaired) {
+        throw new Error('تمت معالجة تعارض رقم الفاتورة محلياً، وستتم إعادة المحاولة تلقائياً.');
+      }
+    }
     throw rpcError;
   }
 
@@ -931,6 +1092,18 @@ const processQueueItem = async (item) => {
             p_wallet_updates: walletPayloads
           });
           e = rpcError;
+          if (e && isDuplicateInvoiceNumberError(e)) {
+            const repaired = await repairDuplicateInvoiceNumberConflict({
+              invoiceId: item.record_id,
+              invoicePayload: payload,
+              queueItemId: item.id,
+              operationGroupId: item.operation_group_id || null,
+              error: e,
+            });
+            if (repaired) {
+              e = new Error('تمت معالجة تعارض رقم الفاتورة محلياً، وستتم إعادة المحاولة تلقائياً.');
+            }
+          }
           if (!e && localItems.length > 0) {
             const ids = localItems.map(it => it.id);
             const placeholders = ids.map(() => '?').join(',');
@@ -1290,7 +1463,7 @@ async function pullRemoteChangesInternal(user, opts = {}) {
         }
 
         if (opts.activePhaseId) {
-          if (['invoices', 'collections', 'supplies', 'agent_wallets'].includes(t.name)) {
+          if (['invoices', 'collections', 'invoice_card_returns', 'supplies', 'agent_wallets'].includes(t.name)) {
             q = q.eq('phase_id', opts.activePhaseId);
           } else if (t.name === 'invoice_items') {
             const invR = await execSQL(`SELECT id FROM invoices WHERE phase_id = ?`, [opts.activePhaseId]);
@@ -1303,7 +1476,7 @@ async function pullRemoteChangesInternal(user, opts = {}) {
             }
           }
         } else if (opts.historicalPhasesExcluding) {
-          if (['invoices', 'collections', 'supplies', 'agent_wallets'].includes(t.name)) {
+          if (['invoices', 'collections', 'invoice_card_returns', 'supplies', 'agent_wallets'].includes(t.name)) {
             q = q.neq('phase_id', opts.historicalPhasesExcluding);
           } else if (t.name === 'invoice_items') {
             const invR = await execSQL(`SELECT id FROM invoices WHERE phase_id != ? OR phase_id IS NULL`, [opts.historicalPhasesExcluding]);

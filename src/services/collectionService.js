@@ -1,5 +1,6 @@
 import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
-import { updateInvoiceStatus, getInvoicePaidSum, decorateInvoiceStatusFields, resolveInvoiceNetAmount } from './invoiceService';
+import { updateInvoiceStatus, getInvoicePaidSum, decorateInvoiceStatusFields, getInvoiceEffectiveTotal } from './invoiceService';
+import { createInvoiceCardReturns } from './invoiceCardReturnService';
 import { getCached } from './cacheService';
 
 const ACTIVE_INVOICE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active IS NULL OR i.active = 'true'))`;
@@ -64,7 +65,7 @@ export const getLocalCollections = async (filters = {}) => {
     const invoiceJoinClause = filters.includeInactive
       ? `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL)`
       : ACTIVE_INVOICE_CLAUSE;
-    let sql = `SELECT c.*, u.name as agent_name, p.name as pos_name, p.phone as pos_phone, i.invoice_number, CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved') THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0))) ELSE COALESCE(i.total_amount, 0) END as inv_net, i.total_amount as inv_total_amount, i.discount_applied_value as inv_discount_applied_value, i.discount_status as inv_discount_status, i.status as inv_status, i.paid_amount as inv_paid, i.approved_amount as inv_approved, apr.name as approver_name FROM collections c LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${invoiceJoinClause} LEFT JOIN users apr ON apr.id = c.approved_by AND apr.project_id = c.project_id WHERE ${activeClause}`;
+    let sql = `SELECT c.*, u.name as agent_name, p.name as pos_name, p.phone as pos_phone, i.invoice_number, CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved') THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0))) ELSE COALESCE(i.total_amount, 0) END as inv_net, (SELECT COALESCE(SUM(cr.return_amount), 0) FROM invoice_card_returns cr WHERE cr.invoice_id = i.id AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true') AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') as inv_total_card_returns, i.total_amount as inv_total_amount, i.discount_applied_value as inv_discount_applied_value, i.discount_status as inv_discount_status, i.status as inv_status, i.paid_amount as inv_paid, i.approved_amount as inv_approved, apr.name as approver_name FROM collections c LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${invoiceJoinClause} LEFT JOIN users apr ON apr.id = c.approved_by AND apr.project_id = c.project_id WHERE ${activeClause}`;
     const params = [];
     sql += ` AND c.project_id = ?`;
     params.push(filters.project_id);
@@ -99,6 +100,7 @@ export const getLocalCollections = async (filters = {}) => {
       const invoiceFields = decorateInvoiceStatusFields({
         total_amount: row.inv_total_amount,
         net_amount: row.inv_net,
+        total_card_returns: row.inv_total_card_returns,
         discount_applied_value: row.inv_discount_applied_value,
         discount_status: row.inv_discount_status,
         paid_amount: row.inv_paid,
@@ -127,7 +129,7 @@ export const createLocalCollection = async (data) => {
   })();
   if (!projectId) throw new Error('تعذر تحديد المشروع الحالي. الرجاء تسجيل الدخول بالترخيص أولاً.');
   if (!data.invoice_id) throw new Error('لا يمكن إنشاء تحصيل بدون تحديد رقم الفاتورة');
-  const invRes = await execSQL(`SELECT total_amount, discount_applied_value, discount_status, discount_requested_value FROM invoices WHERE id = ? AND project_id = ?`, [data.invoice_id, projectId]);
+  const invRes = await execSQL(`SELECT total_amount, net_amount, discount_applied_value, discount_status, discount_requested_value FROM invoices WHERE id = ? AND project_id = ?`, [data.invoice_id, projectId]);
   const invoice = invRes.rows._array[0];
   if (!invoice) {
     throw new Error('الفاتورة غير موجودة ضمن المشروع الحالي.');
@@ -143,16 +145,21 @@ export const createLocalCollection = async (data) => {
     if (discountPending) {
       throw new Error('لا يمكن إنشاء تحصيل قبل اعتماد الخصم من المدير.');
     }
-    const totalAmount = resolveInvoiceNetAmount(invoice);
+    const totalAmount = await getInvoiceEffectiveTotal(data.invoice_id);
     const paidSum = await getInvoicePaidSum(data.invoice_id);
-    if (Number(data.amount || 0) > (totalAmount - paidSum + 0.01)) {
+    const incomingReturnAmount = (Array.isArray(data.card_returns) ? data.card_returns : [])
+      .reduce((sum, row) => sum + Math.max(0, Number(row.returned_cards_count || 0)) * Math.max(0, Number(row.card_value || 0)), 0);
+    if (Number(data.amount || 0) > (totalAmount - paidSum - incomingReturnAmount + 0.01)) {
       throw new Error(`المبلغ المدخل أكبر من المتبقي للفاتورة`);
     }
   }
+  const requestedReturns = (Array.isArray(data.card_returns) ? data.card_returns : [])
+    .filter(row => Math.max(0, Number(row.returned_cards_count || 0)) > 0);
+  const hasCardReturns = requestedReturns.length > 0;
   const id = data.id || uuidv4();
   let collection_number = data.collection_number || '';
   const actorId = data.agent_id || data.user_id || data.collector_id || null;
-  const payload = { id, collection_number, project_id: projectId, agent_id: actorId, pos_id: data.pos_id, invoice_id: data.invoice_id, amount: Number(data.amount || 0), method: data.method || 'cash', reference_number: data.reference_number || '', status: data.status || 'pending', approved_at: data.approved_at, rejection_reason: data.rejection_reason, collection_date: data.collection_date || new Date().toISOString().slice(0, 10), active: data.active ?? 1, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, synced: 0 };
+  const payload = { id, collection_number, project_id: projectId, agent_id: actorId, pos_id: data.pos_id, invoice_id: data.invoice_id, amount: Number(data.amount || 0), method: data.method || 'cash', reference_number: data.reference_number || '', status: hasCardReturns ? 'pending_card_return_approval' : (data.status || 'pending'), approved_at: data.approved_at, rejection_reason: data.rejection_reason, collection_date: data.collection_date || new Date().toISOString().slice(0, 10), active: data.active ?? 1, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, synced: 0 };
 
   // Auto-inject phase_id from active phase if not provided
   if (!payload.phase_id) {
@@ -194,9 +201,21 @@ export const createLocalCollection = async (data) => {
     }
   }
 
-  if (payload.invoice_id) await updateInvoiceStatus(payload.invoice_id);
   const operationGroupId = data.operation_group_id || null;
   await addToSyncQueue('collections', 'INSERT', payload, id, operationGroupId);
+  if (hasCardReturns) {
+    await createInvoiceCardReturns({
+      invoiceId: payload.invoice_id,
+      collectionId: payload.id,
+      returns: requestedReturns,
+      projectId: payload.project_id,
+      phaseId: payload.phase_id,
+      createdBy: payload.agent_id,
+      operationGroupId,
+      reason: data.return_reason || data.notes || '',
+    });
+  }
+  if (payload.invoice_id) await updateInvoiceStatus(payload.invoice_id);
   notifyDataChanged('collections', payload);
   const { saveNotificationHistory } = require('./NotificationService');
   try { await saveNotificationHistory('💰 تحصيل جديد', `تم تسجيل تحصيل بمبلغ ${payload.amount} ر.ي بنجاح`, { project_id: payload.project_id }); } catch (e) { }
@@ -229,7 +248,7 @@ export const createLocalCollection = async (data) => {
 
 export const approveLocalCollection = async (id, notes = '', approvedBy = null) => {
   const guardR = await execSQL(
-    `SELECT i.discount_status, i.discount_requested_value
+    `SELECT c.status as collection_status, i.discount_status, i.discount_requested_value
      FROM collections c
      LEFT JOIN invoices i ON i.id = c.invoice_id
      WHERE c.id = ? LIMIT 1`,
@@ -243,6 +262,20 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
     );
   if (discountPending) {
     throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد الخصم من المدير.');
+  }
+  if (String(inv?.collection_status || '') === 'pending_card_return_approval') {
+    throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد مرتجع الكروت.');
+  }
+  const pendingReturnsR = await execSQL(
+    `SELECT id FROM invoice_card_returns
+     WHERE collection_id = ?
+       AND (active = 1 OR active = 'true' OR active IS NULL)
+       AND LOWER(COALESCE(status, 'pending')) = 'pending'
+     LIMIT 1`,
+    [id]
+  );
+  if ((pendingReturnsR.rows._array || []).length > 0) {
+    throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد مرتجع الكروت.');
   }
 
   const approved_at = new Date().toISOString();

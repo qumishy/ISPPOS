@@ -276,7 +276,7 @@ function CustomDrawer({ navigation, state }) {
     { route: 'WalletsTab', label: 'المحافظ', icon: 'briefcase', permission: 'Wallets' },
     { route: 'SuppliesTab', label: 'التوريدات المالية', icon: 'credit-card', permission: 'Supplies' },
     { route: 'ReportsTab', label: 'الاستعلامات', icon: 'bar-chart-2', permission: 'Reports' },
-    { route: 'DiscountApprovalsTab', label: 'اعتماد الخصومات', icon: 'percent', permission: 'Admin' },
+    { route: 'DiscountApprovalsTab', label: 'اعتماد الخصومات', icon: 'percent', permission: 'Admin', altPermission: 'approve_card_returns', allowRoles: ['manager'] },
     { route: 'AdminTab', label: 'الإدارة', icon: 'settings', permission: 'Admin' },
     { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: 'shield', permission: 'Admin' }, 
     { route: 'About', label: 'حول و اتصل بنا', icon: 'info', permission: 'About' },
@@ -285,7 +285,7 @@ function CustomDrawer({ navigation, state }) {
 
   const items = allItems.filter(i => {
     if (isAdmin && i.hideForAdmin) return false;
-    return canAccess(i.permission);
+    return canAccess(i.permission) || (i.altPermission && canAccess(i.altPermission)) || (i.allowRoles || []).includes(user?.role);
   });
 
   return (

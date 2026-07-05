@@ -269,7 +269,7 @@ export async function checkAndSendOverdueInvoiceNotifications(user) {
                                   WHERE c.invoice_id = i.id
                                     AND c.project_id = i.project_id
                                     AND (c.active = 1 OR c.active = 'true' OR c.active IS NULL)
-                                    AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted'))`;
+                                    AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval'))`;
     const invoiceAmountExpr = `MAX(0, CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
       THEN COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0))
       ELSE COALESCE(i.total_amount, 0)

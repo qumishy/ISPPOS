@@ -3,7 +3,7 @@ import { getCached } from './cacheService';
 
 const ACTIVE_ROW_CLAUSE = (alias) => `(${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true')`;
 const ACTIVE_INVOICE_CLAUSE = (alias) => `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true') AND LOWER(COALESCE(${alias}.status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'deleted'))`;
-const ACTIVE_COLLECTION_CLAUSE = (alias) => `((${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true') AND LOWER(COALESCE(${alias}.status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'deleted'))`;
+const ACTIVE_COLLECTION_CLAUSE = (alias) => `((${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true') AND LOWER(COALESCE(${alias}.status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'deleted', 'pending_card_return_approval'))`;
 const ACTIVE_BATCH_CLAUSE = (alias) => `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true'))`;
 const LEGACY_PHASE_CLAUSE = (alias) => `(${alias}.phase_id = ? OR ${alias}.phase_id IS NULL OR ${alias}.phase_id = '')`;
 
@@ -347,17 +347,22 @@ export const getLocalCategories = async (projectId) => {
 
 export const createLocalCategory = async (data) => {
   const id = uuidv4();
+  const price = Number(data.price || 0);
+  const cardsPerSheet = Math.max(1, Math.floor(Number(data.cards_per_sheet || 1)));
+  const cardValue = Math.max(0, Number(data.card_value ?? price));
   const payload = {
     id,
     name: data.name,
-    price: Number(data.price || 0),
+    price,
+    card_value: cardValue,
+    cards_per_sheet: cardsPerSheet,
     active: 1,
     synced: 0,
     project_id: data.project_id
   };
   await execSQL(
-    `INSERT INTO card_categories (id, name, price, active, synced, project_id) VALUES (?, ?, ?, ?, ?, ?)`,
-    [payload.id, payload.name, payload.price, payload.active, payload.synced, payload.project_id]
+    `INSERT INTO card_categories (id, name, price, card_value, cards_per_sheet, active, synced, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.id, payload.name, payload.price, payload.card_value, payload.cards_per_sheet, payload.active, payload.synced, payload.project_id]
   );
   await addToSyncQueue('card_categories', 'INSERT', payload, id);
   notifyDataChanged('card_categories');
@@ -365,8 +370,11 @@ export const createLocalCategory = async (data) => {
 };
 
 export const updateCategory = async (id, data) => {
-  await execSQL(`UPDATE card_categories SET name=?, price=?, active=?, synced=0 WHERE id=?`, [data.name ?? null, Number(data.price || 0), data.active ?? 1, id]);
-  await addToSyncQueue('card_categories', 'UPDATE', { name: data.name ?? null, price: Number(data.price || 0), active: data.active ?? 1 }, id);
+  const price = Number(data.price || 0);
+  const cardValue = Math.max(0, Number(data.card_value ?? price));
+  const cardsPerSheet = Math.max(1, Math.floor(Number(data.cards_per_sheet || 1)));
+  await execSQL(`UPDATE card_categories SET name=?, price=?, card_value=?, cards_per_sheet=?, active=?, synced=0 WHERE id=?`, [data.name ?? null, price, cardValue, cardsPerSheet, data.active ?? 1, id]);
+  await addToSyncQueue('card_categories', 'UPDATE', { name: data.name ?? null, price, card_value: cardValue, cards_per_sheet: cardsPerSheet, active: data.active ?? 1 }, id);
   notifyDataChanged('card_categories');
   return true;
 };

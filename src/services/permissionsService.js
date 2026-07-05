@@ -12,6 +12,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     Supplies: { can_view: true, can_add: true, can_edit: true, can_delete: true },
     Reports: { can_view: true, can_add: true, can_edit: true, can_delete: true },
     Admin: { can_view: true, can_add: true, can_edit: true, can_delete: true },
+    approve_card_returns: { can_view: true, can_add: true, can_edit: true, can_delete: true },
     Settings: { can_view: true, can_add: true, can_edit: true, can_delete: true },
     About: { can_view: true, can_add: true, can_edit: true, can_delete: true },
   },
@@ -28,6 +29,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     About: { can_view: true, can_add: false, can_edit: false, can_delete: false },
     Inventory: { can_view: false, can_add: false, can_edit: false, can_delete: false },
     Admin: { can_view: false, can_add: false, can_edit: false, can_delete: false },
+    approve_card_returns: { can_view: false, can_add: false, can_edit: false, can_delete: false },
   },
   agent: {
     Dashboard: { can_view: true, can_add: false, can_edit: false, can_delete: false },
@@ -42,6 +44,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     Supplies: { can_view: false, can_add: false, can_edit: false, can_delete: false },
     Reports: { can_view: false, can_add: false, can_edit: false, can_delete: false },
     Admin: { can_view: false, can_add: false, can_edit: false, can_delete: false },
+    approve_card_returns: { can_view: false, can_add: false, can_edit: false, can_delete: false },
   }
 };
 

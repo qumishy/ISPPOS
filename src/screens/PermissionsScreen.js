@@ -23,6 +23,7 @@ const SCREENS = [
   { id: 'Reports', label: 'التقارير', icon: 'trending-up' },
   { id: 'Settings', label: 'الإعدادات العامة', icon: 'settings' },
   { id: 'Admin', label: 'الإدارة', icon: 'shield' },
+  { id: 'approve_card_returns', label: 'اعتماد مرتجع الكروت', icon: 'corner-up-left' },
   { id: 'About', label: 'اتصل بنا', icon: 'phone' },
 ];
 

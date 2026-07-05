@@ -4,6 +4,7 @@
 export * from './dbCore';
 export * from './invoiceService';
 export * from './collectionService';
+export * from './invoiceCardReturnService';
 export * from './inventoryService';
 export * from './posService';
 export * from './userService';

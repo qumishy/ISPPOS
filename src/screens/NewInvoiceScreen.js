@@ -326,7 +326,7 @@ export default function NewInvoiceScreen({ navigation }) {
                 <Text style={{ fontSize: fontSize.lg, fontWeight: '800', color: colors.t1 }}>إضافة بند للفاتورة</Text>
               </View>
 
-              <Picker label="الفئة (الصنف) *" options={availableCategories.map(c => ({ value: c.id, label: `${c.name} — ${formatCurrency(c.price)}` }))} value={newItem.category_id} onChange={onSelectCategory} searchable={true} />
+              <Picker label="الفئة (الصنف) *" options={availableCategories.map(c => ({ value: c.id, label: `${c.name} — ${formatCurrency(c.price)} / ورقة • ${c.cards_per_sheet || 1} كرت` }))} value={newItem.category_id} onChange={onSelectCategory} searchable={true} />
               <View style={{ height: spacing.sm }} />
               <Picker label="من المحفظة / الدفعة *" options={dynamicWallets.filter(w => !newItem.category_id || w.category_id === newItem.category_id).map(w => ({ value: w.id, label: `${w.batches?.serial_number || '—'} • رصيد: ${w.remaining_cards}` }))} value={newItem.wallet_id} onChange={v => { const sel = dynamicWallets.find(x => x.id === v); const cat = categories.find(c => c.id === sel?.category_id); setNewItem({ ...newItem, wallet_id: v, batch_id: sel?.batch_id || '', category_id: sel?.category_id || newItem.category_id, unit_price: cat ? String(cat.price) : newItem.unit_price }); }} searchable={true} />
               <View style={{ height: spacing.sm }} />

@@ -4,13 +4,19 @@ import { backfillOperationsFromSyncQueue } from './operationLogger';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
-const getMonthlySequentialCode = async ({ table, column, prefix, dateValue }) => {
+const getMonthlySequentialCode = async ({ table, column, prefix, dateValue, projectId = null }) => {
   const baseDate = new Date(dateValue || new Date().toISOString());
   const d = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
   const yyyy = d.getFullYear();
   const mm = pad2(d.getMonth() + 1);
   const monthPrefix = `${prefix}-${yyyy}-${mm}`;
-  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${column} LIKE ?`, [`${monthPrefix}%`]);
+  const params = [`${monthPrefix}%`];
+  let where = `${column} LIKE ?`;
+  if (projectId) {
+    where += ` AND project_id = ?`;
+    params.push(projectId);
+  }
+  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${where}`, params);
   const rows = r.rows._array || [];
   let maxSeq = 0;
   for (const row of rows) {
@@ -83,7 +89,9 @@ export const deriveInvoiceApprovalStatus = (invoiceLike) => {
 };
 
 export const decorateInvoiceStatusFields = (invoiceLike = {}) => {
-  const net = resolveInvoiceNetAmount(invoiceLike);
+  const originalNet = resolveInvoiceNetAmount(invoiceLike);
+  const totalReturns = Math.max(0, Number(invoiceLike?.total_card_returns ?? invoiceLike?.card_returns_total ?? 0));
+  const net = Math.max(0, originalNet - totalReturns);
   const paid = resolveInvoicePaidAmount(invoiceLike);
   const approved = resolveInvoiceApprovedAmount(invoiceLike);
   const paymentStatus = deriveInvoicePaymentStatus({ ...invoiceLike, net_amount: net, paid_amount: paid });
@@ -111,6 +119,9 @@ export const decorateInvoiceStatusFields = (invoiceLike = {}) => {
 
   return {
     ...invoiceLike,
+    original_invoice_total: Number(invoiceLike?.original_invoice_total ?? originalNet),
+    total_card_returns: totalReturns,
+    effective_invoice_total: net,
     net_amount: net,
     status: paymentStatus,
     payment_status: paymentStatus,
@@ -134,7 +145,7 @@ export const decorateInvoiceStatusFields = (invoiceLike = {}) => {
 export const ACTIVE_INVOICE_WHERE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active = 'true' OR i.active IS NULL))`;
 const ACTIVE_INVOICE_WHERE_CLAUSE_NO_ALIAS = `(COALESCE(is_deleted, 0) = 0 AND deleted_at IS NULL AND (active = 1 OR active = 'true' OR active IS NULL))`;
 const ACTIVE_COLLECTION_CLAUSE = (alias = 'c') =>
-  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`;
+  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')`;
 const APPROVED_COLLECTION_CLAUSE = (alias = 'c') =>
   `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND ${alias}.status = 'approved'`;
 const INVOICE_AMOUNT_EXPR = (alias = 'i') =>
@@ -142,6 +153,13 @@ const INVOICE_AMOUNT_EXPR = (alias = 'i') =>
     THEN COALESCE(NULLIF(${alias}.net_amount, 0), COALESCE(${alias}.total_amount, 0) - COALESCE(${alias}.discount_applied_value, 0))
     ELSE COALESCE(${alias}.total_amount, 0)
   END)`;
+const ACTIVE_CARD_RETURN_CLAUSE = (alias = 'r') =>
+  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) = 'approved'`;
+const INVOICE_CARD_RETURNS_EXPR = (alias = 'i') =>
+  `(SELECT COALESCE(SUM(r.return_amount), 0)
+    FROM invoice_card_returns r
+    WHERE r.invoice_id = ${alias}.id
+      AND ${ACTIVE_CARD_RETURN_CLAUSE('r')})`;
 
 export const getInvoiceCountdownMeta = (invoiceLike = {}) => {
   const decorated = decorateInvoiceStatusFields(invoiceLike);
@@ -203,6 +221,8 @@ export const getLocalInvoices = async (filters = {}) => {
     const dueDateExpr = `date(COALESCE(i.due_date, date(COALESCE(i.invoice_date, i.created_at), '+${overdueDaysInt} days')))`;
     const delayDaysExpr = `CAST(julianday(date('now','localtime')) - julianday(${dueDateExpr}) AS INTEGER)`;
     const invoiceAmountExpr = INVOICE_AMOUNT_EXPR('i');
+    const cardReturnsExpr = INVOICE_CARD_RETURNS_EXPR('i');
+    const effectiveInvoiceAmountExpr = `MAX(0, ${invoiceAmountExpr} - (${cardReturnsExpr}))`;
     const payableCollectionsExpr = `(SELECT COALESCE(SUM(c.amount), 0)
       FROM collections c
       WHERE c.invoice_id = i.id
@@ -242,10 +262,13 @@ SELECT
   ${payableCollectionsExpr} as paid_sum,
   ${approvedCollectionsExpr} as approved_sum,
   ${approvedCollectionsExpr} as partially_paid_amount,
+  ${invoiceAmountExpr} as original_invoice_total,
+  ${cardReturnsExpr} as total_card_returns,
   ${dueDateExpr} as effective_due_date,
-  ${invoiceAmountExpr} as effective_invoice_amount,
-  MAX(0, ${invoiceAmountExpr} - (${approvedCollectionsExpr})) as remaining_unpaid_amount,
-  MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) as remaining_amount,
+  ${effectiveInvoiceAmountExpr} as effective_invoice_amount,
+  ${effectiveInvoiceAmountExpr} as effective_invoice_total,
+  MAX(0, ${effectiveInvoiceAmountExpr} - (${approvedCollectionsExpr})) as remaining_unpaid_amount,
+  MAX(0, ${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) as remaining_amount,
   ${delayDaysExpr} as delay_days,
   u.name as agent_name,
   p.name as pos_name,
@@ -261,9 +284,9 @@ ${where}
 `;
     if (filters.status) {
       if (filters.status === 'overdue') {
-        sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND ${delayDaysExpr} > 0`;
+        sql += ` AND MAX(0, ${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND ${delayDaysExpr} > 0`;
       } else if (filters.status === 'due_soon') {
-        sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND (-(${delayDaysExpr})) <= 2 AND (-(${delayDaysExpr})) >= 0`;
+        sql += ` AND MAX(0, ${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1 AND (-(${delayDaysExpr})) <= 2 AND (-(${delayDaysExpr})) >= 0`;
       } else {
         sql += ` AND i.status = ?`;
         params.push(filters.status);
@@ -282,11 +305,11 @@ ${where}
       params.push(filters.to_date);
     }
     if (filters.amount_min !== undefined && filters.amount_min !== '') {
-      sql += ` AND ${invoiceAmountExpr} >= ?`;
+      sql += ` AND ${effectiveInvoiceAmountExpr} >= ?`;
       params.push(Number(filters.amount_min));
     }
     if (filters.amount_max !== undefined && filters.amount_max !== '') {
-      sql += ` AND ${invoiceAmountExpr} <= ?`;
+      sql += ` AND ${effectiveInvoiceAmountExpr} <= ?`;
       params.push(Number(filters.amount_max));
     }
     if (filters.paid_min !== undefined && filters.paid_min !== '') {
@@ -298,11 +321,11 @@ ${where}
       params.push(Number(filters.paid_max));
     }
     if (filters.remaining_min !== undefined && filters.remaining_min !== '') {
-      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) >= ?`;
+      sql += ` AND MAX(0, ${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) >= ?`;
       params.push(Number(filters.remaining_min));
     }
     if (filters.remaining_max !== undefined && filters.remaining_max !== '') {
-      sql += ` AND MAX(0, ${invoiceAmountExpr} - (${payableCollectionsExpr})) <= ?`;
+      sql += ` AND MAX(0, ${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) <= ?`;
       params.push(Number(filters.remaining_max));
     }
 
@@ -310,7 +333,7 @@ ${where}
     if (filters.id) { sql += ` AND i.id = ?`; params.push(filters.id); }
     if (filters.agent_id) { sql += ` AND i.agent_id = ?`; params.push(filters.agent_id); }
     if (filters.pos_id) { sql += ` AND i.pos_id = ?`; params.push(filters.pos_id); }
-    if (filters.onlyWithBalance) { sql += ` AND (${invoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1`; }
+    if (filters.onlyWithBalance) { sql += ` AND (${effectiveInvoiceAmountExpr} - (${payableCollectionsExpr})) > 0.1`; }
     // Exclude invoices that are blocked pending manager discount approval.
     // Used by the collection screen so agents cannot select a locked invoice.
     // Matches the same logic as getPendingDiscountInvoices and the collection guards.
@@ -338,6 +361,22 @@ export const getInvoicePaidSum = async (id) => {
     [id]
   );
   return r.rows._array[0]?.s || 0;
+};
+
+export const getInvoiceEffectiveTotal = async (id) => {
+  if (!id) return 0;
+  const invR = await execSQL(`SELECT id, total_amount, net_amount, discount_applied_value, discount_status FROM invoices WHERE id = ? LIMIT 1`, [id]);
+  const inv = invR.rows._array?.[0];
+  if (!inv) return 0;
+  const base = resolveInvoiceNetAmount(inv);
+  const returnsR = await execSQL(
+    `SELECT COALESCE(SUM(return_amount), 0) as total
+     FROM invoice_card_returns
+     WHERE invoice_id = ?
+       AND ${ACTIVE_CARD_RETURN_CLAUSE('invoice_card_returns')}`,
+    [id]
+  );
+  return Math.max(0, base - Number(returnsR.rows._array?.[0]?.total || 0));
 };
 
 /**
@@ -384,7 +423,15 @@ export const updateInvoiceStatus = async (invoiceId) => {
   const inv = invR.rows._array[0];
   if (!inv) return;
   if (Number(inv.is_deleted || 0) === 1 || inv.deleted_at || inv.status === 'cancelled') return;
-  const net = resolveInvoiceNetAmount(inv);
+  const baseNet = resolveInvoiceNetAmount(inv);
+  const returnsR = await execSQL(
+    `SELECT COALESCE(SUM(return_amount), 0) as total
+     FROM invoice_card_returns
+     WHERE invoice_id = ?
+       AND ${ACTIVE_CARD_RETURN_CLAUSE('invoice_card_returns')}`,
+    [invoiceId]
+  );
+  const net = Math.max(0, baseNet - Number(returnsR.rows._array?.[0]?.total || 0));
   const sumAllR = await execSQL(
     `SELECT SUM(amount) as s
      FROM collections
@@ -396,9 +443,9 @@ export const updateInvoiceStatus = async (invoiceId) => {
   const sumApprovedR = await execSQL(`SELECT SUM(amount) as s FROM collections WHERE invoice_id = ? AND ${APPROVED_COLLECTION_CLAUSE('collections')}`, [invoiceId]);
   const approvedPaid = sumApprovedR.rows._array[0]?.s || 0;
   const newStatus = deriveInvoicePaymentStatus({ net_amount: net, paid_amount: totalPaid });
-  if (inv.status !== newStatus || Number(inv.paid_amount || 0) !== Number(totalPaid || 0) || Number(inv.approved_amount || 0) !== Number(approvedPaid || 0) || Number(inv.net_amount || 0) !== Number(net || 0)) {
-    await execSQL(`UPDATE invoices SET paid_amount = ?, approved_amount = ?, net_amount = ?, status = ? WHERE id = ?`, [totalPaid, approvedPaid, net, newStatus, invoiceId]);
-    await addToSyncQueue('invoices', 'UPDATE', { paid_amount: totalPaid, approved_amount: approvedPaid, net_amount: net, status: newStatus }, invoiceId);
+  if (inv.status !== newStatus || Number(inv.paid_amount || 0) !== Number(totalPaid || 0) || Number(inv.approved_amount || 0) !== Number(approvedPaid || 0) || Number(inv.net_amount || 0) !== Number(baseNet || 0)) {
+    await execSQL(`UPDATE invoices SET paid_amount = ?, approved_amount = ?, net_amount = ?, status = ? WHERE id = ?`, [totalPaid, approvedPaid, baseNet, newStatus, invoiceId]);
+    await addToSyncQueue('invoices', 'UPDATE', { paid_amount: totalPaid, approved_amount: approvedPaid, net_amount: baseNet, status: newStatus }, invoiceId);
     notifyDataChanged('invoices');
   }
 };
@@ -407,7 +454,15 @@ export const repairInvoicesStatus = async () => {
   const invoices = await execSQL(`SELECT id, total_amount, net_amount, discount_applied_value, discount_status, status, paid_amount, approved_amount FROM invoices WHERE ${ACTIVE_INVOICE_WHERE_CLAUSE_NO_ALIAS}`);
   let count = 0;
   for (const inv of invoices.rows._array) {
-    const net = resolveInvoiceNetAmount(inv);
+    const baseNet = resolveInvoiceNetAmount(inv);
+    const returnsR = await execSQL(
+      `SELECT COALESCE(SUM(return_amount), 0) as total
+       FROM invoice_card_returns
+       WHERE invoice_id = ?
+         AND ${ACTIVE_CARD_RETURN_CLAUSE('invoice_card_returns')}`,
+      [inv.id]
+    );
+    const net = Math.max(0, baseNet - Number(returnsR.rows._array?.[0]?.total || 0));
     const sumR = await execSQL(
       `SELECT SUM(amount) as s
        FROM collections
@@ -419,9 +474,9 @@ export const repairInvoicesStatus = async () => {
     const sumApprovedR = await execSQL(`SELECT SUM(amount) as s FROM collections WHERE invoice_id = ? AND ${APPROVED_COLLECTION_CLAUSE('collections')}`, [inv.id]);
     const approvedPaid = sumApprovedR.rows._array[0]?.s || 0;
     const status = deriveInvoicePaymentStatus({ net_amount: net, paid_amount: paid });
-    if (inv.status !== status || paid !== (inv.paid_amount || 0) || approvedPaid !== (inv.approved_amount || 0) || Number(inv.net_amount || 0) !== Number(net || 0)) {
-      await execSQL(`UPDATE invoices SET paid_amount = ?, approved_amount = ?, net_amount = ?, status = ? WHERE id = ?`, [paid, approvedPaid, net, status, inv.id]);
-      await addToSyncQueue('invoices', 'UPDATE', { paid_amount: paid, approved_amount: approvedPaid, net_amount: net, status: status }, inv.id);
+    if (inv.status !== status || paid !== (inv.paid_amount || 0) || approvedPaid !== (inv.approved_amount || 0) || Number(inv.net_amount || 0) !== Number(baseNet || 0)) {
+      await execSQL(`UPDATE invoices SET paid_amount = ?, approved_amount = ?, net_amount = ?, status = ? WHERE id = ?`, [paid, approvedPaid, baseNet, status, inv.id]);
+      await addToSyncQueue('invoices', 'UPDATE', { paid_amount: paid, approved_amount: approvedPaid, net_amount: baseNet, status: status }, inv.id);
       count++;
     }
   }
@@ -524,6 +579,7 @@ export const createLocalInvoice = async (data) => {
           column: 'invoice_number',
           prefix: 'INV',
           dateValue: payload.invoice_date,
+          projectId: payload.project_id,
         });
       }
       payload.invoice_number = invoice_number;
@@ -656,6 +712,7 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     column: 'invoice_number',
     prefix: 'INV',
     dateValue: data.invoice_date || created_at,
+    projectId,
   });
 
   const payload = {

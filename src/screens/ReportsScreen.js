@@ -33,7 +33,9 @@ const COLS = [
   { key: 'batch_number',      label: 'رقم الدفعة',            w: 115 },
   { key: 'quantity',          label: 'الكمية',                w: 70  },
   { key: 'unit_price',        label: 'سعر الورقة',            w: 95  },
-  { key: 'net_amount',        label: 'صافي الفاتورة',         w: 105 },
+  { key: 'original_invoice_total', label: 'إجمالي الفاتورة الأصلي', w: 135 },
+  { key: 'total_card_returns', label: 'إجمالي المرتجع',       w: 110 },
+  { key: 'net_amount',        label: 'الصافي بعد المرتجع',    w: 120 },
   { key: 'payment_status',    label: 'حالة السداد',           w: 105 },
   { key: 'approval_status',   label: 'حالة الاعتماد',         w: 105 },
   { key: 'collection_number', label: 'رقم التحصيل',           w: 125 },
@@ -102,13 +104,30 @@ const AUDIT_SQL = `
     CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
       THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0)))
       ELSE COALESCE(i.total_amount, 0)
-    END AS net_amount,
+    END AS original_invoice_total,
+    (SELECT COALESCE(SUM(cr.return_amount), 0)
+     FROM invoice_card_returns cr
+     WHERE cr.invoice_id = i.id
+       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+       AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') AS total_card_returns,
+    MAX(0,
+      (CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
+        THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0)))
+        ELSE COALESCE(i.total_amount, 0)
+      END)
+      -
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved')
+    ) AS net_amount,
     i.status                     AS stored_payment_status,
     (SELECT COALESCE(SUM(pc.amount), 0)
      FROM collections pc
      WHERE pc.invoice_id = i.id
        AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
-       AND LOWER(COALESCE(pc.status, 'pending')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected')) AS paid_amount,
+       AND LOWER(COALESCE(pc.status, 'pending')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected', 'pending_card_return_approval')) AS paid_amount,
     (SELECT COALESCE(SUM(ac.amount), 0)
      FROM collections ac
      WHERE ac.invoice_id = i.id
@@ -144,7 +163,7 @@ const REMAINING_SQL = `
   FROM collections
   WHERE (active = 1 OR active IS NULL OR active = 'true')
     AND project_id = ?
-    AND LOWER(COALESCE(status, '')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected')
+    AND LOWER(COALESCE(status, '')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected', 'pending_card_return_approval')
   GROUP BY invoice_id
 `;
 
@@ -178,7 +197,7 @@ function Cell({ col, value, colors }) {
     );
   }
 
-  const moneyKeys = ['net_amount', 'col_amount', 'unit_price', 'remaining'];
+  const moneyKeys = ['original_invoice_total', 'total_card_returns', 'net_amount', 'col_amount', 'unit_price', 'remaining'];
   if (moneyKeys.includes(col.key)) {
     const n = parseFloat(value) || 0;
     const color = col.key === 'remaining' && n > 0 ? '#dc2626'

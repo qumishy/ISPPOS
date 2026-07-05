@@ -14,10 +14,10 @@ const getUserBasic = async (userId) => {
 export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) => {
   return getCached(`agent_wallets:detailed:${projectId}:${phaseId}`, async () => {
     let sql = `SELECT
-      aw.id, aw.agent_id, aw.batch_id, aw.category_id, aw.total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
+      aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
       COALESCE(ws.sold_qty, 0) as sold_cards,
-      MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0)) as remaining_cards,
-      u.name as agent_name, c.name as category_name, c.price as category_price, b.batch_number, b.serial_number as batch_serial, b.received_date as batch_date, b.available_cards as batch_available, b.total_cards as batch_total
+      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0)) as remaining_cards,
+      u.name as agent_name, c.name as category_name, c.price as category_price, b.batch_number, b.serial_number as batch_serial, b.received_date as batch_date, COALESCE(b.available_cards, 0) as batch_available, COALESCE(b.total_cards, 0) as batch_total
       FROM agent_wallets aw
       JOIN users u ON u.id = aw.agent_id
       LEFT JOIN card_categories c ON c.id = aw.category_id
@@ -29,7 +29,7 @@ export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) 
         WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
         GROUP BY ii.wallet_id
       ) ws ON ws.wallet_id = aw.id
-      WHERE MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0)) > 0`;
+      WHERE 1=1`;
     
     const params = [];
     if (projectId) { sql += ` AND aw.project_id = ?`; params.push(projectId); }
@@ -143,9 +143,9 @@ export const getWalletsSummaryByAgent = async (projectId = null, phaseId = null)
       SELECT
         u.id as agent_id,
         u.name as agent_name,
-        SUM(aw.total_cards) as total_cards,
+        SUM(COALESCE(aw.total_cards, 0)) as total_cards,
         SUM(COALESCE(ws.sold_qty, 0)) as sold_cards,
-        SUM(MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0))) as remaining_cards,
+        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0))) as remaining_cards,
         COUNT(aw.id) as wallet_count
       FROM agent_wallets aw
       JOIN users u ON u.id = aw.agent_id
@@ -189,9 +189,9 @@ export const getLocalWallets = async (agentId, projectId = null, phaseId = null)
   const cacheKey = `agent_wallets:agent:${agentId}:${projectId}:${phaseId}`;
   return getCached(cacheKey, async () => {
     let sql = `SELECT
-      aw.id, aw.agent_id, aw.batch_id, aw.category_id, aw.total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
+      aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
       COALESCE(ws.sold_qty, 0) as sold_cards,
-      MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0)) as remaining_cards,
+      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0)) as remaining_cards,
       u.name as user_name, c.name as category_name, b.batch_number as batch_number, b.serial_number as batch_serial
       FROM agent_wallets aw
       LEFT JOIN users u ON u.id = aw.agent_id

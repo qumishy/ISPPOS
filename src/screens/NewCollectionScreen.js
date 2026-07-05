@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { ScrollView, View, Text, Alert } from 'react-native';
+import { ScrollView, View, Text, Alert, TouchableOpacity } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
 import {
-  getLocalUsers, getLocalPosDB, getLocalInvoices, getInvoicePaidSum, createLocalCollection
+  getLocalUsers, getLocalPosDB, getLocalInvoices, getInvoicePaidSum, createLocalCollection, getInvoiceCardReturnOptions
 } from '../services/database';
 import { todayISO, formatCurrency } from '../utils/helpers';
 import { Input, Btn, Loading, Row, Picker } from '../components/UI';
@@ -53,6 +53,9 @@ export default function NewCollectionScreen({ route, navigation }) {
   const [invoices, setInvoices] = useState([]);
   const [allInvoices, setAllInvoices] = useState([]);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [returnRows, setReturnRows] = useState([]);
+  const [cardReturns, setCardReturns] = useState({});
+  const [hasCardReturn, setHasCardReturn] = useState(false);
   const [invoiceHint, setInvoiceHint] = useState('');
   const [dataLoading, setDataLoading] = useState(true);
   const [form, setForm] = useState({ agent_id: user?.role === 'agent' ? user.id : '', pos_id: '', invoice_id: '', amount: '', method: 'cash', reference_number: '', collection_date: todayISO(), note: '' });
@@ -62,6 +65,9 @@ export default function NewCollectionScreen({ route, navigation }) {
     const posInvoices = (sourceInvoices || []).filter(inv => String(inv.pos_id) === String(posId));
     setInvoices(posInvoices);
     setSelectedInvoice(null);
+    setReturnRows([]);
+    setCardReturns({});
+    setHasCardReturn(false);
     setInvoiceHint('');
 
     if (!posId) {
@@ -80,6 +86,8 @@ export default function NewCollectionScreen({ route, navigation }) {
       if (matched) {
         const paidSum = await getInvoicePaidSum(matched.id);
         const rem = Math.max(0, (matched.net_amount || matched.total_amount) - paidSum);
+        const rows = await getInvoiceCardReturnOptions(matched.id);
+        setReturnRows(rows);
         setSelectedInvoice({ ...matched, paid_sum: paidSum });
         setForm(f => ({ ...f, pos_id: posId, invoice_id: matched.id, amount: String(rem) }));
         return;
@@ -90,6 +98,8 @@ export default function NewCollectionScreen({ route, navigation }) {
       const onlyInv = posInvoices[0];
       const paidSum = await getInvoicePaidSum(onlyInv.id);
       const rem = Math.max(0, (onlyInv.net_amount || onlyInv.total_amount) - paidSum);
+      const rows = await getInvoiceCardReturnOptions(onlyInv.id);
+      setReturnRows(rows);
       setSelectedInvoice({ ...onlyInv, paid_sum: paidSum });
       setForm(f => ({ ...f, pos_id: posId, invoice_id: onlyInv.id, amount: String(rem) }));
       return;
@@ -121,11 +131,39 @@ export default function NewCollectionScreen({ route, navigation }) {
 
   const onSelectInvoice = async (invId) => {
     const inv = invoices.find(x => x.id === invId);
-    if (!inv) { setSelectedInvoice(null); return; }
+    if (!inv) { setSelectedInvoice(null); setReturnRows([]); setCardReturns({}); setHasCardReturn(false); return; }
     const paidSum = await getInvoicePaidSum(invId);
+    const rows = await getInvoiceCardReturnOptions(invId);
+    setReturnRows(rows);
+    setCardReturns({});
+    setHasCardReturn(false);
     setSelectedInvoice({ ...inv, paid_sum: paidSum });
     const rem = Math.max(0, (inv.net_amount || inv.total_amount) - paidSum);
     setForm(f => ({ ...f, invoice_id: invId, amount: String(rem) }));
+  };
+
+  const totalReturnAmount = hasCardReturn ? returnRows.reduce((sum, row) => {
+    const count = Math.max(0, Number(cardReturns[row.invoice_item_id] || 0));
+    return sum + count * Number(row.card_value || 0);
+  }, 0) : 0;
+  const invoiceNet = Number(selectedInvoice?.net_amount || selectedInvoice?.total_amount || 0);
+  const paidSum = Number(selectedInvoice?.paid_sum || 0);
+  const netAfterReturn = Math.max(0, invoiceNet - totalReturnAmount);
+  const remainingAfterCollectionAndReturn = Math.max(0, netAfterReturn - paidSum - Number(form.amount || 0));
+
+  const setReturnedCardsCount = (row, value) => {
+    const raw = String(value || '').replace(/[^\d]/g, '');
+    const count = Math.max(0, Math.floor(Number(raw || 0)));
+    const capped = Math.min(count, Number(row.max_returnable_cards || 0));
+    setCardReturns(prev => ({ ...prev, [row.invoice_item_id]: capped ? String(capped) : '' }));
+    if (selectedInvoice) {
+      const nextReturns = returnRows.reduce((sum, r) => {
+        const nextCount = r.invoice_item_id === row.invoice_item_id ? capped : Math.max(0, Number(cardReturns[r.invoice_item_id] || 0));
+        return sum + nextCount * Number(r.card_value || 0);
+      }, 0);
+      const rem = Math.max(0, Number(selectedInvoice.net_amount || selectedInvoice.total_amount || 0) - Number(selectedInvoice.paid_sum || 0) - nextReturns);
+      setForm(f => ({ ...f, amount: String(rem) }));
+    }
   };
 
   const save = async () => {
@@ -133,7 +171,8 @@ export default function NewCollectionScreen({ route, navigation }) {
     if (!form.pos_id || !form.amount || !form.invoice_id) { Alert.alert('تنبيه', 'يجب تحديد نقطة البيع والفاتورة والمبلغ'); return; }
 
     if (selectedInvoice) {
-      const rem = (selectedInvoice.net_amount || selectedInvoice.total_amount) - (selectedInvoice.paid_sum || 0);
+      const selectedReturns = hasCardReturn ? returnRows.reduce((sum, row) => sum + Math.max(0, Number(cardReturns[row.invoice_item_id] || 0)) * Number(row.card_value || 0), 0) : 0;
+      const rem = (selectedInvoice.net_amount || selectedInvoice.total_amount) - (selectedInvoice.paid_sum || 0) - selectedReturns;
       if (parseFloat(form.amount) > (rem + 0.1)) {
         Alert.alert('⚠️ خطأ في المبلغ', `المبلغ المدخل (${form.amount}) أكبر من المتبقي للفاتورة (${rem.toFixed(2)})`);
         return;
@@ -157,6 +196,11 @@ export default function NewCollectionScreen({ route, navigation }) {
               collector_id: user?.id || null,
               agent_id: form.agent_id || user?.id || null,
               operation_group_id: operationGroupId,
+              card_returns: hasCardReturn ? returnRows.map(row => ({
+                invoice_item_id: row.invoice_item_id,
+                returned_cards_count: Math.max(0, Number(cardReturns[row.invoice_item_id] || 0)),
+                card_value: Number(row.card_value || 0),
+              })).filter(row => row.returned_cards_count > 0) : [],
             });
             Alert.alert('تم الحفظ', 'تم تسجيل التحصيل بنجاح وسيتم إشعار الإدارة.', [{ text: 'موافق', onPress: () => navigation.goBack() }]);
           } catch (e) {
@@ -273,6 +317,88 @@ export default function NewCollectionScreen({ route, navigation }) {
           <Input label="ملاحظات" value={form.note} onChangeText={v => setForm({ ...form, note: v })} multiline />
         </View>
       </View>
+      {selectedInvoice && returnRows.length > 0 && (
+        <View style={[s.section, { marginTop: spacing.md, zIndex: 2, elevation: 1 }]}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => {
+              const next = !hasCardReturn;
+              setHasCardReturn(next);
+              if (!next) {
+                setCardReturns({});
+                if (selectedInvoice) {
+                  const rem = Math.max(0, Number(selectedInvoice.net_amount || selectedInvoice.total_amount || 0) - Number(selectedInvoice.paid_sum || 0));
+                  setForm(f => ({ ...f, amount: String(rem) }));
+                }
+              }
+            }}
+            style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 }}
+          >
+            <Text style={s.sectionTitle}>يوجد مرتجع كروت</Text>
+            <Feather name={hasCardReturn ? 'check-square' : 'square'} size={22} color={hasCardReturn ? colors.primary : colors.t3} />
+          </TouchableOpacity>
+        </View>
+      )}
+      {selectedInvoice && hasCardReturn && returnRows.length > 0 && (
+        <View style={[s.section, { marginTop: spacing.md, zIndex: 2, elevation: 1 }]}>
+          <Text style={s.sectionTitle}>مرتجع الكروت</Text>
+          <View style={{ marginTop: 10, gap: 10 }}>
+            {returnRows.map(row => {
+              const returnedCount = Math.max(0, Number(cardReturns[row.invoice_item_id] || 0));
+              const amount = returnedCount * Number(row.card_value || 0);
+              return (
+                <View key={row.invoice_item_id} style={{ padding: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg2 }}>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>اسم الفئة</Text>
+                    <Text style={{ color: colors.t1, fontWeight: '800', flexShrink: 1, textAlign: 'right' }}>{row.category_name}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>كمية الفاتورة</Text>
+                    <Text style={{ color: colors.t1, fontWeight: '700' }}>{row.quantity}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>عدد الكروت في الورقة</Text>
+                    <Text style={{ color: colors.t1, fontWeight: '700' }}>{row.cards_per_sheet}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>إجمالي الكروت</Text>
+                    <Text style={{ color: colors.t1, fontWeight: '700' }}>{row.total_cards_sold}</Text>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>قيمة الكرت</Text>
+                    <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatCurrency(row.card_value || 0)}</Text>
+                  </Row>
+                  <Input
+                    label="عدد الكروت المرتجعة"
+                    value={String(cardReturns[row.invoice_item_id] || '')}
+                    onChangeText={v => setReturnedCardsCount(row, v)}
+                    keyboardType="numeric"
+                    placeholder={`0 - ${row.max_returnable_cards}`}
+                  />
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 2 }}>
+                    <Text style={{ color: colors.t3 }}>قيمة المرتجع</Text>
+                    <Text style={{ color: colors.orange, fontWeight: '900' }}>{formatCurrency(amount)}</Text>
+                  </Row>
+                </View>
+              );
+            })}
+            <View style={{ paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>إجمالي المرتجع</Text>
+                <Text style={{ color: colors.orange, fontWeight: '900' }}>{formatCurrency(totalReturnAmount)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>الصافي بعد المرتجع</Text>
+                <Text style={{ color: colors.blue, fontWeight: '900' }}>{formatCurrency(netAfterReturn)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>المتبقي بعد التحصيل والمرتجع</Text>
+                <Text style={{ color: colors.green, fontWeight: '900' }}>{formatCurrency(remainingAfterCollectionAndReturn)}</Text>
+              </Row>
+            </View>
+          </View>
+        </View>
+      )}
       {selectedInvoice && (
         <View style={[s.section, { marginTop: spacing.md, zIndex: 2, elevation: 1 }]}>
           <Text style={s.sectionTitle}>حالة التحصيل</Text>

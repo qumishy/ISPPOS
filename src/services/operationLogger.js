@@ -5,6 +5,7 @@ const ENTITY_LABELS = {
   invoices: 'فاتورة',
   invoice_items: 'بند فاتورة',
   collections: 'تحصيل',
+  invoice_card_returns: 'مرتجع كروت',
   supplies: 'توريد/إيداع',
   batches: 'دفعة',
   agent_wallets: 'محفظة',

@@ -60,7 +60,7 @@ const closedPhaseViolationPredicate = `
       FROM collections c
       WHERE c.invoice_id = invoices.id
         AND ${activeCollectionClause('c')}
-        AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+        AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
     ), 0) < (${invoiceAmountExpr}) - ${CLOSED_PHASE_INVOICE_EPSILON}
     OR EXISTS (
       SELECT 1
@@ -486,7 +486,7 @@ export const migrateOutstandingToPhase = async (newPhaseId) => {
          FROM collections c
          WHERE c.invoice_id = invoices.id
            AND ${activeCollectionClause('c')}
-           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
        ), 0) AS collected_amount,
        COALESCE((
          SELECT SUM(c.amount)
@@ -563,7 +563,7 @@ export const reconcileOutstandingInvoicesToActivePhase = async (projectId) => {
          FROM collections c
          WHERE c.invoice_id = invoices.id
            AND ${activeCollectionClause('c')}
-           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
        ), 0) AS collected_amount,
        COALESCE((
          SELECT SUM(c.amount)

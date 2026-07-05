@@ -46,7 +46,9 @@ const CARRY_COLS = [
   { key: 'pos_name', label: 'نقطة البيع', w: 140 },
   { key: 'invoice_status_label', label: 'حالة الفاتورة', w: 105 },
   { key: 'approval_status_label', label: 'حالة الاعتماد', w: 110 },
-  { key: 'total_amount', label: 'الإجمالي', w: 110 },
+  { key: 'original_total_amount', label: 'الأصلي', w: 110 },
+  { key: 'total_card_returns', label: 'المرتجع', w: 100 },
+  { key: 'total_amount', label: 'الصافي', w: 110 },
   { key: 'total_paid', label: 'المدفوع', w: 110 },
   { key: 'remaining_amount', label: 'المتبقي', w: 110 },
   { key: 'source_phase_name', label: 'من المرحلة', w: 130 },
@@ -139,10 +141,16 @@ export default function PhaseReportScreen({ route, navigation }) {
           SELECT
             i.id,
             LOWER(COALESCE(i.status, 'pending')) AS invoice_status,
-            CASE
+            MAX(0, (CASE
               WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
               ELSE COALESCE(i.total_amount, 0)
-            END AS total_amount,
+            END) - (
+              SELECT COALESCE(SUM(cr.return_amount), 0)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+            )) AS total_amount,
             COALESCE(i.paid_amount, 0) AS paid_amount
           FROM invoices i
           WHERE i.phase_id = ?
@@ -189,8 +197,20 @@ export default function PhaseReportScreen({ route, navigation }) {
               AND LOWER(COALESCE(i.status, 'pending')) NOT IN ('cancelled', 'canceled')
               AND (
                 CASE
-                  WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.paid_amount, 0) < (COALESCE(i.net_amount, 0) - 0.1)
-                  ELSE COALESCE(i.paid_amount, 0) < (COALESCE(i.total_amount, 0) - 0.1)
+                  WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.paid_amount, 0) < (MAX(0, COALESCE(i.net_amount, 0) - (
+                    SELECT COALESCE(SUM(cr.return_amount), 0)
+                    FROM invoice_card_returns cr
+                    WHERE cr.invoice_id = i.id
+                      AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                      AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+                  )) - 0.1)
+                  ELSE COALESCE(i.paid_amount, 0) < (MAX(0, COALESCE(i.total_amount, 0) - (
+                    SELECT COALESCE(SUM(cr.return_amount), 0)
+                    FROM invoice_card_returns cr
+                    WHERE cr.invoice_id = i.id
+                      AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                      AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+                  )) - 0.1)
                 END
               )
               ${phaseStart ? `AND COALESCE(SUBSTR(i.invoice_date, 1, 10), '') >= '${phaseStart}'` : ''}
@@ -217,7 +237,7 @@ export default function PhaseReportScreen({ route, navigation }) {
               MAX(c.collection_date) AS last_collection_date
             FROM collections c
             WHERE (c.active = 1 OR c.active IS NULL)
-              AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+              AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
             GROUP BY c.invoice_id
           )
           SELECT
@@ -226,17 +246,34 @@ export default function PhaseReportScreen({ route, navigation }) {
             COALESCE(pos.name, '—') AS pos_name,
             LOWER(COALESCE(i.status, 'pending')) AS invoice_status,
             COALESCE(i.approved_amount, 0) AS approved_amount,
-            CASE
+            (CASE
               WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
               ELSE COALESCE(i.total_amount, 0)
-            END AS total_amount,
+            END) AS original_total_amount,
+            (SELECT COALESCE(SUM(cr.return_amount), 0)
+             FROM invoice_card_returns cr
+             WHERE cr.invoice_id = i.id
+               AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+               AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') AS total_card_returns,
+            MAX(0, (CASE
+              WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
+              ELSE COALESCE(i.total_amount, 0)
+            END) - (SELECT COALESCE(SUM(cr.return_amount), 0)
+             FROM invoice_card_returns cr
+             WHERE cr.invoice_id = i.id
+               AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+               AND LOWER(COALESCE(cr.status, 'pending')) = 'approved')) AS total_amount,
             COALESCE(i.paid_amount, 0) AS total_paid,
             MAX(
               0,
-              (CASE
+              MAX(0, (CASE
                 WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
                 ELSE COALESCE(i.total_amount, 0)
-              END) - COALESCE(i.paid_amount, 0)
+              END) - (SELECT COALESCE(SUM(cr.return_amount), 0)
+             FROM invoice_card_returns cr
+             WHERE cr.invoice_id = i.id
+               AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+               AND LOWER(COALESCE(cr.status, 'pending')) = 'approved')) - COALESCE(i.paid_amount, 0)
             ) AS remaining_amount,
             COALESCE(SUBSTR(i.invoice_date, 1, 10), '—') AS invoice_date,
             COALESCE(SUBSTR(lc.last_collection_date, 1, 10), '—') AS last_collection_date,
@@ -523,7 +560,7 @@ export default function PhaseReportScreen({ route, navigation }) {
 
 function CarryCell({ col, value, colors }) {
   const border = colors.border + '35';
-  const moneyKeys = ['total_amount', 'total_paid', 'remaining_amount'];
+  const moneyKeys = ['original_total_amount', 'total_card_returns', 'total_amount', 'total_paid', 'remaining_amount'];
 
   if (moneyKeys.includes(col.key)) {
     const n = parseFloat(value) || 0;

@@ -37,12 +37,18 @@ export const toggleLocalPOSBlock = async (id, blocked) => {
 
 export const recalculatePOSCreditBalance = async (posId) => {
   if (!posId) return;
-  // Total debt across active invoices: approved discount net, otherwise gross.
+  // Total debt across active invoices: approved discount net, otherwise gross, minus active card returns.
   const invRes = await execSQL(
-    `SELECT SUM(MAX(0, CASE WHEN COALESCE(discount_status, 'none') IN ('approved', 'auto_approved')
+    `SELECT SUM(MAX(0, (CASE WHEN COALESCE(discount_status, 'none') IN ('approved', 'auto_approved')
        THEN COALESCE(NULLIF(net_amount, 0), COALESCE(total_amount, 0) - COALESCE(discount_applied_value, 0))
        ELSE COALESCE(total_amount, 0)
-     END)) as total_debt
+     END) - COALESCE((
+       SELECT SUM(cr.return_amount)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = invoices.id
+         AND (cr.active = 1 OR cr.active = 'true' OR cr.active IS NULL)
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+     ), 0))) as total_debt
      FROM invoices
      WHERE pos_id = ?
        AND COALESCE(is_deleted, 0) = 0
@@ -61,7 +67,7 @@ export const recalculatePOSCreditBalance = async (posId) => {
      WHERE collections.pos_id = ?
        AND (COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active = 'true' OR i.active IS NULL))
        AND (collections.active = 1 OR collections.active = 'true' OR collections.active IS NULL)
-       AND LOWER(COALESCE(collections.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`,
+       AND LOWER(COALESCE(collections.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')`,
     [posId]
   );
   const totalPaid = Number(colRes.rows._array[0]?.total_paid || 0);
@@ -117,13 +123,20 @@ export const getPOSRemainingCredit = async (posId) => {
              ELSE COALESCE(i.total_amount, 0)
            END)
            - COALESCE((
+               SELECT SUM(cr.return_amount)
+               FROM invoice_card_returns cr
+               WHERE cr.invoice_id = i.id
+                 AND (cr.active = 1 OR cr.active = 'true' OR cr.active IS NULL)
+                 AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+             ), 0)
+           - COALESCE((
                SELECT SUM(c.amount)
                FROM collections c
                JOIN invoices inv ON inv.id = c.invoice_id
                WHERE c.invoice_id = i.id
                  AND (COALESCE(inv.is_deleted, 0) = 0 AND inv.deleted_at IS NULL AND (inv.active = 1 OR inv.active = 'true' OR inv.active IS NULL))
                  AND (c.active = 1 OR c.active = 'true' OR c.active IS NULL)
-                 AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+                 AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
              ), 0)
          )
        ), 0) AS total_unpaid

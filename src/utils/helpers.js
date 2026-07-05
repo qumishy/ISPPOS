@@ -15,7 +15,7 @@ export const formatDateShort = (d) => {
 export const todayISO = () => new Date().toISOString().split('T')[0];
 
 export const statusLabel = (s) => ({
-  paid: 'مسددة', pending: 'معلقة', overdue: 'متأخرة', partial: 'جزئي', cancelled: 'ملغية',
+  paid: 'مسددة', pending: 'معلقة', pending_card_return_approval: 'بانتظار اعتماد مرتجع الكروت', overdue: 'متأخرة', partial: 'جزئي', cancelled: 'ملغية',
   approved: 'معتمد', rejected: 'مرفوض', unapproved: 'غير معتمدة', approval_partial: 'معتمد جزئي',
   active: 'نشط', depleted: 'منتهي', critical: 'حرج',
   cash: 'نقدي', credit: 'آجل',
@@ -23,7 +23,7 @@ export const statusLabel = (s) => ({
 
 export const statusColor = (s) => ({
   paid: '#10b981', approved: '#10b981', active: '#10b981',
-  pending: '#f59e0b', partial: '#f59e0b', critical: '#f59e0b',
+  pending: '#f59e0b', pending_card_return_approval: '#f59e0b', partial: '#f59e0b', critical: '#f59e0b',
   overdue: '#ef4444', rejected: '#ef4444', depleted: '#ef4444', cancelled: '#ef4444', unapproved: '#f59e0b', approval_partial: '#3b82f6',
   cash: '#3b82f6', credit: '#8b5cf6',
 }[s] || '#475569');

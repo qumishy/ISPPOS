@@ -416,7 +416,7 @@ function CategoriesTab({ s }) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId]   = useState(null);
-  const [form, setForm]       = useState({ name: '', price: '' });
+  const [form, setForm]       = useState({ name: '', price: '', card_value: '', cards_per_sheet: '1' });
   const [saving, setSaving]   = useState(false);
 
   const load = useCallback(async () => {
@@ -444,26 +444,28 @@ function CategoriesTab({ s }) {
 
   const performSave = async () => {
     if (!form.name || !form.price) { Alert.alert('تنبيه', 'الاسم والسعر مطلوبان'); return; }
+    const cardsPerSheet = Math.max(1, parseInt(form.cards_per_sheet || '1', 10) || 1);
+    const cardValue = Math.max(0, parseFloat(form.card_value || form.price || '0') || 0);
     setSaving(true);
     try {
       if (editId) {
-        await updateCategory(editId, { name: form.name, price: parseFloat(form.price) });
+        await updateCategory(editId, { name: form.name, price: parseFloat(form.price), card_value: cardValue, cards_per_sheet: cardsPerSheet });
       } else {
-        await createLocalCategory({ name: form.name, price: parseFloat(form.price), project_id: projectId });
+        await createLocalCategory({ name: form.name, price: parseFloat(form.price), card_value: cardValue, cards_per_sheet: cardsPerSheet, project_id: projectId });
       }
-      setForm({ name: '', price: '' }); setShowForm(false); setEditId(null); load();
+      setForm({ name: '', price: '', card_value: '', cards_per_sheet: '1' }); setShowForm(false); setEditId(null); load();
     } catch (e) {
       console.log('CAT SAVE ERROR:', e);
     }
     setSaving(false);
   };
 
-  const startEdit = (c) => { setEditId(c.id); setForm({ name: c.name, price: String(c.price) }); setShowForm(true); };
+  const startEdit = (c) => { setEditId(c.id); setForm({ name: c.name, price: String(c.price), card_value: String(c.card_value || c.price || 0), cards_per_sheet: String(c.cards_per_sheet || 1) }); setShowForm(true); };
   const catColors = [colors.blue, colors.cyan, colors.purple, colors.green, colors.orange];
 
   return (
     <ScrollView style={s.tabContent} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
-      <TouchableOpacity style={s.addBtn} onPress={() => { setShowForm(!showForm); setEditId(null); setForm({ name: '', price: '' }); }}>
+      <TouchableOpacity style={s.addBtn} onPress={() => { setShowForm(!showForm); setEditId(null); setForm({ name: '', price: '', card_value: '', cards_per_sheet: '1' }); }}>
         <Feather name={showForm && !editId ? 'x' : 'plus'} size={18} color={colors.primary} />
         <Text style={s.addBtnTxt}>{showForm && !editId ? 'إلغاء' : 'إضافة فئة جديدة'}</Text>
       </TouchableOpacity>
@@ -473,6 +475,8 @@ function CategoriesTab({ s }) {
           <Text style={s.formTitle}>{editId ? 'تعديل الفئة' : 'فئة جديدة'}</Text>
           <Input label="اسم الفئة *" value={form.name} onChangeText={v => setForm({ ...form, name: v })} placeholder="مثال: كرت 5000 ر.ي" />
           <Input label="سعر الورقة (ر.ي) *" value={form.price} onChangeText={v => setForm({ ...form, price: v })} keyboardType="numeric" placeholder="5000" />
+          <Input label="قيمة الكرت" value={form.card_value} onChangeText={v => setForm({ ...form, card_value: v })} keyboardType="numeric" placeholder={form.price || '5000'} />
+          <Input label="عدد الكروت في الورقة" value={form.cards_per_sheet} onChangeText={v => setForm({ ...form, cards_per_sheet: v })} keyboardType="numeric" placeholder="1" />
           <Btn label={saving ? 'جاري الحفظ...' : editId ? 'حفظ' : 'إضافة'} icon={saving ? undefined : editId ? "save" : "check"} variant="primary" onPress={() => Alert.alert('تأكيد', 'حفظ؟', [{text:'إلغاء'}, {text:'نعم', onPress: performSave}])} disabled={saving} />
         </View>
       )}
@@ -488,6 +492,7 @@ function CategoriesTab({ s }) {
               <View style={{ flex: 1, marginRight: spacing.md }}>
                 <Text style={s.userName}>{c.name}</Text>
                 <Text style={[s.userMeta, { color: colors.green }]}>{formatCurrency(c.price)} / ورقة</Text>
+                <Text style={s.userMeta}>قيمة الكرت: {formatCurrency(c.card_value || c.price || 0)} • عدد الكروت في الورقة: {c.cards_per_sheet || 1}</Text>
               </View>
               <Row style={{ gap: spacing.sm }}>
                 <TouchableOpacity onPress={() => startEdit(c)} style={s.iconBtn}>

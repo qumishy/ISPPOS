@@ -50,11 +50,11 @@ export default function WalletDetailScreen({ route, navigation }) {
   useEffect(() => {
     async function init() {
       if (!projectId) return;
-      const wallets = await getLocalWallets(agentId, projectId);
-      const activeWallets = wallets.filter(w => (w.total_cards || 0) - (w.sold_cards || 0) > 0);
-      const tt = activeWallets.reduce((a, b) => a + (b.total_cards || 0), 0);
-      const ss = activeWallets.reduce((a, b) => a + (b.sold_cards || 0), 0);
-      setTotalSummary({ total: tt, sold: ss, rem: tt - ss });
+      const wallets = await getLocalWallets(agentId, projectId, selectedPhase?.id || null);
+      const tt = wallets.reduce((a, b) => a + (b.total_cards || 0), 0);
+      const ss = wallets.reduce((a, b) => a + (b.sold_cards || 0), 0);
+      const rem = wallets.reduce((a, b) => a + (b.remaining_cards || 0), 0);
+      setTotalSummary({ total: tt, sold: ss, rem });
 
       const [c, b, p] = await Promise.all([
         getLocalCategories(projectId),
@@ -65,7 +65,7 @@ export default function WalletDetailScreen({ route, navigation }) {
       loadMovements();
     }
     init();
-  }, [agentId, projectId]);
+  }, [agentId, projectId, selectedPhase?.id]);
 
   const loadMovements = async () => {
     setLoading(true);

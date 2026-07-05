@@ -159,6 +159,7 @@ export default function WalletsScreen({ navigation }) {
               const agentSold = agent.items.reduce((sm, w) => sm + (w.sold_cards || 0), 0);
               const agentRemaining = agent.items.reduce((sm, w) => sm + (w.remaining_cards || 0), 0);
               const agentPct = agentTotal > 0 ? (agentSold / agentTotal) * 100 : 0;
+              const agentIsZeroBalance = agentTotal > 0 && agentRemaining === 0;
 
               return (
                 <TouchableOpacity
@@ -185,7 +186,14 @@ export default function WalletsScreen({ navigation }) {
                         <Text style={{ fontSize: 11, color: colors.t3 }}>{agent.items.length} أصناف في المحفظة</Text>
                       </View>
                     </View>
-                    <Feather name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.t3} />
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      {agentIsZeroBalance && (
+                        <View style={{ backgroundColor: colors.success + '12', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: colors.success + '25' }}>
+                          <Text style={{ fontSize: 10, fontWeight: '800', color: colors.success }}>الرصيد 0</Text>
+                        </View>
+                      )}
+                      <Feather name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.t3} />
+                    </View>
                   </View>
 
                   {/* Stat strip: total / sold / remaining */}
@@ -225,12 +233,18 @@ export default function WalletsScreen({ navigation }) {
                         return acc;
                       }, {})).map((w, idx) => {
                         const itemPct = w.total_cards > 0 ? (w.sold_cards / w.total_cards) * 100 : 0;
+                        const itemIsZeroBalance = w.total_cards > 0 && (w.remaining_cards || 0) === 0;
                         return (
                           <View key={w.id || idx} style={{ marginBottom: 12, backgroundColor: colors.bg2, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border + '10' }}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                 <Badge status={w.category_name} style={{ paddingVertical: 2 }} />
                                 <Text style={{ fontSize: 12, fontWeight: '800', color: colors.t1 }}>{w.batch_number}</Text>
+                                {itemIsZeroBalance && (
+                                  <View style={{ backgroundColor: colors.success + '12', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5 }}>
+                                    <Text style={{ fontSize: 9, color: colors.success, fontWeight: '800' }}>مكتمل</Text>
+                                  </View>
+                                )}
                               </View>
                               {selectedPhase?.status !== 'closed' && can('canManageWallets') && (w.remaining_cards || 0) > 0 && (
                                 <TouchableOpacity onPress={() => handleReturn(w)} style={{ backgroundColor: colors.danger + '10', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
@@ -242,7 +256,7 @@ export default function WalletsScreen({ navigation }) {
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
                               <View style={{ flex: 1, alignItems: 'center' }}><Text style={{ fontSize: 9, color: colors.t3 }}>الإجمالي</Text><Text style={{ fontSize: 13, fontWeight: '800', color: colors.t1 }}>{w.total_cards}</Text></View>
                               <View style={{ flex: 1, alignItems: 'center', borderLeftWidth: 1, borderRightWidth: 1, borderColor: colors.border + '20' }}><Text style={{ fontSize: 9, color: colors.t3 }}>المباع</Text><Text style={{ fontSize: 13, fontWeight: '800', color: colors.orange }}>{w.sold_cards}</Text></View>
-                              <View style={{ flex: 1, alignItems: 'center' }}><Text style={{ fontSize: 9, color: colors.t3 }}>المتبقي</Text><Text style={{ fontSize: 13, fontWeight: '800', color: colors.success }}>{w.remaining_cards}</Text></View>
+                              <View style={{ flex: 1, alignItems: 'center' }}><Text style={{ fontSize: 9, color: colors.t3 }}>المتبقي</Text><Text style={{ fontSize: 13, fontWeight: '800', color: itemIsZeroBalance ? colors.t3 : colors.success }}>{w.remaining_cards || 0}</Text></View>
                             </View>
                             <ProgressBar percent={itemPct} color={colors.orange} height={2} />
                           </View>

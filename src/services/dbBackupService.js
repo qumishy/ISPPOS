@@ -8,6 +8,7 @@ const TABLE_FIELDS = {
   invoices: 'id,invoice_number,pos_id,agent_id,type,total_amount,net_amount,paid_amount,approved_amount,status,notes,invoice_date,active,created_at',
   invoice_items: 'id,invoice_id,category_id,batch_id,wallet_id,from_card,to_card,quantity,unit_price,total_price,created_at',
   collections: 'id,collection_number,agent_id,pos_id,invoice_id,amount,method,reference_number,status,approved_at,approved_by,approval_notes,rejection_reason,collection_date,notes,active,supply_id,created_at',
+  invoice_card_returns: 'id,project_id,phase_id,invoice_id,collection_id,invoice_item_id,category_id,batch_id,wallet_id,returned_cards_count,card_value,return_amount,status,reason,approval_notes,rejection_notes,created_by,approved_by,approved_at,rejected_by,rejected_at,active,created_at,updated_at',
   supplies: 'id,supply_number,user_id,agent_id,amount,notes,type,status,approved_at,approval_notes,created_at',
   batches: 'id,batch_number,category_id,serial_number,total_cards,available_cards,received_date,status,active,created_at',
   agent_wallets: 'id,agent_id,batch_id,category_id,from_card,to_card,total_cards,sold_cards,issued_by,notes,created_at',
@@ -18,7 +19,7 @@ const TABLE_FIELDS = {
  */
 export async function exportTransactionsBackup() {
   try {
-    const tablesToExport = ['batches', 'agent_wallets', 'invoices', 'invoice_items', 'collections', 'supplies'];
+    const tablesToExport = ['batches', 'agent_wallets', 'invoices', 'invoice_items', 'collections', 'invoice_card_returns', 'supplies'];
     let backupData = {
       timestamp: new Date().toISOString(),
       version: '1.0',
