@@ -62,7 +62,7 @@ export default function CollectionsScreen({ navigation }) {
 
   useEffect(() => {
     load();
-    const unsub = subscribeDataChanges(e => { if (['collections', 'all'].includes(e.type)) load(true); });
+    const unsub = subscribeDataChanges(e => { if (['collections', 'invoice_card_returns', 'invoices', 'all'].includes(e.type)) load(true); });
     return unsub;
   }, [load]);
 
@@ -93,18 +93,36 @@ export default function CollectionsScreen({ navigation }) {
       { text: 'نعم، إلغاء', style: 'destructive', onPress: async () => { await cancelLocalCollectionApproval(id, user?.id || null); load(); } },
     ]);
 
-  const visibleCollections = useMemo(() => cols.filter(c => {
-    if (user?.role === 'agent' && c.status === 'approved') {
-      const net = Number(c.inv_net || 0);
-      const approved = Number(c.inv_approved ?? c.inv_paid ?? 0);
-      const fullyApproved = net > 0 && approved >= (net - 0.1);
-      return !fullyApproved;
-    }
-    return true;
-  }), [cols, user?.role]);
+  const normalizeStatus = (value) => String(value || 'pending').toLowerCase();
+  const isFalseLike = (value) => (
+    value === false || value === 0 || value === '0' || String(value).toLowerCase() === 'false'
+  );
+  const isCancelledCollectionStatus = (status) => (
+    ['cancelled', 'canceled', 'deleted', 'rejected', 'inactive'].includes(normalizeStatus(status))
+  );
+  const isActiveCollectionRow = (collection) => (
+    !isFalseLike(collection?.active) && !isCancelledCollectionStatus(collection?.status)
+  );
+  const isApprovedCollectionRow = (collection) => (
+    isActiveCollectionRow(collection) && normalizeStatus(collection?.status) === 'approved'
+  );
+  const isPendingCollectionRow = (collection) => (
+    isActiveCollectionRow(collection) && !isApprovedCollectionRow(collection)
+  );
 
-  const pending = useMemo(() => visibleCollections.filter(c => c.status === 'pending'), [visibleCollections]);
-  const approved = useMemo(() => visibleCollections.filter(c => c.status === 'approved'), [visibleCollections]);
+  const visibleCollections = useMemo(
+    () => (Array.isArray(cols) ? cols : []).filter(isActiveCollectionRow),
+    [cols]
+  );
+
+  const pending = useMemo(
+    () => visibleCollections.filter(isPendingCollectionRow),
+    [visibleCollections]
+  );
+  const approved = useMemo(
+    () => visibleCollections.filter(isApprovedCollectionRow),
+    [visibleCollections]
+  );
   const display = tab === 'pending' ? pending : tab === 'approved' ? approved : visibleCollections;
   const filtered = useMemo(
     () => display.filter(c => !search || JSON.stringify(c).toLowerCase().includes(search.toLowerCase())),
@@ -114,6 +132,7 @@ export default function CollectionsScreen({ navigation }) {
   const totalApproved = useMemo(() => approved.reduce((sum, c) => sum + (c.amount || 0), 0), [approved]);
   const keyExtractor = useCallback((item) => String(item.id), []);
   const methodLabel = m => ({ cash: 'نقدي', transfer: 'تحويل', check: 'شيك' }[m] || m);
+
   const metaChip = {
     flexDirection: 'row-reverse',
     alignItems: 'center',
@@ -151,6 +170,21 @@ export default function CollectionsScreen({ navigation }) {
     gap: 8,
   };
 
+  const invoiceApprovalDisplayMeta = (status) => {
+    const meta = invoiceApprovalStatusMeta(status);
+    const normalized = normalizeStatus(status);
+    if ([
+      'pending',
+      'pending_collection_approval',
+      'pending_card_return_approval',
+      'unapproved',
+      'not_approved',
+    ].includes(normalized)) {
+      return { ...meta, label: 'غير معتمدة' };
+    }
+    return meta;
+  };
+
   const handlePrint = async (col) => {
     const html = `
       <html dir="rtl" lang="ar">
@@ -178,7 +212,7 @@ export default function CollectionsScreen({ navigation }) {
           <div class="info-row"><span class="label">طريقة الدفع:</span> <span class="val">${methodLabel(col.method)}</span></div>
           <div class="info-row"><span class="label">المندوب المستلم:</span> <span class="val">${col.agent_name}</span></div>
           ${col.invoice_number ? `<div class="info-row"><span class="label">سداد فاتورة رقم:</span> <span class="val">${col.invoice_number}</span></div>` : ''}
-          ${col.status === 'approved' && col.approver_name ? `<div class="info-row"><span class="label">المحاسب المعتمد:</span> <span class="val">${col.approver_name}</span></div>` : ''}
+          ${isApprovedCollectionRow(col) && col.approver_name ? `<div class="info-row"><span class="label">المحاسب المعتمد:</span> <span class="val">${col.approver_name}</span></div>` : ''}
           <div class="amount-box">
             <div style="font-size: 14px; color: #64748b; margin-bottom: 5px;">المبلغ الواصل</div>
             <div style="font-size: 36px; font-weight: 900; color: #2563eb;">${formatCurrency(col.amount)}</div>
@@ -195,7 +229,7 @@ export default function CollectionsScreen({ navigation }) {
 
   const generateReceiptInfo = (col) => {
     const net = col.inv_net || 0;
-    const paid = col.inv_paid || 0;
+    const paid = Number(col.inv_effective_paid_amount ?? col.inv_approved ?? col.inv_paid ?? 0);
     const remaining = Math.max(0, net - paid);
     let statusLine = "";
     if (net > 0) {
@@ -266,7 +300,7 @@ export default function CollectionsScreen({ navigation }) {
         tabs={[
           { k: 'pending', l: `معلقة (${pending.length})` },
           { k: 'approved', l: `معتمدة (${approved.length})` },
-          { k: 'all', l: `الكل (${cols.length})` },
+          { k: 'all', l: `الكل (${visibleCollections.length})` },
         ]}
         activeTab={tab} onTabSelect={setTab} search={search} onSearch={setSearch}
         searchPlaceholder="بحث بالرقم أو الاسم..."
@@ -311,6 +345,13 @@ export default function CollectionsScreen({ navigation }) {
           removeClippedSubviews
           renderItem={({ item: col }) => {
             const expanded = expandedColId === col.id;
+            const linkedReturnAmount = Number(col.inv_collection_linked_returns_total || 0);
+            const linkedApprovedReturnAmount = Number(col.inv_collection_linked_approved_returns_total || 0);
+            const collectionAmount = Number(col.inv_collection_amount ?? (col.amount || 0));
+            const effectiveCoveredAmount = Number(col.inv_collection_coverage_amount ?? (collectionAmount + linkedReturnAmount));
+            const invoiceNet = Number(col.inv_net || 0);
+            const combinedCoverageComplete = Number(col.inv_collection_remaining_after_request || 0) <= 0.1;
+            const pendingCoverageComplete = combinedCoverageComplete && String(col.inv_approval_status || '').toLowerCase() !== 'approved';
             return (
             <TouchableOpacity 
               style={s.colCard} 
@@ -319,8 +360,9 @@ export default function CollectionsScreen({ navigation }) {
               onLongPress={() => {
                 const opts = [{ text: 'إلغاء', style: 'cancel' }];
                 if (selectedPhase?.status !== 'closed') {
-                  if (col.status === 'pending' && (user?.role === 'admin' || user?.role === 'accountant')) opts.push({ text: 'اعتماد السند', onPress: () => handleApprovePress(col.id) });
-                  if (col.status === 'approved' && user?.role === 'admin') opts.push({ text: 'إلغاء اعتماد', style: 'destructive', onPress: () => handleCancelApproval(col.id) });
+                  if (isPendingCollectionRow(col) && (user?.role === 'admin' || user?.role === 'accountant')) opts.push({ text: 'اعتماد السند', onPress: () => handleApprovePress(col.id) });
+                  if (isPendingCollectionRow(col) && user?.role === 'admin') opts.push({ text: 'إلغاء التحصيل', style: 'destructive', onPress: () => handleDelete(col.id) });
+                  if (isApprovedCollectionRow(col) && user?.role === 'admin') opts.push({ text: 'إلغاء اعتماد', style: 'destructive', onPress: () => handleCancelApproval(col.id) });
                 }
                 opts.push({ text: 'طباعة السند', onPress: () => handlePrint(col) });
                 opts.push({ text: 'مشاركة واتساب', onPress: () => handleWhatsApp(col) });
@@ -338,7 +380,7 @@ export default function CollectionsScreen({ navigation }) {
                 </View>
                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
                   <Text style={[s.colAmt, { fontSize: fontSize.xl, color: colors.primary }]}>
-                    {formatCurrency(col.amount || 0)}
+                    {formatCurrency(collectionAmount)}
                   </Text>
                   <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
                     {formatDateShort(col.collection_date)}
@@ -349,6 +391,14 @@ export default function CollectionsScreen({ navigation }) {
 
               <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
                 <View style={metaChip}>
+                  <Text style={labelMini}>مبلغ التحصيل</Text>
+                  <Text style={valueMini}>{formatCurrency(collectionAmount)}</Text>
+                </View>
+                <View style={metaChip}>
+                  <Text style={labelMini}>مرتجع الكروت</Text>
+                  <Text style={valueMini}>{formatCurrency(linkedReturnAmount)}</Text>
+                </View>
+                <View style={metaChip}>
                   <Text style={labelMini}>الفاتورة</Text>
                   <Text style={valueMini}>{col.invoice_number || '-'}</Text>
                 </View>
@@ -357,23 +407,26 @@ export default function CollectionsScreen({ navigation }) {
                   <Text style={valueMini}>{methodLabel(col.method)}</Text>
                 </View>
                 <View style={metaChip}>
-                  <Text style={labelMini}>صافي الفاتورة</Text>
-                  <Text style={valueMini}>{formatCurrency(col.inv_net || 0)}</Text>
+                  <Text style={labelMini}>الإجمالي المغطي</Text>
+                  <Text style={[valueMini, { color: colors.blue }]}>{formatCurrency(effectiveCoveredAmount)}</Text>
                 </View>
                 <View style={metaChip}>
                   <Text style={labelMini}>المتبقي</Text>
                   <Text style={[valueMini, { color: colors.warning }]}>
-                    {formatCurrency(Math.max(0, Number(col.inv_net || 0) - Number(col.inv_paid || 0)))}
+                    {formatCurrency(Number(col.inv_collection_remaining_after_request ?? Math.max(0, invoiceNet - effectiveCoveredAmount)))}
                   </Text>
                 </View>
               </View>
-
               <View style={{ flexDirection: 'row-reverse', gap: 8, marginTop: 8 }}>
                 <View style={[sectionBox, { flex: 1 }]}>
                   <Text style={boxTitle}>الحالات</Text>
                   <View style={statusChip}>
                     <Text style={labelMini}>الاعتماد</Text>
-                    <Badge status={col.status} />
+                    <Badge
+                      status={col.inv_approval_status}
+                      label={invoiceApprovalDisplayMeta(col.inv_approval_status).label}
+                      color={invoiceApprovalDisplayMeta(col.inv_approval_status).color}
+                    />
                   </View>
                   <View style={[statusChip, {
                     flexDirection: 'column',
@@ -419,8 +472,8 @@ export default function CollectionsScreen({ navigation }) {
                       <Text style={[labelMini, { flexShrink: 1, fontSize: 9 }]} numberOfLines={1}>اعتماد الفاتورة</Text>
                       <Badge
                         status={col.inv_approval_status}
-                        label={invoiceApprovalStatusMeta(col.inv_approval_status).label}
-                        color={invoiceApprovalStatusMeta(col.inv_approval_status).color}
+                        label={invoiceApprovalDisplayMeta(col.inv_approval_status).label}
+                        color={invoiceApprovalDisplayMeta(col.inv_approval_status).color}
                         style={{
                           paddingVertical: 2,
                           paddingHorizontal: 6,
@@ -444,7 +497,9 @@ export default function CollectionsScreen({ navigation }) {
                       {[
                         col.agent_name && { label: 'المندوب', value: col.agent_name },
                         { label: 'طريقة الدفع', value: methodLabel(col.method) },
-                        col.status === 'approved' && col.approver_name && { label: 'المعتمد', value: col.approver_name, color: colors.warning },
+                        isApprovedCollectionRow(col) && col.approver_name && { label: 'المعتمد', value: col.approver_name, color: colors.warning },
+                        linkedApprovedReturnAmount > 0 && { label: 'مرتجع معتمد', value: formatCurrency(linkedApprovedReturnAmount), color: colors.success },
+                        effectiveCoveredAmount > 0 && { label: 'الإجمالي المغطى', value: formatCurrency(effectiveCoveredAmount), color: colors.blue },
                         col.approval_notes && { label: 'ملاحظات', value: col.approval_notes, color: colors.success },
                       ].filter(Boolean).map((item, i) => (
                         <View key={i} style={s.colGridItem}>
@@ -456,20 +511,38 @@ export default function CollectionsScreen({ navigation }) {
                     {!!col.notes && <Text style={s.colNotes}>{col.notes}</Text>}
                   </View>
 
+                  {combinedCoverageComplete && (
+                    <View style={{ marginTop: 8, backgroundColor: colors.success + '12', borderWidth: 1, borderColor: colors.success + '40', borderRadius: radius.md, padding: spacing.sm }}>
+                      <Text style={{ color: colors.success, fontSize: 12, fontWeight: '900', textAlign: 'right' }}>
+                        {String(col.status || '').toLowerCase() === 'approved' ? 'تم استيفاء الفاتورة من التحصيل ومرتجع الكروت' : 'مستوفي بانتظار الاعتماد'}
+                      </Text>
+                      <Text style={{ color: colors.t2, fontSize: 11, marginTop: 4, textAlign: 'right' }}>
+                        مبلغ التحصيل: {formatCurrency(collectionAmount)} • مرتجع الكروت: {formatCurrency(linkedReturnAmount)}
+                      </Text>
+                    </View>
+                  )}
+
+                  {normalizeStatus(col.status) === 'pending_card_return_approval' && linkedReturnAmount > 0 && (
+                    <View style={{ marginTop: 8, backgroundColor: colors.warning + '12', borderWidth: 1, borderColor: colors.warning + '40', borderRadius: radius.md, padding: spacing.sm }}>
+                      <Text style={{ color: colors.warning, fontSize: 12, fontWeight: '900', textAlign: 'right' }}>بانتظار اعتماد مرتجع الكروت</Text>
+                      <Text style={{ color: colors.t2, fontSize: 11, marginTop: 4, textAlign: 'right' }}>ستصبح الفاتورة مسددة بعد اعتماد المرتجع إذا غطى المتبقي.</Text>
+                    </View>
+                  )}
+
                   <View style={[s.colActions, { paddingVertical: 8, gap: 10 }]}>
                     <Row style={{ gap: 10 }}>
                       <Btn label="طباعة" icon="printer" variant="glass" size="sm" style={{ flex: 1 }} onPress={() => handlePrint(col)} />
-                      {selectedPhase?.status !== 'closed' && col.status === 'pending' && (user?.role === 'admin' || user?.role === 'accountant') && (
+                      {selectedPhase?.status !== 'closed' && isPendingCollectionRow(col) && (user?.role === 'admin' || user?.role === 'accountant') && (
                         <Btn label="اعتماد" icon="check-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleApprovePress(col.id)} />
                       )}
-                      {selectedPhase?.status !== 'closed' && col.status === 'approved' && user?.role === 'admin' && (
+                      {selectedPhase?.status !== 'closed' && isApprovedCollectionRow(col) && user?.role === 'admin' && (
                         <Btn label="إلغاء التحصيل" icon="x-circle" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleCancelApproval(col.id)} />
                       )}
                     </Row>
                     <Row style={{ gap: 10 }}>
                       <Btn label="واتساب" icon="message-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleWhatsApp(col)} />
                       <Btn label="الرسائل" icon="message-square" variant="outline" size="sm" style={{ flex: 1 }} onPress={() => handleSMS(col)} />
-                      {selectedPhase?.status !== 'closed' && col.status === 'pending' && user?.role === 'admin' && (
+                      {selectedPhase?.status !== 'closed' && isPendingCollectionRow(col) && user?.role === 'admin' && (
                         <Btn label="إلغاء" icon="x-circle" variant="danger" size="sm" style={{ flex: 1 }} onPress={() => handleDelete(col.id)} />
                       )}
                     </Row>

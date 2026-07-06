@@ -1,11 +1,18 @@
 import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
-import { updateInvoiceStatus, getInvoicePaidSum, decorateInvoiceStatusFields, getInvoiceEffectiveTotal } from './invoiceService';
-import { createInvoiceCardReturns } from './invoiceCardReturnService';
+import { updateInvoiceStatus, decorateInvoiceStatusFields, resolveInvoiceNetAmount } from './invoiceService';
+import { createInvoiceCardReturns, cancelInvoiceCardReturns } from './invoiceCardReturnService';
 import { getCached } from './cacheService';
 
 const ACTIVE_INVOICE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active IS NULL OR i.active = 'true'))`;
 
 const pad2 = (n) => String(n).padStart(2, '0');
+const MONEY_EPSILON = 0.01;
+
+const toNumber = (value) => {
+  const normalized = String(value ?? '').replace(/,/g, '').trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const getMonthlySequentialCode = async ({ table, column, prefix, dateValue }) => {
   const baseDate = new Date(dateValue || new Date().toISOString());
@@ -61,11 +68,103 @@ export const getLocalCollections = async (filters = {}) => {
   return getCached(cacheKey, async () => {
     const activeClause = filters.includeInactive
       ? `(c.active = 1 OR c.active = 0 OR c.active = 'true' OR c.active = 'false' OR c.active IS NULL)`
-      : `(c.active = 1 OR c.active = 'true') AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('deleted', 'cancelled', 'canceled')`;
+      : `(c.active = 1 OR c.active = 'true' OR c.active IS NULL) AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected')`;
     const invoiceJoinClause = filters.includeInactive
       ? `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL)`
       : ACTIVE_INVOICE_CLAUSE;
-    let sql = `SELECT c.*, u.name as agent_name, p.name as pos_name, p.phone as pos_phone, i.invoice_number, CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved') THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0))) ELSE COALESCE(i.total_amount, 0) END as inv_net, (SELECT COALESCE(SUM(cr.return_amount), 0) FROM invoice_card_returns cr WHERE cr.invoice_id = i.id AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true') AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') as inv_total_card_returns, i.total_amount as inv_total_amount, i.discount_applied_value as inv_discount_applied_value, i.discount_status as inv_discount_status, i.status as inv_status, i.paid_amount as inv_paid, i.approved_amount as inv_approved, apr.name as approver_name FROM collections c LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${invoiceJoinClause} LEFT JOIN users apr ON apr.id = c.approved_by AND apr.project_id = c.project_id WHERE ${activeClause}`;
+    let sql = `SELECT
+      c.*,
+      u.name as agent_name,
+      p.name as pos_name,
+      p.phone as pos_phone,
+      i.invoice_number,
+      CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
+        THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0)))
+        ELSE COALESCE(i.total_amount, 0)
+      END as inv_net,
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')) as inv_total_card_returns,
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+         AND EXISTS (
+           SELECT 1
+           FROM collections pc
+           WHERE pc.id = cr.collection_id
+             AND pc.invoice_id = i.id
+             AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
+             AND LOWER(COALESCE(pc.status, 'pending')) = 'approved'
+         )) as inv_approved_card_returns_total,
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.collection_id = c.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')) as inv_collection_linked_returns_total,
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.collection_id = c.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') as inv_collection_linked_approved_returns_total,
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'pending') as inv_pending_card_returns,
+      (SELECT COUNT(1)
+       FROM collections pc
+       WHERE pc.invoice_id = i.id
+         AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
+         AND LOWER(COALESCE(pc.status, 'pending')) IN ('pending', 'pending_card_return_approval')) as inv_pending_collections_count,
+      (SELECT COUNT(1)
+       FROM collections rc
+       WHERE rc.invoice_id = i.id
+         AND (rc.active = 1 OR rc.active IS NULL OR rc.active = 'true')
+         AND LOWER(COALESCE(rc.status, 'pending')) = 'rejected') as inv_rejected_approval_count,
+      i.total_amount as inv_total_amount,
+      i.discount_applied_value as inv_discount_applied_value,
+      i.discount_status as inv_discount_status,
+      i.status as inv_status,
+      (SELECT COALESCE(SUM(pc.amount), 0)
+       FROM collections pc
+       WHERE pc.invoice_id = i.id
+         AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
+         AND LOWER(COALESCE(pc.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted'))
+       +
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')) as inv_paid,
+      (SELECT COALESCE(SUM(ac.amount), 0)
+       FROM collections ac
+       WHERE ac.invoice_id = i.id
+         AND (ac.active = 1 OR ac.active IS NULL OR ac.active = 'true')
+         AND LOWER(COALESCE(ac.status, 'pending')) = 'approved')
+       +
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+         AND EXISTS (
+           SELECT 1
+           FROM collections c2
+           WHERE c2.id = cr.collection_id
+             AND c2.invoice_id = i.id
+             AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+             AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+         )) as inv_approved,
+      apr.name as approver_name
+      FROM collections c
+      LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id
+      LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id
+      LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${invoiceJoinClause}
+      LEFT JOIN users apr ON apr.id = c.approved_by AND apr.project_id = c.project_id
+      WHERE ${activeClause}`;
     const params = [];
     sql += ` AND c.project_id = ?`;
     params.push(filters.project_id);
@@ -89,7 +188,7 @@ export const getLocalCollections = async (filters = {}) => {
       params.push(Number(filters.amount_min));
     }
     if (filters.amount_max !== undefined && filters.amount_max !== '') {
-      sql += ` AND c.amount <= ?`;
+    sql += ` AND c.amount <= ?`;
       params.push(Number(filters.amount_max));
     }
 
@@ -97,22 +196,46 @@ export const getLocalCollections = async (filters = {}) => {
     const r = await execSQL(sql, params);
     return (r.rows._array || []).map((row) => {
       if (!row.invoice_number) return row;
+      const collectionAmount = Number(row.amount || 0);
+      const linkedReturnsTotal = Number(row.inv_collection_linked_returns_total || 0);
+      const linkedApprovedReturnsTotal = Number(row.inv_collection_linked_approved_returns_total || 0);
+      const collectionCoverageAmount = collectionAmount + linkedReturnsTotal;
+      const remainingAfterThisRequest = Math.max(0, Number(row.inv_net || 0) - Number(row.inv_paid || 0));
       const invoiceFields = decorateInvoiceStatusFields({
         total_amount: row.inv_total_amount,
         net_amount: row.inv_net,
         total_card_returns: row.inv_total_card_returns,
+        approved_card_returns_total: row.inv_approved_card_returns_total,
         discount_applied_value: row.inv_discount_applied_value,
         discount_status: row.inv_discount_status,
         paid_amount: row.inv_paid,
         approved_amount: row.inv_approved,
+        pending_card_returns_total: row.inv_pending_card_returns,
+        pending_collections_count: row.inv_pending_collections_count,
+        rejected_approval_count: row.inv_rejected_approval_count,
         status: row.inv_status,
       });
+      let invApprovalStatus = invoiceFields.approval_status;
+      const collectionStatus = String(row.status || 'pending').toLowerCase();
+      if (collectionStatus === 'pending_card_return_approval') invApprovalStatus = 'pending_card_return_approval';
+      else if (collectionStatus === 'pending' || collectionStatus === 'pending_collection_approval') invApprovalStatus = 'pending_collection_approval';
+      else if (collectionStatus === 'rejected') invApprovalStatus = 'rejected';
       return {
         ...row,
         inv_payment_status: invoiceFields.payment_status,
-        inv_approval_status: invoiceFields.approval_status,
+        inv_approval_status: invApprovalStatus,
         inv_payment_remaining_amount: invoiceFields.payment_remaining_amount,
         inv_approval_remaining_amount: invoiceFields.approval_remaining_amount,
+        inv_approved_card_returns_total: invoiceFields.approved_card_returns_total,
+        inv_pending_card_returns_total: invoiceFields.pending_card_returns_total,
+        inv_effective_paid_amount: invoiceFields.effective_paid_amount,
+        inv_net_after_returns: invoiceFields.net_after_returns,
+        inv_collection_amount: collectionAmount,
+        inv_collection_linked_returns_total: linkedReturnsTotal,
+        inv_collection_linked_approved_returns_total: linkedApprovedReturnsTotal,
+        inv_collection_coverage_amount: collectionCoverageAmount,
+        inv_collection_remaining_after_request: remainingAfterThisRequest,
+        inv_collection_coverage_complete: remainingAfterThisRequest <= 0.1 ? 1 : 0,
       };
     });
   });
@@ -145,12 +268,33 @@ export const createLocalCollection = async (data) => {
     if (discountPending) {
       throw new Error('لا يمكن إنشاء تحصيل قبل اعتماد الخصم من المدير.');
     }
-    const totalAmount = await getInvoiceEffectiveTotal(data.invoice_id);
-    const paidSum = await getInvoicePaidSum(data.invoice_id);
     const incomingReturnAmount = (Array.isArray(data.card_returns) ? data.card_returns : [])
-      .reduce((sum, row) => sum + Math.max(0, Number(row.returned_cards_count || 0)) * Math.max(0, Number(row.card_value || 0)), 0);
-    if (Number(data.amount || 0) > (totalAmount - paidSum - incomingReturnAmount + 0.01)) {
-      throw new Error(`المبلغ المدخل أكبر من المتبقي للفاتورة`);
+      .reduce((sum, row) => sum + Math.max(0, toNumber(row.returned_cards_count)) * Math.max(0, toNumber(row.card_value)), 0);
+    const paymentCollectionsR = await execSQL(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM collections
+       WHERE invoice_id = ?
+         AND (active = 1 OR active = 'true' OR active IS NULL)
+         AND LOWER(COALESCE(status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`,
+      [data.invoice_id]
+    );
+    const paymentReturnsR = await execSQL(
+      `SELECT COALESCE(SUM(return_amount), 0) as total
+       FROM invoice_card_returns
+       WHERE invoice_id = ?
+         AND (active = 1 OR active = 'true' OR active IS NULL)
+         AND LOWER(COALESCE(status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`,
+      [data.invoice_id]
+    );
+    const remainingBeforeRequest = Math.max(
+      0,
+      resolveInvoiceNetAmount(invoice) -
+        Number(paymentCollectionsR.rows._array?.[0]?.total || 0) -
+        Number(paymentReturnsR.rows._array?.[0]?.total || 0)
+    );
+    const requestedCoverage = Math.max(0, toNumber(data.amount)) + incomingReturnAmount;
+    if (requestedCoverage > remainingBeforeRequest + MONEY_EPSILON) {
+      throw new Error(`المبلغ مع المرتجع أكبر من المتبقي للفاتورة`);
     }
   }
   const requestedReturns = (Array.isArray(data.card_returns) ? data.card_returns : [])
@@ -159,7 +303,7 @@ export const createLocalCollection = async (data) => {
   const id = data.id || uuidv4();
   let collection_number = data.collection_number || '';
   const actorId = data.agent_id || data.user_id || data.collector_id || null;
-  const payload = { id, collection_number, project_id: projectId, agent_id: actorId, pos_id: data.pos_id, invoice_id: data.invoice_id, amount: Number(data.amount || 0), method: data.method || 'cash', reference_number: data.reference_number || '', status: hasCardReturns ? 'pending_card_return_approval' : (data.status || 'pending'), approved_at: data.approved_at, rejection_reason: data.rejection_reason, collection_date: data.collection_date || new Date().toISOString().slice(0, 10), active: data.active ?? 1, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, synced: 0 };
+  const payload = { id, collection_number, project_id: projectId, agent_id: actorId, pos_id: data.pos_id, invoice_id: data.invoice_id, amount: toNumber(data.amount), method: data.method || 'cash', reference_number: data.reference_number || '', status: hasCardReturns ? 'pending_card_return_approval' : (data.status || 'pending'), approved_at: data.approved_at, rejection_reason: data.rejection_reason, collection_date: data.collection_date || new Date().toISOString().slice(0, 10), active: data.active ?? 1, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, synced: 0 };
 
   // Auto-inject phase_id from active phase if not provided
   if (!payload.phase_id) {
@@ -382,10 +526,41 @@ export const rejectLocalCollection = async (id, reason = 'مرفوض') => {
 };
 
 export const deleteLocalCollection = async (id, actorId = null) => {
-  await execSQL("UPDATE collections SET active=0, status='cancelled', synced=0 WHERE id=?", [id]);
-  await addToSyncQueue('collections', 'UPDATE', { active: 0, status: 'cancelled' }, id);
-  const colR = await execSQL(`SELECT invoice_id FROM collections WHERE id=?`, [id]);
-  if (colR.rows._array[0]?.invoice_id) await updateInvoiceStatus(colR.rows._array[0].invoice_id);
+  const colR = await execSQL(`SELECT * FROM collections WHERE id=? LIMIT 1`, [id]);
+  const collection = colR.rows._array?.[0];
+  if (!collection) throw new Error('التحصيل غير موجود');
+
+  const operationGroupId = uuidv4();
+  await execSQL(
+    `UPDATE collections
+     SET active = 0,
+         status = 'cancelled',
+         synced = 0
+     WHERE id = ?
+       AND (active = 1 OR active = 'true' OR active IS NULL OR LOWER(COALESCE(status, 'pending')) NOT IN ('cancelled', 'canceled'))`,
+    [id]
+  );
+  await addToSyncQueue('collections', 'UPDATE', {
+    active: 0,
+    status: 'cancelled',
+    project_id: collection.project_id || null,
+    phase_id: collection.phase_id || null,
+  }, id, operationGroupId);
+
+  await cancelInvoiceCardReturns({
+    collectionId: id,
+    invoiceId: collection.invoice_id || null,
+    reason: 'إلغاء التحصيل',
+    operationGroupId,
+  });
+
+  if (collection.invoice_id) await updateInvoiceStatus(collection.invoice_id);
+  try {
+    const { recalculatePOSCreditBalance } = require('./posService');
+    if (collection.pos_id) await recalculatePOSCreditBalance(collection.pos_id);
+  } catch (e) { }
+  notifyDataChanged('invoice_card_returns');
+  notifyDataChanged('invoices');
   notifyDataChanged('collections');
 
   try {

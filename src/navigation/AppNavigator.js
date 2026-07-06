@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, ActivityIndicator, TouchableOpacity,
-  Image, ScrollView, Animated, StyleSheet, StatusBar,
+  Image, ScrollView, Animated, StyleSheet, StatusBar, Modal,
 } from 'react-native';
 
 import { NavigationContainer, DrawerActions, DefaultTheme, DarkTheme } from '@react-navigation/native';
@@ -260,6 +260,84 @@ function BottomTabs() {
 // ══════════════════════════════════════════════════════════════
 //  CUSTOM DRAWER
 // ══════════════════════════════════════════════════════════════
+function DrawerPhaseSelector({ allPhases, selectedPhase, setSelectedPhase, colors, fontSize, isLight }) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel = selectedPhase?.name || 'اختر المرحلة...';
+
+  const phaseStatusLabel = (phase) => {
+    if (selectedPhase?.id === phase.id) return 'الحالية';
+    if (phase.status === 'closed') return 'مغلقة - عرض فقط';
+    return 'نشطة';
+  };
+
+  const handleSelect = (phase) => {
+    setSelectedPhase(phase);
+    setOpen(false);
+  };
+
+  return (
+    <View style={d.phaseWrap}>
+      <Text style={[d.phaseLabel, { color: isLight ? 'rgba(255,255,255,0.85)' : colors.t2, fontSize: fontSize.xs }]}>المرحلة الحالية</Text>
+      <TouchableOpacity
+        activeOpacity={0.82}
+        onPress={() => setOpen(true)}
+        style={[d.phaseButton, { backgroundColor: colors.card, borderColor: colors.border }]}
+      >
+        <Feather name="chevron-down" size={16} color={colors.t3} />
+        <Text style={[d.phaseButtonText, { color: colors.t1, fontSize: fontSize.sm }]} numberOfLines={1}>{selectedLabel}</Text>
+      </TouchableOpacity>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={d.phaseModalRoot} pointerEvents="box-none">
+          <TouchableOpacity activeOpacity={1} style={d.phaseBackdrop} onPress={() => setOpen(false)} />
+          <View
+            style={[
+              d.phaseMenu,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                shadowColor: '#000',
+              },
+            ]}
+          >
+            <ScrollView nestedScrollEnabled style={d.phaseMenuScroll} contentContainerStyle={d.phaseMenuContent}>
+              {allPhases.map(phase => {
+                const isSelected = selectedPhase?.id === phase.id;
+                const isClosed = phase.status === 'closed';
+                return (
+                  <TouchableOpacity
+                    key={phase.id}
+                    activeOpacity={0.82}
+                    onPress={() => handleSelect(phase)}
+                    style={[
+                      d.phaseRow,
+                      {
+                        backgroundColor: isSelected ? colors.primary + '12' : colors.card,
+                        borderBottomColor: colors.border,
+                      },
+                    ]}
+                  >
+                    <View style={d.phaseStatusWrap}>
+                      {isSelected && <Feather name="check" size={15} color={colors.primary} />}
+                      {isClosed && !isSelected && <Feather name="lock" size={13} color={colors.warning} />}
+                      <Text style={{ color: isClosed ? colors.warning : (isSelected ? colors.primary : colors.t3), fontSize: 10, fontWeight: '800' }}>
+                        {phaseStatusLabel(phase)}
+                      </Text>
+                    </View>
+                    <Text style={[d.phaseRowText, { color: isSelected ? colors.primary : colors.t1, fontSize: fontSize.sm }]} numberOfLines={1}>
+                      {phase.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
 function CustomDrawer({ navigation, state }) {
   const { user, logout, canAccess, selectedPhase, setSelectedPhase, allPhases } = useAuth();
   const { colors, fontSize, isLight } = useTheme();
@@ -308,33 +386,14 @@ function CustomDrawer({ navigation, state }) {
         
         {/* Phase Selector */}
         {allPhases && allPhases.length > 0 && (
-          <View style={{ marginTop: 20 }}>
-            <Text style={{ color: isLight ? 'rgba(255,255,255,0.8)' : colors.t2, fontSize: fontSize.xs, fontFamily: 'IBMPlexSansArabic-SemiBold', marginBottom: 8, textAlign: 'right' }}>السياق الحالي (المرحلة):</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ flexDirection: 'row-reverse', paddingRight: 4 }}>
-              {allPhases.map(p => {
-                const isSelected = selectedPhase?.id === p.id;
-                return (
-                  <TouchableOpacity 
-                    key={p.id} 
-                    onPress={() => setSelectedPhase(p)} 
-                    style={{ 
-                      backgroundColor: isSelected ? colors.primary : (isLight ? 'rgba(255,255,255,0.2)' : colors.bg2), 
-                      paddingHorizontal: 14, 
-                      paddingVertical: 8, 
-                      borderRadius: 10, 
-                      marginLeft: 8, 
-                      borderWidth: 1, 
-                      borderColor: isSelected ? colors.primary : (isLight ? 'rgba(255,255,255,0.4)' : colors.border) 
-                    }}
-                  >
-                    <Text style={{ color: isSelected ? '#FFFFFF' : (isLight ? '#FFFFFF' : colors.t1), fontSize: fontSize.xs, fontFamily: isSelected ? 'IBMPlexSansArabic-Bold' : 'IBMPlexSansArabic-Medium' }}>
-                      {p.name} {p.status === 'closed' ? '🔒' : ''}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
+          <DrawerPhaseSelector
+            allPhases={allPhases}
+            selectedPhase={selectedPhase}
+            setSelectedPhase={setSelectedPhase}
+            colors={colors}
+            fontSize={fontSize}
+            isLight={isLight}
+          />
         )}
       </View>
       <ScrollView contentContainerStyle={{ paddingVertical: 16 }}>
@@ -511,10 +570,58 @@ const t = StyleSheet.create({
 });
 const d = StyleSheet.create({
   screen: { flex: 1 },
-  header: { padding: 24, paddingTop: 64 },
+  header: { padding: 24, paddingTop: 64, overflow: 'visible' },
   userRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   userAvatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   userName: { fontWeight: '900', letterSpacing: -0.3, fontFamily: 'IBMPlexSansArabic-Bold' },
+  phaseWrap: { marginTop: 18, alignSelf: 'center', width: '92%', zIndex: 5000, elevation: 20 },
+  phaseLabel: { fontFamily: 'IBMPlexSansArabic-SemiBold', marginBottom: 7, textAlign: 'right' },
+  phaseButton: {
+    height: 42,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 5,
+  },
+  phaseButtonText: { flex: 1, textAlign: 'right', marginHorizontal: 8, fontFamily: 'IBMPlexSansArabic-Bold' },
+  phaseModalRoot: { flex: 1, zIndex: 9999, elevation: 9999 },
+  phaseBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.08)' },
+  phaseMenu: {
+    position: 'absolute',
+    top: 178,
+    right: 18,
+    width: '88%',
+    maxWidth: 320,
+    maxHeight: 210,
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    zIndex: 10000,
+    elevation: 30,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+  },
+  phaseMenuScroll: { maxHeight: 210 },
+  phaseMenuContent: { paddingVertical: 4 },
+  phaseRow: {
+    minHeight: 40,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  phaseRowText: { flex: 1, textAlign: 'right', fontFamily: 'IBMPlexSansArabic-SemiBold' },
+  phaseStatusWrap: { minWidth: 82, flexDirection: 'row', alignItems: 'center', gap: 4 },
   item: { flexDirection: 'row-reverse', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, marginHorizontal: 12, marginVertical: 4, borderRadius: 14, position: 'relative' },
   itemIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginLeft: 16 },
   itemLabel: { flex: 1, textAlign: 'right' },

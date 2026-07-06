@@ -539,7 +539,7 @@ export default function DashboardScreen({ navigation }) {
       }
 
       if (isAdmin || isCashier) {
-        const pendingCols = collections.filter(c => c.status === 'pending');
+        const pendingCols = collections.filter(c => ['pending', 'pending_card_return_approval', 'pending_collection_approval'].includes(String(c.status || '').toLowerCase()));
         const today = new Date().toISOString().slice(0, 10);
         const approvedToday = collections.filter(c => c.status === 'approved' && c.approved_at?.startsWith(today) && (isAdmin || c.approved_by === user.id))
           .reduce((s, c) => s + Number(c.amount || 0), 0);
@@ -597,7 +597,7 @@ export default function DashboardScreen({ navigation }) {
   // ── Live data subscription: refresh dashboard on any local data change ──
   useEffect(() => {
     const unsub = subscribeDataChanges((event) => {
-      const relevant = ['invoices', 'invoice_items', 'agent_wallets', 'collections', 'batches', 'card_categories', 'all'];
+      const relevant = ['invoices', 'invoice_items', 'agent_wallets', 'collections', 'invoice_card_returns', 'batches', 'card_categories', 'all'];
       if (relevant.includes(event.type)) {
         loadDashboard();
       }

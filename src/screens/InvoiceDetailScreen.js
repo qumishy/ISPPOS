@@ -79,10 +79,12 @@ export default function InvoiceDetailScreen({ route, navigation }) {
   }, [invoiceId, refreshAt, projectId]);
 
   const handlePrint = async () => {
-    const totalPaid = activePayments.reduce((sum, p) => sum + (p.amount || 0), 0);
-    const balance = Math.max(0, (invoice.net_amount || invoice.total_amount) - totalPaid);
+    const totalPaid = Number(invoice.paid_amount || 0);
+    const approvedReturns = Number(invoice.approved_card_returns_total ?? 0);
+    const effectivePaid = Number(invoice.effective_paid_amount ?? totalPaid);
+    const balance = Math.max(0, (invoice.net_amount || invoice.total_amount) - effectivePaid);
 
-    const collectionsHtml = activePayments.length > 0 ? `
+    const collectionsHtml = displayedPayments.length > 0 ? `
       <div class="section-title">سجل المدفوعات</div>
       <table class="table">
         <thead>
@@ -93,7 +95,7 @@ export default function InvoiceDetailScreen({ route, navigation }) {
           </tr>
         </thead>
         <tbody>
-          ${activePayments.map(p => `
+          ${displayedPayments.map(p => `
             <tr>
               <td>${p.collection_date}</td>
               <td>${p.method === 'cash' ? 'نقدي' : 'تحويل'}</td>
@@ -175,6 +177,8 @@ export default function InvoiceDetailScreen({ route, navigation }) {
         <div class="summary">
           <div class="row"><span>إجمالي الفاتورة:</span> <span>${formatCurrency(invoice.net_amount || invoice.total_amount)}</span></div>
           <div class="row"><span>المبلغ المدفوع (الواصل):</span> <span style="color: #059669; font-weight: bold;">${formatCurrency(totalPaid)}</span></div>
+          <div class="row"><span>مرتجع كروت معتمد:</span> <span style="color: #059669; font-weight: bold;">${formatCurrency(approvedReturns)}</span></div>
+          <div class="row"><span>المغطى فعلياً:</span> <span style="color: #2563eb; font-weight: bold;">${formatCurrency(effectivePaid)}</span></div>
           <div class="row total"><span>المبلغ المتبقي:</span> <span>${formatCurrency(balance)}</span></div>
         </div>
 
@@ -280,6 +284,8 @@ export default function InvoiceDetailScreen({ route, navigation }) {
       : discountState === 'rejected'
         ? colors.red
         : colors.orange;
+  const approvedCardReturns = Number(invoice.approved_card_returns_total ?? invoice.total_card_returns ?? 0);
+  const effectivePaidAmount = Number(invoice.effective_paid_amount ?? invoice.paid_amount ?? 0);
   const paymentRemaining = Math.max(0, Number(invoice.payment_remaining_amount ?? invoice.remaining_amount ?? (invoice.net_amount || invoice.total_amount || 0) - (invoice.paid_amount || 0)));
   const approvalRemaining = Math.max(0, Number(invoice.approval_remaining_amount ?? invoice.remaining_unpaid_amount ?? (invoice.net_amount || invoice.total_amount || 0) - (invoice.approved_amount || 0)));
   return (
@@ -355,8 +361,18 @@ export default function InvoiceDetailScreen({ route, navigation }) {
           </Row>
           <View style={{ borderTopWidth: 1, borderTopColor: colors.border + '50', marginVertical: 8 }} />
           <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-            <Text style={{ color: colors.t3 }}>المبلغ المدفوع</Text>
-            <Text style={{ color: colors.green, fontWeight: '800' }}>{formatCurrency(invoice.paid_amount || 0)}</Text>
+            <Text style={{ color: colors.t3 }}>مبلغ التحصيل المعتمد</Text>
+            <Text style={{ color: colors.green, fontWeight: '800' }}>{formatCurrency(invoice.approved_amount || 0)}</Text>
+          </Row>
+          {approvedCardReturns > 0 && (
+            <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+              <Text style={{ color: colors.t3 }}>مرتجع كروت معتمد</Text>
+              <Text style={{ color: colors.green, fontWeight: '800' }}>{formatCurrency(approvedCardReturns)}</Text>
+            </Row>
+          )}
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+            <Text style={{ color: colors.t3 }}>الإجمالي المغطى</Text>
+            <Text style={{ color: colors.blue, fontWeight: '900' }}>{formatCurrency(effectivePaidAmount)}</Text>
           </Row>
           <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
             <Text style={{ color: colors.t3 }}>المبلغ المتبقي</Text>
@@ -439,6 +455,12 @@ export default function InvoiceDetailScreen({ route, navigation }) {
                 <Text style={{ color: colors.t3 }}>المعتمد محاسبياً:</Text>
                 <Text style={{ fontWeight: 'bold', color: colors.blue }}>{formatCurrency(invoice.approved_amount || 0)}</Text>
               </Row>
+              {approvedCardReturns > 0 && (
+                <Row style={{ justifyContent: 'space-between', marginTop: 5 }}>
+                  <Text style={{ color: colors.t3 }}>مرتجع كروت معتمد:</Text>
+                  <Text style={{ fontWeight: 'bold', color: colors.green }}>{formatCurrency(approvedCardReturns)}</Text>
+                </Row>
+              )}
               <Row style={{ justifyContent: 'space-between', marginTop: 5, borderTopWidth: 1, borderTopColor: colors.border + '30', paddingTop: 5 }}>
                 <Text style={{ color: colors.t3 }}>المتبقي (فعلي):</Text>
                 <Text style={{ fontWeight: 'bold', color: colors.red }}>{formatCurrency(paymentRemaining)}</Text>

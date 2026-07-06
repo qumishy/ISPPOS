@@ -188,6 +188,8 @@ export const getWalletMovements = async (agentId, filters = {}) => {
 export const getLocalWallets = async (agentId, projectId = null, phaseId = null) => {
   const cacheKey = `agent_wallets:agent:${agentId}:${projectId}:${phaseId}`;
   return getCached(cacheKey, async () => {
+    const walletColumnsR = await execSQL(`PRAGMA table_info(agent_wallets)`);
+    const walletColumns = new Set((walletColumnsR.rows._array || []).map(c => c.name));
     let sql = `SELECT
       aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
       COALESCE(ws.sold_qty, 0) as sold_cards,
@@ -209,6 +211,7 @@ export const getLocalWallets = async (agentId, projectId = null, phaseId = null)
     if (agentId) { sql += ` AND aw.agent_id = ?`; params.push(agentId); }
     if (projectId) { sql += ` AND aw.project_id = ?`; params.push(projectId); }
     if (phaseId) { sql += ` AND aw.phase_id = ?`; params.push(phaseId); }
+    if (walletColumns.has('active')) { sql += ` AND (aw.active = 1 OR aw.active = 'true' OR aw.active IS NULL)`; }
     sql += ` ORDER BY aw.created_at DESC`;
     const r = await execSQL(sql, params);
     return (r.rows._array || []).map(row => ({ ...row, users: { name: row.user_name }, card_categories: { name: row.category_name }, batches: { batch_number: row.batch_number, serial_number: row.batch_serial } }));

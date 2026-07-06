@@ -59,7 +59,7 @@ export default function InvoicesScreen({ navigation, route }) {
   useEffect(() => {
     load();
     const unsub = subscribeDataChanges(e => {
-      if (['invoices', 'collections', 'all'].includes(e.type)) load(true);
+      if (['invoices', 'collections', 'invoice_card_returns', 'all'].includes(e.type)) load(true);
     });
     return unsub;
   }, [load]);
@@ -191,6 +191,8 @@ export default function InvoicesScreen({ navigation, route }) {
             const approvalMeta = invoiceApprovalStatusMeta(approvalStatus);
             const paidAmount = Number(inv.paid_amount ?? inv.paid_sum ?? 0);
             const approvedPaid = Number(inv.approved_amount ?? inv.approved_sum ?? inv.partially_paid_amount ?? 0);
+            const approvedReturnAmount = Number(inv.approved_card_returns_total ?? inv.total_card_returns ?? 0);
+            const effectiveCoveredAmount = Number(inv.effective_paid_amount ?? (approvedPaid + approvedReturnAmount));
             const paymentRemaining = Math.max(0, Number(inv.payment_remaining_amount ?? inv.remaining_amount ?? (net - paidAmount)));
             const approvalRemaining = Math.max(0, Number(inv.approval_remaining_amount ?? inv.remaining_unpaid_amount ?? (net - approvedPaid)));
             const delayDays = Number(inv.delay_days || 0);
@@ -306,7 +308,9 @@ export default function InvoicesScreen({ navigation, route }) {
                     {[
                       paymentStatus !== 'paid' && { l: 'حالة التأخير', v: delayLabel, c: isOverdue ? colors.danger : colors.success },
                       { l: 'المدفوع', v: formatCurrency(paidAmount), c: colors.green },
-                      { l: 'المعتمد محاسبياً', v: formatCurrency(approvedPaid), c: colors.primary },
+                      { l: 'التحصيل المعتمد', v: formatCurrency(approvedPaid), c: colors.primary },
+                      approvedReturnAmount > 0 && { l: 'مرتجع كروت معتمد', v: formatCurrency(approvedReturnAmount), c: colors.green },
+                      effectiveCoveredAmount > 0 && { l: 'الإجمالي المغطى', v: formatCurrency(effectiveCoveredAmount), c: colors.blue },
                       inv.agent_name && { l: 'المندوب', v: inv.agent_name, c: colors.t2 },
                       hasDiscount && { l: 'الخصم المطلوب', v: formatCurrency(Number(inv.discount_requested_value || 0)), c: colors.orange },
                       hasDiscount && inv.discount_applied_value > 0 && { l: 'الخصم المعتمد', v: formatCurrency(Number(inv.discount_applied_value || 0)), c: colors.green },

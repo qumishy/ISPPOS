@@ -29,7 +29,7 @@ export const statusColor = (s) => ({
 }[s] || '#475569');
 
 export const invoicePaymentStatusMeta = (status) => ({
-  pending: { label: 'معلقة', color: '#f59e0b' },
+  pending: { label: 'غير مسددة', color: '#f59e0b' },
   partial: { label: 'مسددة جزئياً', color: '#3b82f6' },
   paid: { label: 'مسددة', color: '#10b981' },
   cancelled: { label: 'ملغية', color: '#ef4444' },
@@ -37,8 +37,11 @@ export const invoicePaymentStatusMeta = (status) => ({
 
 export const invoiceApprovalStatusMeta = (status) => ({
   unapproved: { label: 'غير معتمدة', color: '#f59e0b' },
-  approval_partial: { label: 'معتمد جزئي', color: '#3b82f6' },
+  approval_partial: { label: 'معتمد جزئياً', color: '#3b82f6' },
   approved: { label: 'معتمدة', color: '#10b981' },
+  pending_collection_approval: { label: 'بانتظار اعتماد التحصيل', color: '#f59e0b' },
+  pending_card_return_approval: { label: 'بانتظار اعتماد مرتجع الكروت', color: '#f59e0b' },
+  rejected: { label: 'مرفوض', color: '#ef4444' },
   cancelled: { label: 'ملغية', color: '#ef4444' },
 }[status] || { label: status || '—', color: '#64748b' });
 

@@ -65,6 +65,7 @@ export default function NewInvoiceScreen({ navigation }) {
   const [items, setItems] = useState([]);
   const [pendingInvoices, setPendingInvoices] = useState([]);
   const [newItem, setNewItem] = useState({ category_id: '', wallet_id: '', batch_id: '', unit_price: '', quantity: '' });
+  const [autoSelectedWalletId, setAutoSelectedWalletId] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const savePromptOpenRef = useRef(false);
@@ -76,8 +77,9 @@ export default function NewInvoiceScreen({ navigation }) {
     async function load() {
       try {
         const agentId = user?.role === 'agent' ? user.id : null;
+        const phaseId = selectedPhase?.id || null;
         const [posR, agentR, catR, walR, invsR] = await Promise.all([
-          getLocalPosDB(projectId), getLocalUsers(projectId), getLocalCategories(projectId), getLocalWallets(agentId || undefined, projectId), getLocalInvoices({ onlyWithBalance: true, project_id: projectId })
+          getLocalPosDB(projectId), getLocalUsers(projectId), getLocalCategories(projectId), getLocalWallets(agentId || undefined, projectId, phaseId), getLocalInvoices({ onlyWithBalance: true, project_id: projectId, phase_id: phaseId })
         ]);
         setPos(posR.filter(p => !p.is_blocked));
         setAgents(agentR.filter(a => a.role === 'agent' && a.active));
@@ -85,7 +87,7 @@ export default function NewInvoiceScreen({ navigation }) {
         setPendingInvoices(invsR || []);
         const w = walR.map(x => ({ ...x, remaining_cards: Number(x.total_cards || 0) - Number(x.sold_cards || 0) }));
         setWallets(w.filter(x => x.remaining_cards > 0));
-        if (agentId) setBatches(await getBatchesByAgent(agentId, projectId));
+        if (agentId) setBatches(await getBatchesByAgent(agentId, projectId, phaseId));
       } catch (e) { console.error('[NewInvoiceScreen] load error:', e?.message || e); }
 
       setDataLoading(false);
@@ -96,14 +98,14 @@ export default function NewInvoiceScreen({ navigation }) {
     const unsub = subscribeDataChanges((event) => {
       if (event.type !== 'agent_wallets' && event.type !== 'all') return;
       const agentId = user?.role === 'agent' ? user.id : null;
-      getLocalWallets(agentId || undefined, projectId).then(walR => {
+      getLocalWallets(agentId || undefined, projectId, selectedPhase?.id || null).then(walR => {
         const w = walR.map(x => ({ ...x, remaining_cards: Number(x.total_cards || 0) - Number(x.sold_cards || 0) }));
         setWallets(w.filter(x => x.remaining_cards > 0));
         setDataLoading(false);
       }).catch(() => { });
     });
     return () => unsub && unsub();
-  }, [user]);
+  }, [user, projectId, selectedPhase?.id]);
 
   // ── Live credit re-query whenever POS or draft items change ──
   useEffect(() => {
@@ -122,11 +124,25 @@ export default function NewInvoiceScreen({ navigation }) {
 
   const onSelectCategory = (catId) => {
     const cat = categories.find(c => c.id === catId);
-    const catWallets = dynamicWallets.filter(w => w.category_id === catId);
-    setNewItem(f => ({ ...f, category_id: catId, unit_price: String(cat?.price || ''), wallet_id: catWallets?.length === 1 ? catWallets[0].id : '', batch_id: '' }));
+    const catWallets = form.agent_id ? dynamicWallets.filter(w => w.category_id === catId) : [];
+    if (catWallets.length === 1) {
+      const wallet = catWallets[0];
+      setAutoSelectedWalletId(wallet.id);
+      setNewItem(f => ({
+        ...f,
+        category_id: catId,
+        unit_price: String(cat?.price || ''),
+        wallet_id: wallet.id,
+        batch_id: wallet.batch_id || '',
+      }));
+      return;
+    }
+    setAutoSelectedWalletId('');
+    setNewItem(f => ({ ...f, category_id: catId, unit_price: String(cat?.price || ''), wallet_id: '', batch_id: '' }));
   };
 
   const filteredWallets = dynamicWallets.filter(w => !newItem.category_id || w.category_id === newItem.category_id);
+  const autoSelectedWallet = autoSelectedWalletId ? filteredWallets.find(w => w.id === autoSelectedWalletId) : null;
 
   const addItem = () => {
     if (!newItem.category_id || !newItem.quantity || !newItem.unit_price) { Alert.alert('تنبيه', 'اختر الفئة وأدخل الكمية والسعر'); return; }
@@ -277,7 +293,7 @@ export default function NewInvoiceScreen({ navigation }) {
             )
           )}
 
-          {user?.role !== 'agent' && <Picker label="المندوب *" options={agents.map(a => ({ value: a.id, label: a.name }))} value={form.agent_id} onChange={v => setForm({ ...form, agent_id: v })} searchable={true} />}
+          {user?.role !== 'agent' && <Picker label="المندوب *" options={agents.map(a => ({ value: a.id, label: a.name }))} value={form.agent_id} onChange={v => { setForm({ ...form, agent_id: v }); setNewItem({ category_id: '', wallet_id: '', batch_id: '', unit_price: '', quantity: '' }); setAutoSelectedWalletId(''); }} searchable={true} />}
           <Row style={{ gap: spacing.md }}><View style={{ flex: 1 }}><Picker label="النوع" options={[{ value: 'credit', label: 'آجل' }, { value: 'cash', label: 'نقدي' }]} value={form.type} onChange={v => setForm({ ...form, type: v })} /></View><View style={{ flex: 1 }}><Input label="التاريخ" value={form.invoice_date} onChangeText={v => setForm({ ...form, invoice_date: v })} /></View></Row>
           <Input label="ملاحظات" value={form.notes} onChangeText={v => setForm({ ...form, notes: v })} multiline />
         </View>
@@ -328,7 +344,18 @@ export default function NewInvoiceScreen({ navigation }) {
 
               <Picker label="الفئة (الصنف) *" options={availableCategories.map(c => ({ value: c.id, label: `${c.name} — ${formatCurrency(c.price)} / ورقة • ${c.cards_per_sheet || 1} كرت` }))} value={newItem.category_id} onChange={onSelectCategory} searchable={true} />
               <View style={{ height: spacing.sm }} />
-              <Picker label="من المحفظة / الدفعة *" options={dynamicWallets.filter(w => !newItem.category_id || w.category_id === newItem.category_id).map(w => ({ value: w.id, label: `${w.batches?.serial_number || '—'} • رصيد: ${w.remaining_cards}` }))} value={newItem.wallet_id} onChange={v => { const sel = dynamicWallets.find(x => x.id === v); const cat = categories.find(c => c.id === sel?.category_id); setNewItem({ ...newItem, wallet_id: v, batch_id: sel?.batch_id || '', category_id: sel?.category_id || newItem.category_id, unit_price: cat ? String(cat.price) : newItem.unit_price }); }} searchable={true} />
+              {newItem.category_id && filteredWallets.length === 0 ? (
+                <View style={{ backgroundColor: colors.orange + '12', borderWidth: 1, borderColor: colors.orange + '45', borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md }}>
+                  <Text style={{ color: colors.orange, fontSize: fontSize.sm, fontWeight: '800', textAlign: 'center' }}>لا توجد حصة متاحة من محفظتك لهذه الفئة</Text>
+                </View>
+              ) : autoSelectedWallet ? (
+                <View style={{ backgroundColor: colors.green + '12', borderWidth: 1, borderColor: colors.green + '45', borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md }}>
+                  <Text style={{ color: colors.green, fontSize: fontSize.sm, fontWeight: '800', textAlign: 'right' }}>تم اختيار المتاح من محفظتك تلقائيًا</Text>
+                  <Text style={{ color: colors.t2, fontSize: fontSize.xs, marginTop: 4, textAlign: 'right' }}>{autoSelectedWallet.batches?.serial_number || '—'} • رصيد: {autoSelectedWallet.remaining_cards}</Text>
+                </View>
+              ) : (
+                <Picker label="من المحفظة / الدفعة *" options={filteredWallets.map(w => ({ value: w.id, label: `${w.batches?.serial_number || '—'} • رصيد: ${w.remaining_cards}` }))} value={newItem.wallet_id} onChange={v => { const sel = dynamicWallets.find(x => x.id === v); const cat = categories.find(c => c.id === sel?.category_id); setAutoSelectedWalletId(''); setNewItem({ ...newItem, wallet_id: v, batch_id: sel?.batch_id || '', category_id: sel?.category_id || newItem.category_id, unit_price: cat ? String(cat.price) : newItem.unit_price }); }} searchable={true} />
+              )}
               <View style={{ height: spacing.sm }} />
               <Row style={{ gap: spacing.md }}>
                 <View style={{ flex: 1 }}><Input label="العدد المطلوب *" value={newItem.quantity} onChangeText={v => setNewItem({ ...newItem, quantity: v })} keyboardType="numeric" /></View>

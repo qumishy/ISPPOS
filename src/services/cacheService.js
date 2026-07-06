@@ -5,7 +5,7 @@ const cache = new Map();
 // الاستماع لتغيرات قاعدة البيانات لتفريغ الكاش عند التحديثات المحلية أو المزامنة
 subscribeDataChanges((event) => {
   const { type } = event || {};
-  const inventoryDependentTypes = new Set(['batches', 'agent_wallets', 'invoice_items', 'invoices', 'collections']);
+  const inventoryDependentTypes = new Set(['batches', 'agent_wallets', 'invoice_items', 'invoices', 'collections', 'invoice_card_returns']);
   
   if (type === 'all' || type === 'db_ready') {
     cache.clear();
@@ -15,6 +15,8 @@ subscribeDataChanges((event) => {
       invalidateCachePrefix('reports:inventory_tracking:');
       invalidateCachePrefix('batches:all:');
       invalidateCachePrefix('agent_wallets:');
+      invalidateCachePrefix('invoices:');
+      invalidateCachePrefix('collections:');
     }
     // حذف الكاش المرتبط بالجدول الذي تغير
     for (const key of cache.keys()) {

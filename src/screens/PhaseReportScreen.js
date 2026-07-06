@@ -74,8 +74,8 @@ const normalizePhaseDate = (value) => {
 };
 
 const buildApprovalStatus = (row) => {
-  const totalAmount = Number(row.total_amount || 0);
-  const approvedAmount = Number(row.approved_amount || 0);
+  const totalAmount = Number(row.original_total_amount || row.total_amount || 0);
+  const approvedAmount = Number(row.approved_amount ?? row.effective_approved_amount ?? 0);
   if (row.invoice_status === 'cancelled') return 'cancelled';
   if (approvedAmount >= totalAmount - 0.1 && totalAmount > 0) return 'approved';
   if (approvedAmount > 0.1) return 'approval_partial';
@@ -141,6 +141,10 @@ export default function PhaseReportScreen({ route, navigation }) {
           SELECT
             i.id,
             LOWER(COALESCE(i.status, 'pending')) AS invoice_status,
+            (CASE
+              WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
+              ELSE COALESCE(i.total_amount, 0)
+            END) AS original_total_amount,
             MAX(0, (CASE
               WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
               ELSE COALESCE(i.total_amount, 0)
@@ -149,9 +153,53 @@ export default function PhaseReportScreen({ route, navigation }) {
               FROM invoice_card_returns cr
               WHERE cr.invoice_id = i.id
                 AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
-                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+                AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
             )) AS total_amount,
-            COALESCE(i.paid_amount, 0) AS paid_amount
+            COALESCE((
+              SELECT SUM(c.amount)
+              FROM collections c
+              WHERE c.invoice_id = i.id
+                AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+            ), 0)
+            +
+            COALESCE((
+              SELECT SUM(cr.return_amount)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+                AND EXISTS (
+                  SELECT 1
+                  FROM collections c2
+                  WHERE c2.id = cr.collection_id
+                    AND c2.invoice_id = i.id
+                    AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+                    AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+                )
+            ), 0) AS approved_amount,
+            COALESCE((
+              SELECT SUM(cr.return_amount)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0) AS total_card_returns,
+            COALESCE((
+              SELECT SUM(c.amount)
+              FROM collections c
+              WHERE c.invoice_id = i.id
+                AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0)
+            +
+            COALESCE((
+              SELECT SUM(cr.return_amount)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0) AS effective_paid_amount
           FROM invoices i
           WHERE i.phase_id = ?
             AND (i.active = 1 OR i.active IS NULL)
@@ -196,22 +244,28 @@ export default function PhaseReportScreen({ route, navigation }) {
               AND (i.active = 1 OR i.active IS NULL)
               AND LOWER(COALESCE(i.status, 'pending')) NOT IN ('cancelled', 'canceled')
               AND (
-                CASE
-                  WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.paid_amount, 0) < (MAX(0, COALESCE(i.net_amount, 0) - (
-                    SELECT COALESCE(SUM(cr.return_amount), 0)
+                (CASE
+                  WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
+                  ELSE COALESCE(i.total_amount, 0)
+                END)
+                -
+                (
+                  COALESCE((
+                    SELECT SUM(c.amount)
+                    FROM collections c
+                    WHERE c.invoice_id = i.id
+                      AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                      AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+                  ), 0)
+                  +
+                  COALESCE((
+                    SELECT SUM(cr.return_amount)
                     FROM invoice_card_returns cr
                     WHERE cr.invoice_id = i.id
                       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
                       AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
-                  )) - 0.1)
-                  ELSE COALESCE(i.paid_amount, 0) < (MAX(0, COALESCE(i.total_amount, 0) - (
-                    SELECT COALESCE(SUM(cr.return_amount), 0)
-                    FROM invoice_card_returns cr
-                    WHERE cr.invoice_id = i.id
-                      AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
-                      AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
-                  )) - 0.1)
-                END
+                  ), 0)
+                ) > 0.1
               )
               ${phaseStart ? `AND COALESCE(SUBSTR(i.invoice_date, 1, 10), '') >= '${phaseStart}'` : ''}
               ${phaseEnd ? `AND COALESCE(SUBSTR(i.invoice_date, 1, 10), '') < '${phaseEnd}'` : ''}
@@ -245,7 +299,6 @@ export default function PhaseReportScreen({ route, navigation }) {
             COALESCE(i.invoice_number, '—') AS invoice_number,
             COALESCE(pos.name, '—') AS pos_name,
             LOWER(COALESCE(i.status, 'pending')) AS invoice_status,
-            COALESCE(i.approved_amount, 0) AS approved_amount,
             (CASE
               WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
               ELSE COALESCE(i.total_amount, 0)
@@ -255,6 +308,16 @@ export default function PhaseReportScreen({ route, navigation }) {
              WHERE cr.invoice_id = i.id
                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') AS total_card_returns,
+            (SELECT COALESCE(SUM(cr.return_amount), 0)
+             FROM invoice_card_returns cr
+             WHERE cr.invoice_id = i.id
+               AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+               AND LOWER(COALESCE(cr.status, 'pending')) = 'pending') AS pending_card_returns_total,
+            (SELECT COUNT(1)
+             FROM collections pc
+             WHERE pc.invoice_id = i.id
+               AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
+               AND LOWER(COALESCE(pc.status, 'pending')) IN ('pending', 'pending_card_return_approval')) AS pending_collections_count,
             MAX(0, (CASE
               WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
               ELSE COALESCE(i.total_amount, 0)
@@ -263,17 +326,79 @@ export default function PhaseReportScreen({ route, navigation }) {
              WHERE cr.invoice_id = i.id
                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved')) AS total_amount,
-            COALESCE(i.paid_amount, 0) AS total_paid,
-            MAX(
-              0,
-              MAX(0, (CASE
-                WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
-                ELSE COALESCE(i.total_amount, 0)
-              END) - (SELECT COALESCE(SUM(cr.return_amount), 0)
+            COALESCE((
+              SELECT SUM(c.amount)
+              FROM collections c
+              WHERE c.invoice_id = i.id
+                AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                AND LOWER(COALESCE(c.status, 'pending')) = 'approved'
+            ), 0)
+            +
+            COALESCE((
+              SELECT SUM(cr.return_amount)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+                AND EXISTS (
+                  SELECT 1
+                  FROM collections c2
+                  WHERE c2.id = cr.collection_id
+                    AND c2.invoice_id = i.id
+                    AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+                    AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+                )
+            ), 0) AS approved_amount,
+            COALESCE((
+              SELECT SUM(c.amount)
+              FROM collections c
+              WHERE c.invoice_id = i.id
+                AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0)
+            +
+            COALESCE((
+              SELECT SUM(cr.return_amount)
+              FROM invoice_card_returns cr
+              WHERE cr.invoice_id = i.id
+                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0) AS effective_paid_amount,
+            COALESCE((
+              SELECT SUM(c.amount)
+              FROM collections c
+              WHERE c.invoice_id = i.id
+                AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+            ), 0)
+            +
+            (SELECT COALESCE(SUM(cr.return_amount), 0)
              FROM invoice_card_returns cr
              WHERE cr.invoice_id = i.id
                AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
-               AND LOWER(COALESCE(cr.status, 'pending')) = 'approved')) - COALESCE(i.paid_amount, 0)
+               AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')) AS total_paid,
+            MAX(
+              0,
+              (CASE
+                WHEN COALESCE(i.net_amount, 0) > 0.1 THEN COALESCE(i.net_amount, 0)
+                ELSE COALESCE(i.total_amount, 0)
+              END)
+              -
+              (
+                COALESCE((
+                  SELECT SUM(c.amount)
+                  FROM collections c
+                  WHERE c.invoice_id = i.id
+                    AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+                    AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+                ), 0)
+                +
+                (SELECT COALESCE(SUM(cr.return_amount), 0)
+                 FROM invoice_card_returns cr
+                 WHERE cr.invoice_id = i.id
+                   AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+                   AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted'))
+              )
             ) AS remaining_amount,
             COALESCE(SUBSTR(i.invoice_date, 1, 10), '—') AS invoice_date,
             COALESCE(SUBSTR(lc.last_collection_date, 1, 10), '—') AS last_collection_date,
@@ -300,16 +425,27 @@ export default function PhaseReportScreen({ route, navigation }) {
       );
 
       const carryRowsRaw = carryRowsRes.rows._array || [];
-      const carryRows = carryRowsRaw.map((row) => ({
-        ...row,
-        approval_status: buildApprovalStatus(row),
-        invoice_status_label: invoicePaymentStatusMeta(row.invoice_status).label,
-        approval_status_label: invoiceApprovalStatusMeta(buildApprovalStatus(row)).label,
-      }));
+      const carryRows = carryRowsRaw.map((row) => {
+        const isCancelled = row.invoice_status === 'cancelled' || row.invoice_status === 'canceled';
+        const paymentStatus = isCancelled
+          ? 'cancelled'
+          : Number(row.effective_paid_amount || 0) >= Number(row.original_total_amount || 0) - 0.1
+            ? 'paid'
+            : Number(row.effective_paid_amount || 0) > 0.1
+              ? 'partial'
+              : 'pending';
+        return {
+          ...row,
+          invoice_status: paymentStatus,
+          approval_status: buildApprovalStatus(row),
+          invoice_status_label: invoicePaymentStatusMeta(paymentStatus).label,
+          approval_status_label: invoiceApprovalStatusMeta(buildApprovalStatus(row)).label,
+        };
+      });
 
       const carriedIds = new Set(carryRows.map((row) => row.id));
       const retainedOnlyRows = retainedRows.filter((row) => !carriedIds.has(row.id));
-      const fullyPaidInvoices = retainedOnlyRows.filter((row) => row.invoice_status !== 'cancelled' && row.invoice_status !== 'canceled' && Number(row.paid_amount || 0) >= Number(row.total_amount || 0) - 0.1).length;
+      const fullyPaidInvoices = retainedOnlyRows.filter((row) => row.invoice_status !== 'cancelled' && row.invoice_status !== 'canceled' && Number(row.effective_paid_amount || 0) >= Number(row.original_total_amount || 0) - 0.1).length;
       const carriedForwardInvoices = carryRows.length;
       const totalInvoices = retainedOnlyRows.length + carriedForwardInvoices;
 

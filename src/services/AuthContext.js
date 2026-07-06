@@ -56,12 +56,23 @@ export function AuthProvider({ children }) {
   const [activePhase, setActivePhase] = useState(null);
   const [selectedPhase, setSelectedPhase] = useState(null);
   const [allPhases, setAllPhases] = useState([]);
+  const selectedPhaseStorageKey = (scopeProjectId = projectId) => scopeProjectId ? `isp_selected_phase_id_${scopeProjectId}` : null;
 
   const reloadPermissions = async (userData) => {
     if (!userData) return;
     try {
       const perms = await getEffectiveUserPermissions(userData.id, userData.role);
       setPermissions(perms);
+    } catch (e) {}
+  };
+
+  const selectPhase = async (phase) => {
+    setSelectedPhase(phase || null);
+    const key = selectedPhaseStorageKey(phase?.project_id || projectId);
+    if (!key) return;
+    try {
+      if (phase?.id) await AsyncStorage.setItem(key, phase.id);
+      else await AsyncStorage.removeItem(key);
     } catch (e) {}
   };
 
@@ -76,12 +87,14 @@ export function AuthProvider({ children }) {
       const phases = await getAllPhases(scopeProjectId);
       setAllPhases(phases || []);
       const active = (phases || []).find(p => p.status === 'active') || null;
+      const storedPhaseId = await AsyncStorage.getItem(selectedPhaseStorageKey(scopeProjectId));
+      const storedPhase = storedPhaseId ? (phases || []).find(p => String(p.id) === String(storedPhaseId)) : null;
       setActivePhase(active);
       setSelectedPhase(prev => {
-        if (!prev && active) return active;
+        if (!prev) return storedPhase || active;
         if (prev && phases) {
           const updated = phases.find(p => p.id === prev.id);
-          return updated || active;
+          return updated || storedPhase || active;
         }
         return prev;
       });
@@ -363,7 +376,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
+    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
       {children}
     </AuthContext.Provider>
   );

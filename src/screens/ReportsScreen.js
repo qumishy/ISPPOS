@@ -109,7 +109,35 @@ const AUDIT_SQL = `
      FROM invoice_card_returns cr
      WHERE cr.invoice_id = i.id
        AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
-       AND LOWER(COALESCE(cr.status, 'pending')) = 'approved') AS total_card_returns,
+       AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')) AS total_card_returns,
+    (SELECT COALESCE(SUM(cr.return_amount), 0)
+     FROM invoice_card_returns cr
+     WHERE cr.invoice_id = i.id
+       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+       AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+       AND EXISTS (
+         SELECT 1
+         FROM collections c2
+         WHERE c2.id = cr.collection_id
+           AND c2.invoice_id = i.id
+           AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+           AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+       )) AS approved_card_returns_total,
+    (SELECT COALESCE(SUM(cr.return_amount), 0)
+     FROM invoice_card_returns cr
+     WHERE cr.invoice_id = i.id
+       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+       AND LOWER(COALESCE(cr.status, 'pending')) = 'pending') AS pending_card_returns_total,
+    (SELECT COUNT(1)
+     FROM collections pc
+     WHERE pc.invoice_id = i.id
+       AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
+       AND LOWER(COALESCE(pc.status, 'pending')) IN ('pending', 'pending_card_return_approval')) AS pending_collections_count,
+    (SELECT COUNT(1)
+     FROM collections rc
+     WHERE rc.invoice_id = i.id
+       AND (rc.active = 1 OR rc.active IS NULL OR rc.active = 'true')
+       AND LOWER(COALESCE(rc.status, 'pending')) = 'rejected') AS rejected_approval_count,
     MAX(0,
       (CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
         THEN MAX(0, COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0)))
@@ -127,12 +155,53 @@ const AUDIT_SQL = `
      FROM collections pc
      WHERE pc.invoice_id = i.id
        AND (pc.active = 1 OR pc.active IS NULL OR pc.active = 'true')
-       AND LOWER(COALESCE(pc.status, 'pending')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected', 'pending_card_return_approval')) AS paid_amount,
+       AND LOWER(COALESCE(pc.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted'))
+    +
+    (SELECT COALESCE(SUM(cr.return_amount), 0)
+     FROM invoice_card_returns cr
+     WHERE cr.invoice_id = i.id
+       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+       AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')) AS paid_amount,
     (SELECT COALESCE(SUM(ac.amount), 0)
      FROM collections ac
      WHERE ac.invoice_id = i.id
        AND (ac.active = 1 OR ac.active IS NULL OR ac.active = 'true')
-       AND ac.status = 'approved') AS approved_amount,
+       AND LOWER(COALESCE(ac.status, 'pending')) = 'approved')
+    +
+    (SELECT COALESCE(SUM(cr.return_amount), 0)
+     FROM invoice_card_returns cr
+     WHERE cr.invoice_id = i.id
+       AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+       AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+       AND EXISTS (
+         SELECT 1
+         FROM collections c2
+         WHERE c2.id = cr.collection_id
+           AND c2.invoice_id = i.id
+           AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+           AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+       )) AS approved_amount,
+    (
+      (SELECT COALESCE(SUM(ac.amount), 0)
+       FROM collections ac
+       WHERE ac.invoice_id = i.id
+         AND (ac.active = 1 OR ac.active IS NULL OR ac.active = 'true')
+         AND LOWER(COALESCE(ac.status, 'pending')) = 'approved')
+      +
+      (SELECT COALESCE(SUM(cr.return_amount), 0)
+       FROM invoice_card_returns cr
+       WHERE cr.invoice_id = i.id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
+         AND EXISTS (
+           SELECT 1
+           FROM collections c2
+           WHERE c2.id = cr.collection_id
+             AND c2.invoice_id = i.id
+             AND (c2.active = 1 OR c2.active IS NULL OR c2.active = 'true')
+             AND LOWER(COALESCE(c2.status, 'pending')) = 'approved'
+         ))
+    ) AS effective_paid_amount,
     c.collection_number,
     c.collection_date,
     COALESCE(cc.price, ii.unit_price, 0) * COALESCE(ii.quantity, 0) AS col_amount,
@@ -156,15 +225,27 @@ const AUDIT_SQL = `
   ORDER BY i.invoice_date DESC, i.invoice_number ASC, c.collection_date ASC
 `;
 
-// احتساب المتبقي: نجلب إجمالي التحصيال المعتمدة لكل فاتورة
+// احتساب المتبقي: نجلب إجمالي التحصيلات المعتمدة ومرتجعات الكروت المعتمدة لكل فاتورة
 const REMAINING_SQL = `
-  SELECT invoice_id,
-         SUM(amount) AS total_paid
-  FROM collections
-  WHERE (active = 1 OR active IS NULL OR active = 'true')
-    AND project_id = ?
-    AND LOWER(COALESCE(status, '')) NOT IN ('deleted', 'cancelled', 'canceled', 'rejected', 'pending_card_return_approval')
-  GROUP BY invoice_id
+  SELECT i.id AS invoice_id,
+         COALESCE((
+           SELECT SUM(c.amount)
+           FROM collections c
+             WHERE c.invoice_id = i.id
+               AND (c.active = 1 OR c.active IS NULL OR c.active = 'true')
+               AND c.project_id = ?
+             AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+         ), 0)
+         +
+         COALESCE((
+           SELECT SUM(cr.return_amount)
+           FROM invoice_card_returns cr
+           WHERE cr.invoice_id = i.id
+             AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+             AND LOWER(COALESCE(cr.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')
+         ), 0) AS total_paid
+  FROM invoices i
+  WHERE i.project_id = ?
 `;
 
 // ═══════════════════════════════════════════════════════
@@ -720,7 +801,7 @@ function InventoryTrackingTab({ colors }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     let t = null;
-    const watched = new Set(['invoice_items', 'agent_wallets', 'batches', 'invoices', 'all']);
+    const watched = new Set(['invoice_items', 'agent_wallets', 'batches', 'invoices', 'invoice_card_returns', 'all']);
     const unsub = subscribeDataChanges((e) => {
       if (!watched.has(e?.type)) return;
       if (t) clearTimeout(t);
@@ -1131,7 +1212,7 @@ export default function ReportsScreen({ navigation }) {
 
       // 2. جلب إجمالي التحصيل لكل فاتورة (لحساب المتبقي)
       console.log(`[Reports] remaining query start request=${thisRequest}`);
-      const remResult = await execSQL(REMAINING_SQL, [projectId]);
+      const remResult = await execSQL(REMAINING_SQL, [projectId, projectId]);
       const remMap    = {};
       (remResult.rows._array || []).forEach(r => { remMap[r.invoice_id] = r.total_paid || 0; });
       console.log(`[Reports] remaining query done request=${thisRequest} rows=${remResult.rows._array?.length || 0}`);
@@ -1148,6 +1229,7 @@ export default function ReportsScreen({ navigation }) {
         return {
           ...r,
           ...invoiceFields,
+          net_amount: invoiceFields.net_after_returns,
           is_supplied: r.is_supplied_raw === 1,
           remaining: Number(invoiceFields.payment_remaining_amount ?? Math.max(0, (r.net_amount || 0) - (remMap[r.inv_id] || 0))),
         };
@@ -1185,7 +1267,7 @@ export default function ReportsScreen({ navigation }) {
 
   useEffect(() => {
     let t = null;
-    const watched = new Set(['invoices', 'invoice_items', 'collections', 'agent_wallets', 'batches', 'all', 'reports_ready']);
+    const watched = new Set(['invoices', 'invoice_items', 'collections', 'invoice_card_returns', 'agent_wallets', 'batches', 'all', 'reports_ready']);
     const unsub = subscribeDataChanges((e) => {
       if (!watched.has(e?.type)) return;
       if (t) clearTimeout(t);

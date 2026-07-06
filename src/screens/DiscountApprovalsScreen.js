@@ -10,7 +10,7 @@ import {
   getPendingCardReturnRequests,
   getCardReturnRequestDetails,
   approveCardReturnRequest,
-  rejectCardReturnRequest,
+  deleteLocalCollection,
 } from '../services/database';
 import { formatCurrency, formatDateShort } from '../utils/helpers';
 import { Btn, Empty, Input, Loading, Row } from '../components/UI';
@@ -50,6 +50,7 @@ export default function DiscountApprovalsScreen({ navigation }) {
   const [cardModal, setCardModal] = useState(false);
   const [cardAction, setCardAction] = useState(null);
   const [cardActionNote, setCardActionNote] = useState('');
+  const [cardFilter, setCardFilter] = useState('all');
 
   const load = useCallback(async (quiet = false) => {
     try {
@@ -138,6 +139,26 @@ export default function DiscountApprovalsScreen({ navigation }) {
     }
   };
 
+  const cardRequestStatusMeta = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'approved') return { label: 'معتمد', color: colors.green };
+    if (normalized === 'cancelled' || normalized === 'canceled') return { label: 'ملغي', color: colors.red };
+    return { label: 'غير معتمد', color: colors.warning };
+  };
+
+  const filteredCardRows = cardRows.filter(req => {
+    if (cardFilter === 'approved') return String(req.status || '').toLowerCase() === 'approved';
+    if (cardFilter === 'unapproved') return String(req.status || '').toLowerCase() !== 'approved';
+    return true;
+  });
+
+  const closeCardModal = () => {
+    setCardModal(false);
+    setCardAction(null);
+    setCardActionNote('');
+    setCardDetails(null);
+  };
+
   const doCardDecision = async () => {
     const req = cardDetails?.request;
     if (!req?.invoice_id || !cardAction) return;
@@ -153,16 +174,8 @@ export default function DiscountApprovalsScreen({ navigation }) {
           projectId,
           operationGroupId,
         });
-      } else {
-        await rejectCardReturnRequest({
-          collectionId: req.collection_id || null,
-          invoiceId: req.invoice_id,
-          rejectedBy: user?.id || null,
-          notes: cardActionNote,
-          projectId,
-          operationGroupId,
-        });
       }
+      Alert.alert('تم', 'تم اعتماد مرتجع الكروت');
       setCardAction(null);
       setCardActionNote('');
       setCardModal(false);
@@ -173,6 +186,30 @@ export default function DiscountApprovalsScreen({ navigation }) {
     } finally {
       setBusyId(null);
     }
+  };
+
+  const handleCancelCardCollection = () => {
+    const req = cardDetails?.request;
+    if (!req?.collection_id) return;
+    Alert.alert('إلغاء التحصيل', 'هل تريد إلغاء التحصيل ومرتجع الكروت المرتبط به؟ سيتم الحفظ كإلغاء دون حذف فعلي.', [
+      { text: 'لا', style: 'cancel' },
+      {
+        text: 'إلغاء التحصيل',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setBusyId(req.request_id);
+            await deleteLocalCollection(req.collection_id, user?.id || null);
+            closeCardModal();
+            await load(true);
+          } catch (e) {
+            Alert.alert('خطأ', e?.message || 'تعذر إلغاء التحصيل');
+          } finally {
+            setBusyId(null);
+          }
+        },
+      },
+    ]);
   };
 
   if (loading) return <Loading />;
@@ -238,9 +275,9 @@ export default function DiscountApprovalsScreen({ navigation }) {
                     <Text style={{ color: colors.t3, marginTop: 3 }}>المتبقي بعد التحصيل والمرتجع: <Text style={{ color: colors.red, fontWeight: '900' }}>{formatCurrency(cardDetails.details.remaining_after_approval || 0)}</Text></Text>
                   </View>
 
-                  {cardAction && (
+                  {cardAction === 'approve' && (
                     <View style={{ marginTop: 10 }}>
-                      <Input label={cardAction === 'approve' ? 'ملاحظات الاعتماد' : 'سبب الرفض'} value={cardActionNote} onChangeText={setCardActionNote} multiline />
+                      <Input label="ملاحظات الاعتماد" value={cardActionNote} onChangeText={setCardActionNote} multiline />
                     </View>
                   )}
                 </>
@@ -249,13 +286,17 @@ export default function DiscountApprovalsScreen({ navigation }) {
               )}
             </ScrollView>
             <Row style={{ gap: spacing.sm, marginTop: 12 }}>
-              <Btn label="إغلاق" variant="outline" style={{ flex: 1 }} onPress={() => { setCardModal(false); setCardAction(null); setCardActionNote(''); }} />
+              <Btn label="إغلاق" variant="outline" style={{ flex: 1 }} onPress={closeCardModal} />
               {cardAction ? (
-                <Btn label={cardAction === 'approve' ? 'تأكيد الاعتماد' : 'تأكيد الرفض'} variant={cardAction === 'approve' ? 'success' : 'danger'} style={{ flex: 1.4 }} onPress={doCardDecision} loading={busyId === cardDetails?.request?.request_id} />
+                <Btn label="تأكيد الاعتماد" variant="success" style={{ flex: 1.4 }} onPress={doCardDecision} loading={busyId === cardDetails?.request?.request_id} />
               ) : (
                 <>
-                  <Btn label="اعتماد مرتجع الكروت" variant="success" style={{ flex: 1.2 }} onPress={() => setCardAction('approve')} />
-                  <Btn label="رفض مرتجع الكروت" variant="danger" style={{ flex: 1.1 }} onPress={() => setCardAction('reject')} />
+                  {String(cardDetails?.request?.status || '').toLowerCase() !== 'approved' && (
+                    <Btn label="اعتماد" variant="success" style={{ flex: 1 }} onPress={() => setCardAction('approve')} />
+                  )}
+                  {selectedPhase?.status !== 'closed' && cardDetails?.request?.collection_id && (user?.role === 'admin' || user?.role === 'manager') && (
+                    <Btn label="إلغاء التحصيل" variant="danger" style={{ flex: 1 }} onPress={handleCancelCardCollection} loading={busyId === cardDetails?.request?.request_id} />
+                  )}
                 </>
               )}
             </Row>
@@ -314,14 +355,41 @@ export default function DiscountApprovalsScreen({ navigation }) {
             </View>
           ))}
         </ScrollView>
-      ) : cardRows.length === 0 ? (
-        <Empty icon="check-circle" title="لا توجد طلبات مرتجع كروت معلقة" />
       ) : (
+        <>
+          <Row style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.sm, gap: spacing.sm }}>
+            {[
+              ['all', 'الكل'],
+              ['approved', 'معتمد'],
+              ['unapproved', 'غير معتمد'],
+            ].map(([key, label]) => (
+              <TouchableOpacity
+                key={key}
+                onPress={() => setCardFilter(key)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  borderRadius: radius.sm,
+                  alignItems: 'center',
+                  backgroundColor: cardFilter === key ? colors.primary : colors.bg2,
+                  borderWidth: 1,
+                  borderColor: cardFilter === key ? colors.primary : colors.border,
+                }}
+              >
+                <Text style={{ color: cardFilter === key ? '#fff' : colors.t1, fontWeight: '900', fontSize: 12 }}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </Row>
+          {filteredCardRows.length === 0 ? (
+            <Empty icon="check-circle" title="لا توجد طلبات مرتجع كروت" />
+          ) : (
         <ScrollView
           contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
         >
-          {cardRows.map(req => (
+          {filteredCardRows.map(req => {
+            const statusMeta = cardRequestStatusMeta(req.status);
+            return (
             <TouchableOpacity key={req.request_id} activeOpacity={0.86} onPress={() => openCardRequest(req)} style={{ backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md }}>
               <Text style={{ color: colors.t1, fontWeight: '900', fontSize: fontSize.md }}>{req.collection_number || 'تحصيل بدون رقم'}</Text>
               <Text style={{ color: colors.t3, marginTop: 6 }}>رقم الفاتورة: <Text style={{ color: colors.t1, fontWeight: '800' }}>{req.invoice_number || '—'}</Text></Text>
@@ -330,12 +398,16 @@ export default function DiscountApprovalsScreen({ navigation }) {
               <Text style={{ color: colors.t3, marginTop: 2 }}>المرحلة: <Text style={{ color: colors.t1, fontWeight: '800' }}>{req.phase_name || '—'}</Text></Text>
               <Text style={{ color: colors.t3, marginTop: 2 }}>إجمالي الكروت المرتجعة: <Text style={{ color: colors.t1, fontWeight: '900' }}>{req.total_returned_cards || 0}</Text></Text>
               <Text style={{ color: colors.t3, marginTop: 2 }}>إجمالي قيمة المرتجع: <Text style={{ color: colors.orange, fontWeight: '900' }}>{formatCurrency(req.total_return_amount || 0)}</Text></Text>
+              <Text style={{ color: colors.t3, marginTop: 2 }}>الحالة: <Text style={{ color: statusMeta.color, fontWeight: '900' }}>{statusMeta.label}</Text></Text>
               <Text style={{ color: colors.t3, marginTop: 2 }}>أنشئت بواسطة: <Text style={{ color: colors.t1, fontWeight: '800' }}>{req.created_by_name || '—'}</Text></Text>
               <Text style={{ color: colors.t3, marginTop: 2 }}>تاريخ الإنشاء: <Text style={{ color: colors.t1, fontWeight: '800' }}>{formatDateShort(req.created_at)}</Text></Text>
-              <Text style={{ color: colors.warning, marginTop: 6, fontWeight: '900' }}>بانتظار اعتماد مرتجع الكروت</Text>
+              {!!req.approved_at && <Text style={{ color: colors.t3, marginTop: 2 }}>تاريخ الاعتماد: <Text style={{ color: colors.t1, fontWeight: '800' }}>{formatDateShort(req.approved_at)}</Text></Text>}
+              {!!req.approved_by_name && <Text style={{ color: colors.t3, marginTop: 2 }}>المعتمد بواسطة: <Text style={{ color: colors.t1, fontWeight: '800' }}>{req.approved_by_name}</Text></Text>}
             </TouchableOpacity>
-          ))}
+          );})}
         </ScrollView>
+          )}
+        </>
       )}
     </View>
   );

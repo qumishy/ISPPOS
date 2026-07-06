@@ -5,6 +5,62 @@ const RESERVED_RETURN_CLAUSE = `${ACTIVE_RETURN_CLAUSE} AND LOWER(COALESCE(statu
 const APPROVED_RETURN_CLAUSE = `${ACTIVE_RETURN_CLAUSE} AND LOWER(COALESCE(status, 'pending')) = 'approved'`;
 const ACTIVE_RETURN_CLAUSE_R = `(r.active = 1 OR r.active = 'true' OR r.active IS NULL)`;
 
+export const cancelInvoiceCardReturns = async ({
+  invoiceId = null,
+  collectionId = null,
+  reason = '',
+  operationGroupId = null,
+} = {}) => {
+  if (!invoiceId && !collectionId) return [];
+
+  const where = [];
+  const params = [];
+  if (invoiceId) {
+    where.push(`invoice_id = ?`);
+    params.push(invoiceId);
+  }
+  if (collectionId) {
+    where.push(`collection_id = ?`);
+    params.push(collectionId);
+  }
+
+  const rowsR = await execSQL(
+    `SELECT *
+     FROM invoice_card_returns
+     WHERE ${where.join(' AND ')}
+       AND ${ACTIVE_RETURN_CLAUSE}
+       AND LOWER(COALESCE(status, 'pending')) NOT IN ('cancelled', 'canceled')`,
+    params
+  );
+  const rows = rowsR.rows._array || [];
+  if (rows.length === 0) return [];
+
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    await execSQL(
+      `UPDATE invoice_card_returns
+       SET active = 0,
+           status = 'cancelled',
+           rejection_notes = COALESCE(NULLIF(?, ''), rejection_notes),
+           updated_at = ?,
+           synced = 0
+       WHERE id = ?`,
+      [reason || '', now, row.id]
+    );
+    await addToSyncQueue('invoice_card_returns', 'UPDATE', {
+      active: 0,
+      status: 'cancelled',
+      rejection_notes: reason || row.rejection_notes || '',
+      updated_at: now,
+      project_id: row.project_id || null,
+      phase_id: row.phase_id || null,
+    }, row.id, operationGroupId);
+  }
+
+  notifyDataChanged('invoice_card_returns');
+  return rows;
+};
+
 export const getInvoiceCardReturnsTotal = async (invoiceId, approvedOnly = false) => {
   if (!invoiceId) return 0;
   const r = await execSQL(
@@ -226,22 +282,41 @@ export const getPendingCardReturnRequests = async (projectId, phaseId = null) =>
        ph.name as phase_name,
        creator.name as created_by_name,
        MIN(r.created_at) as created_at,
+       MAX(r.approved_at) as approved_at,
+       MAX(approver.name) as approved_by_name,
        COALESCE(SUM(r.returned_cards_count), 0) as total_returned_cards,
        COALESCE(SUM(r.return_amount), 0) as total_return_amount,
-       LOWER(COALESCE(r.status, 'pending')) as status
+       SUM(CASE WHEN LOWER(COALESCE(r.status, 'pending')) = 'approved' THEN 1 ELSE 0 END) as approved_rows_count,
+       COUNT(1) as rows_count,
+       CASE
+         WHEN SUM(CASE WHEN LOWER(COALESCE(r.status, 'pending')) = 'approved' THEN 1 ELSE 0 END) = COUNT(1) THEN 'approved'
+         ELSE 'pending'
+       END as status
      FROM invoice_card_returns r
      LEFT JOIN collections c ON c.id = r.collection_id
      LEFT JOIN invoices i ON i.id = r.invoice_id
      LEFT JOIN pos_customers p ON p.id = i.pos_id
      LEFT JOIN users u ON u.id = COALESCE(c.agent_id, i.agent_id)
      LEFT JOIN users creator ON creator.id = r.created_by
+     LEFT JOIN users approver ON approver.id = r.approved_by
      LEFT JOIN phases ph ON ph.id = r.phase_id
      WHERE r.project_id = ?
        ${phaseWhere}
        AND ${ACTIVE_RETURN_CLAUSE_R}
-       AND LOWER(COALESCE(r.status, 'pending')) = 'pending'
-     GROUP BY r.collection_id, r.invoice_id, r.project_id, r.phase_id, c.collection_number, i.invoice_number, p.name, u.name, ph.name, creator.name, LOWER(COALESCE(r.status, 'pending'))
-     ORDER BY MIN(r.created_at) ASC`,
+       AND (
+         r.collection_id IS NULL
+         OR (
+           (c.active = 1 OR c.active = 'true' OR c.active IS NULL)
+           AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('cancelled', 'canceled', 'deleted')
+         )
+       )
+     GROUP BY r.collection_id, r.invoice_id, r.project_id, r.phase_id, c.collection_number, i.invoice_number, p.name, u.name, ph.name, creator.name
+     ORDER BY
+       CASE
+         WHEN SUM(CASE WHEN LOWER(COALESCE(r.status, 'pending')) = 'approved' THEN 1 ELSE 0 END) = COUNT(1) THEN 1
+         ELSE 0
+       END ASC,
+       MIN(r.created_at) ASC`,
     params
   );
   return r.rows._array || [];
@@ -267,7 +342,6 @@ export const getCardReturnRequestDetails = async ({ collectionId = null, invoice
      LEFT JOIN batches b ON b.id = r.batch_id
      WHERE ${where}
        AND ${ACTIVE_RETURN_CLAUSE_R}
-       AND LOWER(COALESCE(r.status, 'pending')) = 'pending'
      ORDER BY r.created_at ASC`,
     params
   );
@@ -294,7 +368,7 @@ export const getCardReturnRequestDetails = async ({ collectionId = null, invoice
      FROM collections
      WHERE invoice_id = ?
        AND (active = 1 OR active = 'true' OR active IS NULL)
-       AND status = 'approved'`,
+       AND LOWER(COALESCE(status, 'pending')) = 'approved'`,
     [invoiceId]
   );
   const approvedReturnsR = await execSQL(
@@ -308,9 +382,11 @@ export const getCardReturnRequestDetails = async ({ collectionId = null, invoice
   const invoice = invoiceR.rows._array?.[0] || {};
   const originalNet = Number(invoice.net_amount || invoice.total_amount || 0);
   const approvedReturns = Number(approvedReturnsR.rows._array?.[0]?.total || 0);
-  const pendingReturnAmount = rows.reduce((sum, row) => sum + Number(row.return_amount || 0), 0);
+  const requestReturnAmount = rows.reduce((sum, row) => sum + Number(row.return_amount || 0), 0);
+  const isApprovedRequest = rows.length > 0 && rows.every(row => String(row.status || '').toLowerCase() === 'approved');
+  const effectiveReturnsAfterDecision = isApprovedRequest ? approvedReturns : approvedReturns + requestReturnAmount;
   const approvedCollections = Number(approvedCollectionsR.rows._array?.[0]?.total || 0);
-  const netAfterApproval = Math.max(0, originalNet - approvedReturns - pendingReturnAmount);
+  const netAfterApproval = Math.max(0, originalNet - effectiveReturnsAfterDecision);
   return {
     invoice,
     collection: collectionR.rows._array?.[0] || null,
@@ -318,7 +394,9 @@ export const getCardReturnRequestDetails = async ({ collectionId = null, invoice
     original_net_amount: originalNet,
     approved_collections_total: approvedCollections,
     approved_returns_total: approvedReturns,
-    pending_return_amount: pendingReturnAmount,
+    pending_return_amount: requestReturnAmount,
+    request_return_amount: requestReturnAmount,
+    request_status: isApprovedRequest ? 'approved' : 'pending',
     net_after_approval: netAfterApproval,
     remaining_after_approval: Math.max(0, netAfterApproval - approvedCollections),
   };
@@ -351,61 +429,54 @@ export const approveCardReturnRequest = async ({ collectionId = null, invoiceId,
   let where = `invoice_id = ?`;
   if (collectionId) { where += ` AND collection_id = ?`; whereParams.push(collectionId); }
   if (projectId) { where += ` AND project_id = ?`; whereParams.push(projectId); }
+  const rowsBeforeR = await execSQL(
+    `SELECT *
+     FROM invoice_card_returns
+     WHERE ${where}
+       AND ${ACTIVE_RETURN_CLAUSE}
+       AND LOWER(COALESCE(status, 'pending')) NOT IN ('approved', 'cancelled', 'canceled')`,
+    whereParams
+  );
+  const rowsBefore = rowsBeforeR.rows._array || [];
+  if (rowsBefore.length === 0) {
+    await updateRelatedAfterReturnDecision({ invoiceId, collectionId });
+    return true;
+  }
+
   await execSQL(
     `UPDATE invoice_card_returns
      SET status = 'approved', approved_at = ?, approved_by = ?, approval_notes = ?, updated_at = ?, synced = 0
      WHERE ${where}
        AND ${ACTIVE_RETURN_CLAUSE}
-       AND LOWER(COALESCE(status, 'pending')) = 'pending'`,
+       AND LOWER(COALESCE(status, 'pending')) NOT IN ('approved', 'cancelled', 'canceled')`,
     [now, approvedBy || null, notes || '', now, ...whereParams]
   );
-  const rowsR = await execSQL(`SELECT * FROM invoice_card_returns WHERE ${where} AND status = 'approved'`, whereParams);
-  for (const row of rowsR.rows._array || []) {
+  for (const row of rowsBefore) {
     await addToSyncQueue('invoice_card_returns', 'UPDATE', {
       status: 'approved',
       approved_at: now,
       approved_by: approvedBy || null,
       approval_notes: notes || '',
       updated_at: now,
+      project_id: row.project_id || projectId || null,
+      phase_id: row.phase_id || null,
     }, row.id, operationGroupId);
   }
   if (collectionId) {
     await execSQL(`UPDATE collections SET status='pending', approval_notes=?, synced=0 WHERE id=? AND status='pending_card_return_approval'`, [notes || '', collectionId]);
-    await addToSyncQueue('collections', 'UPDATE', { status: 'pending', approval_notes: notes || '' }, collectionId, operationGroupId);
+    const colR = await execSQL(`SELECT project_id, phase_id FROM collections WHERE id=? LIMIT 1`, [collectionId]);
+    const col = colR.rows._array?.[0] || {};
+    await addToSyncQueue('collections', 'UPDATE', {
+      status: 'pending',
+      approval_notes: notes || '',
+      project_id: col.project_id || projectId || null,
+      phase_id: col.phase_id || null,
+    }, collectionId, operationGroupId);
   }
   await updateRelatedAfterReturnDecision({ invoiceId, collectionId });
   return true;
 };
 
 export const rejectCardReturnRequest = async ({ collectionId = null, invoiceId, rejectedBy, notes = '', projectId = null, operationGroupId = null }) => {
-  if (!invoiceId) throw new Error('لا يمكن رفض مرتجع بدون فاتورة.');
-  const now = new Date().toISOString();
-  const whereParams = [invoiceId];
-  let where = `invoice_id = ?`;
-  if (collectionId) { where += ` AND collection_id = ?`; whereParams.push(collectionId); }
-  if (projectId) { where += ` AND project_id = ?`; whereParams.push(projectId); }
-  await execSQL(
-    `UPDATE invoice_card_returns
-     SET status = 'rejected', rejected_at = ?, rejected_by = ?, rejection_notes = ?, updated_at = ?, synced = 0
-     WHERE ${where}
-       AND ${ACTIVE_RETURN_CLAUSE}
-       AND LOWER(COALESCE(status, 'pending')) = 'pending'`,
-    [now, rejectedBy || null, notes || '', now, ...whereParams]
-  );
-  const rowsR = await execSQL(`SELECT * FROM invoice_card_returns WHERE ${where} AND status = 'rejected'`, whereParams);
-  for (const row of rowsR.rows._array || []) {
-    await addToSyncQueue('invoice_card_returns', 'UPDATE', {
-      status: 'rejected',
-      rejected_at: now,
-      rejected_by: rejectedBy || null,
-      rejection_notes: notes || '',
-      updated_at: now,
-    }, row.id, operationGroupId);
-  }
-  if (collectionId) {
-    await execSQL(`UPDATE collections SET status='pending', rejection_reason=?, synced=0 WHERE id=? AND status='pending_card_return_approval'`, [notes || 'مرفوض مرتجع الكروت', collectionId]);
-    await addToSyncQueue('collections', 'UPDATE', { status: 'pending', rejection_reason: notes || 'مرفوض مرتجع الكروت' }, collectionId, operationGroupId);
-  }
-  await updateRelatedAfterReturnDecision({ invoiceId, collectionId });
-  return true;
+  throw new Error('رفض مرتجع الكروت غير مستخدم في سير العمل الحالي. استخدم الاعتماد أو إلغاء التحصيل.');
 };

@@ -148,8 +148,19 @@ export default function NewCollectionScreen({ route, navigation }) {
   }, 0) : 0;
   const invoiceNet = Number(selectedInvoice?.net_amount || selectedInvoice?.total_amount || 0);
   const paidSum = Number(selectedInvoice?.paid_sum || 0);
+  const collectionAmount = Number(form.amount || 0);
   const netAfterReturn = Math.max(0, invoiceNet - totalReturnAmount);
-  const remainingAfterCollectionAndReturn = Math.max(0, netAfterReturn - paidSum - Number(form.amount || 0));
+  const collectionCoverageAmount = collectionAmount + totalReturnAmount;
+  const remainingAfterCollectionAndReturn = Math.max(0, netAfterReturn - paidSum - collectionAmount);
+  const coverageComplete = collectionCoverageAmount > 0 && remainingAfterCollectionAndReturn <= 0.1;
+  const paymentStatusLabel = coverageComplete
+    ? 'مسددة'
+    : collectionCoverageAmount > 0
+      ? 'مسددة جزئياً'
+      : 'غير مسددة';
+  const approvalStatusLabel = coverageComplete
+    ? 'بانتظار اعتماد التحصيل'
+    : 'غير معتمدة';
 
   const setReturnedCardsCount = (row, value) => {
     const raw = String(value || '').replace(/[^\d]/g, '');
@@ -384,8 +395,16 @@ export default function NewCollectionScreen({ route, navigation }) {
             })}
             <View style={{ paddingTop: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>مبلغ التحصيل</Text>
+                <Text style={{ color: colors.green, fontWeight: '900' }}>{formatCurrency(collectionAmount)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
                 <Text style={{ color: colors.t3 }}>إجمالي المرتجع</Text>
                 <Text style={{ color: colors.orange, fontWeight: '900' }}>{formatCurrency(totalReturnAmount)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>الإجمالي المغطي</Text>
+                <Text style={{ color: colors.blue, fontWeight: '900' }}>{formatCurrency(collectionCoverageAmount)}</Text>
               </Row>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
                 <Text style={{ color: colors.t3 }}>الصافي بعد المرتجع</Text>
@@ -403,13 +422,17 @@ export default function NewCollectionScreen({ route, navigation }) {
         <View style={[s.section, { marginTop: spacing.md, zIndex: 2, elevation: 1 }]}>
           <Text style={s.sectionTitle}>حالة التحصيل</Text>
           <View style={{ marginTop: 10, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bg2 }}>
-            <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
-              <Text style={{ color: colors.t3 }}>حالة التحصيل</Text>
-              <Text style={{ color: colors.orange, fontWeight: '800' }}>قيد الرفع</Text>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+                <Text style={{ color: colors.t3 }}>حالة التحصيل</Text>
+              <Text style={{ color: coverageComplete ? colors.success : colors.orange, fontWeight: '800' }}>
+                {paymentStatusLabel}
+              </Text>
             </Row>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
               <Text style={{ color: colors.t3 }}>حالة الاعتماد</Text>
-              <Text style={{ color: colors.warning, fontWeight: '800' }}>غير معتمد</Text>
+              <Text style={{ color: coverageComplete ? colors.warning : colors.t3, fontWeight: '800' }}>
+                {approvalStatusLabel}
+              </Text>
             </Row>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
               <Text style={{ color: colors.t3 }}>الملاحظات</Text>

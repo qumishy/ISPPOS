@@ -42,7 +42,8 @@ export default function CashierScreen() {
   }, [user, projectId]);
   useEffect(() => { load(); }, [load]);
 
-  const pending  = cols.filter(c => c.status === 'pending');
+  const pendingStatuses = new Set(['pending', 'pending_card_return_approval', 'pending_collection_approval']);
+  const pending  = cols.filter(c => pendingStatuses.has(String(c.status || '').toLowerCase()));
   const approved = cols.filter(c => c.status === 'approved');
   const rejected = cols.filter(c => c.status === 'rejected');
   const display  = tab === 'pending' ? pending : tab === 'approved' ? approved : tab === 'rejected' ? rejected : cols;
