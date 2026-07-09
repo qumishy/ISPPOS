@@ -25,6 +25,7 @@ let _pullPromise = null;
 const REMOTE_SYNC_TIMEOUT_MS = 45000;
 const INVOICE_BUNDLE_RPC = 'upsert_invoice_bundle_atomic';
 const DUPLICATE_INVOICE_NUMBER_RE = /duplicate key value violates unique constraint \"invoices_invoice_number_key\"|invoices_invoice_number_key|duplicate key.*invoice_number/i;
+const DUPLICATE_COLLECTION_NUMBER_RE = /duplicate key value violates unique constraint \"collections_collections_number_key\"|duplicate key value violates unique constraint \"collections_collection_number_key\"|collections_collections_number_key|collections_collection_number_key|collection_number/i;
 
 const localUuid = () =>
   'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -52,6 +53,11 @@ const withRemoteTimeout = async (promise, label = 'sync operation', timeoutMs = 
 const isDuplicateInvoiceNumberError = (error) => {
   const text = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`;
   return DUPLICATE_INVOICE_NUMBER_RE.test(text);
+};
+
+const isDuplicateCollectionNumberError = (error) => {
+  const text = `${error?.code || ''} ${error?.message || ''} ${error?.details || ''}`;
+  return String(error?.code || '') === '23505' && DUPLICATE_COLLECTION_NUMBER_RE.test(text);
 };
 
 const nextProjectInvoiceNumber = async ({ projectId, dateValue }) => {
@@ -82,6 +88,41 @@ const nextProjectInvoiceNumber = async ({ projectId, dateValue }) => {
       .limit(2000);
     for (const row of data || []) {
       const m = String(row.invoice_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
+    }
+  } catch (e) { }
+
+  return `${prefix}${String(maxSeq + 1).padStart(2, '0')}`;
+};
+
+const nextProjectCollectionNumber = async ({ projectId, dateValue }) => {
+  const d = new Date(dateValue || new Date().toISOString());
+  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
+  const yyyy = safeDate.getFullYear();
+  const mm = String(safeDate.getMonth() + 1).padStart(2, '0');
+  const prefix = `COL-${yyyy}-${mm}`;
+  let maxSeq = 0;
+
+  try {
+    const localR = await execSQL(
+      `SELECT collection_number FROM collections WHERE project_id = ? AND collection_number LIKE ?`,
+      [projectId, `${prefix}%`]
+    );
+    for (const row of localR.rows._array || []) {
+      const m = String(row.collection_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
+    }
+  } catch (e) { }
+
+  try {
+    const { data } = await supabase
+      .from('collections')
+      .select('collection_number')
+      .eq('project_id', projectId)
+      .like('collection_number', `${prefix}%`)
+      .limit(2000);
+    for (const row of data || []) {
+      const m = String(row.collection_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
       if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
     }
   } catch (e) { }
@@ -137,7 +178,7 @@ const repairDuplicateInvoiceNumberConflict = async ({ invoiceId, invoicePayload,
     }
     notifyDataChanged('invoices');
     notifyDataChanged('sync_queue');
-    return true;
+    return 'synced';
   }
 
   const differentRemote = (remoteRows || []).find(row => String(row.id) !== String(invoiceId));
@@ -174,7 +215,59 @@ const repairDuplicateInvoiceNumberConflict = async ({ invoiceId, invoicePayload,
   notifyDataChanged('invoices');
   notifyDataChanged('sync_queue');
   console.log(`[InvoiceSyncBundle] renumbered duplicate invoice_number invoice_id=${invoiceId} old=${oldNumber} new=${newNumber} remote_conflict_id=${differentRemote.id}`);
-  return true;
+  return 'renumbered';
+};
+
+const repairDuplicateCollectionNumberConflict = async ({ collectionId, collectionPayload, queueItemId = null, operationGroupId = null, error }) => {
+  if (!collectionId || !collectionPayload?.collection_number || !collectionPayload?.project_id) return false;
+
+  const { data: remoteRows, error: lookupError } = await supabase
+    .from('collections')
+    .select('id,project_id,phase_id,collection_number,created_at')
+    .eq('project_id', collectionPayload.project_id)
+    .eq('collection_number', collectionPayload.collection_number)
+    .limit(10);
+  if (lookupError) return false;
+
+  const sameId = (remoteRows || []).find(row => String(row.id) === String(collectionId));
+  if (sameId) {
+    await execSQL(`UPDATE collections SET synced = 1 WHERE id = ?`, [collectionId]);
+    if (queueItemId) await execSQL(`DELETE FROM sync_queue WHERE id = ?`, [queueItemId]);
+    if (operationGroupId) {
+      await execSQL(`DELETE FROM sync_queue WHERE operation_group_id = ? AND table_name = 'collections' AND record_id = ?`, [operationGroupId, collectionId]);
+      await execSQL(`UPDATE operations_log SET sync_status='synced', synced_at=?, updated_at=? WHERE operation_group_id=? AND table_name='collections' AND record_id=?`, [new Date().toISOString(), new Date().toISOString(), operationGroupId, collectionId]);
+    }
+    notifyDataChanged('collections');
+    notifyDataChanged('sync_queue');
+    return 'synced';
+  }
+
+  const differentRemote = (remoteRows || []).find(row => String(row.id) !== String(collectionId));
+  if (!differentRemote) return false;
+
+  const oldNumber = collectionPayload.collection_number;
+  const newNumber = await nextProjectCollectionNumber({
+    projectId: collectionPayload.project_id,
+    dateValue: collectionPayload.collection_date || collectionPayload.created_at,
+  });
+  const nextPayload = { ...collectionPayload, collection_number: newNumber };
+  await execSQL(`UPDATE collections SET collection_number = ?, synced = 0 WHERE id = ?`, [newNumber, collectionId]);
+
+  if (queueItemId) {
+    await execSQL(`UPDATE sync_queue SET payload = ?, attempts = 0 WHERE id = ?`, [JSON.stringify(nextPayload), queueItemId]);
+  }
+  if (operationGroupId) {
+    await execSQL(
+      `UPDATE sync_queue SET payload = CASE WHEN table_name='collections' AND record_id=? THEN ? ELSE payload END, attempts = 0 WHERE operation_group_id = ?`,
+      [collectionId, JSON.stringify(nextPayload), operationGroupId]
+    );
+    await execSQL(`UPDATE operations_log SET sync_status='pending', sync_error=NULL, updated_at=? WHERE operation_group_id=?`, [new Date().toISOString(), operationGroupId]);
+  }
+
+  notifyDataChanged('collections');
+  notifyDataChanged('sync_queue');
+  console.log(`[CollectionSync] renumbered duplicate collection_number collection_id=${collectionId} old=${oldNumber} new=${newNumber} remote_conflict_id=${differentRemote.id}`);
+  return 'renumbered';
 };
 
 export async function hasLocalRequiredData(projectId) {
@@ -989,6 +1082,21 @@ const processQueueGroup = async (groupId) => {
         }
 
         if (e) {
+          if (item.table_name === 'collections' && item.operation === 'INSERT' && isDuplicateCollectionNumberError(e)) {
+            const repaired = await repairDuplicateCollectionNumberConflict({
+              collectionId: item.record_id,
+              collectionPayload: payload,
+              queueItemId: item.id,
+              operationGroupId: groupId,
+              error: e,
+            });
+            if (repaired === 'synced') {
+              e = null;
+            } else if (repaired === 'renumbered') {
+              e = new Error('تمت معالجة تعارض رقم سند التحصيل محلياً، وستتم إعادة المحاولة تلقائياً.');
+            }
+          }
+          if (!e) continue;
           console.error(`[Sync] Group failed at table ${item.table_name}:`, e);
           groupSuccess = false;
           errorMsg = e.message;
@@ -1132,6 +1240,20 @@ const processQueueItem = async (item) => {
           .from(item.table_name)
           .upsert(payload, { onConflict: 'id' });
         e = upsertError;
+        if (e && item.table_name === 'collections' && isDuplicateCollectionNumberError(e)) {
+          const repaired = await repairDuplicateCollectionNumberConflict({
+            collectionId: item.record_id,
+            collectionPayload: payload,
+            queueItemId: item.id,
+            operationGroupId: item.operation_group_id || null,
+            error: e,
+          });
+          if (repaired === 'synced') {
+            e = null;
+          } else if (repaired === 'renumbered') {
+            e = new Error('تمت معالجة تعارض رقم سند التحصيل محلياً، وستتم إعادة المحاولة تلقائياً.');
+          }
+        }
       }
 
       if (e) {

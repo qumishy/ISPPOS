@@ -14,13 +14,15 @@ const toNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const getMonthlySequentialCode = async ({ table, column, prefix, dateValue }) => {
+const getMonthlySequentialCode = async ({ table, column, prefix, dateValue, projectId = null }) => {
   const baseDate = new Date(dateValue || new Date().toISOString());
   const d = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
   const yyyy = d.getFullYear();
   const mm = pad2(d.getMonth() + 1);
   const monthPrefix = `${prefix}-${yyyy}-${mm}`;
-  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${column} LIKE ?`, [`${monthPrefix}%`]);
+  const where = projectId ? `project_id = ? AND ${column} LIKE ?` : `${column} LIKE ?`;
+  const params = projectId ? [projectId, `${monthPrefix}%`] : [`${monthPrefix}%`];
+  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${where}`, params);
   const rows = r.rows._array || [];
   let maxSeq = 0;
   for (const row of rows) {
@@ -328,6 +330,7 @@ export const createLocalCollection = async (data) => {
           column: 'collection_number',
           prefix: 'COL',
           dateValue: payload.collection_date,
+          projectId: payload.project_id,
         });
       }
       payload.collection_number = collection_number;

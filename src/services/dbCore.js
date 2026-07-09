@@ -327,6 +327,8 @@ export const saveSetting = async (key, value) => {
 
 export const setSetting = saveSetting;
 
+const quoteSqliteIdentifier = (name) => `"${String(name || '').replace(/"/g, '""')}"`;
+
 const createTables = async () => {
   await execSQL(`CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT)`);
@@ -553,6 +555,42 @@ export const initDatabase = async () => {
         }
       } catch (e) {
         console.log('[SQLite] project invoice_number unique index migration skipped:', e?.message || e);
+      }
+      try {
+        const dupCollectionNumbers = await execSQL(
+          `SELECT project_id, collection_number, COUNT(*) as c
+           FROM collections
+           WHERE collection_number IS NOT NULL AND collection_number != ''
+           GROUP BY project_id, collection_number
+           HAVING COUNT(*) > 1
+           LIMIT 1`
+        );
+        if (!(dupCollectionNumbers.rows._array || []).length) {
+          const indexRows = await execSQL(
+            `SELECT name, sql
+             FROM sqlite_master
+             WHERE type = 'index'
+               AND tbl_name = 'collections'
+               AND sql IS NOT NULL
+               AND LOWER(sql) LIKE '%unique%'
+               AND LOWER(sql) LIKE '%collection_number%'`
+          );
+          for (const idx of indexRows.rows._array || []) {
+            const sql = String(idx.sql || '').toLowerCase();
+            const hasProjectId = /\bproject_id\b/.test(sql);
+            if (!hasProjectId) {
+              await execSQL(`DROP INDEX IF EXISTS ${quoteSqliteIdentifier(idx.name)}`);
+            }
+          }
+          await execSQL(`DROP INDEX IF EXISTS idx_collections_collection_number_unique`);
+          await execSQL(`DROP INDEX IF EXISTS collections_collection_number_key`);
+          await execSQL(`DROP INDEX IF EXISTS collections_collections_number_key`);
+          await execSQL(`CREATE UNIQUE INDEX IF NOT EXISTS idx_collections_project_collection_number_unique ON collections(project_id, collection_number)`);
+        } else {
+          console.log('[SQLite] skipped project collection_number unique index because local duplicates exist within a project');
+        }
+      } catch (e) {
+        console.log('[SQLite] project collection_number unique index migration skipped:', e?.message || e);
       }
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_reports_project_phase ON invoices(project_id, phase_id, active)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_reports_agent ON invoices(project_id, agent_id, active)`);
