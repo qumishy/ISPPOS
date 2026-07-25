@@ -2,38 +2,16 @@ import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
 import { updateInvoiceStatus, decorateInvoiceStatusFields, resolveInvoiceNetAmount } from './invoiceService';
 import { createInvoiceCardReturns, cancelInvoiceCardReturns } from './invoiceCardReturnService';
 import { getCached } from './cacheService';
+import { getScopedMonthlySequentialCode } from './documentNumberService';
 
 const ACTIVE_INVOICE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active IS NULL OR i.active = 'true'))`;
 
-const pad2 = (n) => String(n).padStart(2, '0');
 const MONEY_EPSILON = 0.01;
 
 const toNumber = (value) => {
   const normalized = String(value ?? '').replace(/,/g, '').trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const getMonthlySequentialCode = async ({ table, column, prefix, dateValue, projectId = null }) => {
-  const baseDate = new Date(dateValue || new Date().toISOString());
-  const d = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
-  const yyyy = d.getFullYear();
-  const mm = pad2(d.getMonth() + 1);
-  const monthPrefix = `${prefix}-${yyyy}-${mm}`;
-  const where = projectId ? `project_id = ? AND ${column} LIKE ?` : `${column} LIKE ?`;
-  const params = projectId ? [projectId, `${monthPrefix}%`] : [`${monthPrefix}%`];
-  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${where}`, params);
-  const rows = r.rows._array || [];
-  let maxSeq = 0;
-  for (const row of rows) {
-    const code = String(row.code || '');
-    const m = code.match(new RegExp(`^${prefix}-${yyyy}-${mm}(\\d{2})$`));
-    if (m) {
-      const seq = Number(m[1] || 0);
-      if (seq > maxSeq) maxSeq = seq;
-    }
-  }
-  return `${monthPrefix}${pad2(maxSeq + 1)}`;
 };
 
 const getUserBasic = async (userId) => {
@@ -325,12 +303,14 @@ export const createLocalCollection = async (data) => {
   for (let i = 0; i < 20; i++) {
     try {
       if (!collection_number) {
-        collection_number = await getMonthlySequentialCode({
+        collection_number = await getScopedMonthlySequentialCode({
           table: 'collections',
           column: 'collection_number',
           prefix: 'COL',
           dateValue: payload.collection_date,
           projectId: payload.project_id,
+          phaseId: payload.phase_id,
+          agentId: payload.agent_id,
         });
       }
       payload.collection_number = collection_number;

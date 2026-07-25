@@ -2,6 +2,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { supabase } from './supabase';
 import { execSQL, setOnlineStatus, getSyncQueueCount, notifyDataChanged, isDbReady, waitForDbReady, getSetting, saveSetting } from './database';
 import { saveNotificationHistory } from './NotificationService';
+import { getScopedMonthlyCodePrefix, getScopedMonthlySequentialCode } from './documentNumberService';
 import {
   markOperationSyncing,
   markOperationSynced,
@@ -60,74 +61,70 @@ const isDuplicateCollectionNumberError = (error) => {
   return String(error?.code || '') === '23505' && DUPLICATE_COLLECTION_NUMBER_RE.test(text);
 };
 
-const nextProjectInvoiceNumber = async ({ projectId, dateValue }) => {
-  const d = new Date(dateValue || new Date().toISOString());
-  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
-  const yyyy = safeDate.getFullYear();
-  const mm = String(safeDate.getMonth() + 1).padStart(2, '0');
-  const prefix = `INV-${yyyy}-${mm}`;
-  let maxSeq = 0;
-
+const nextProjectInvoiceNumber = async ({ projectId, phaseId = null, agentId = null, dateValue }) => {
+  let remoteCodes = [];
   try {
-    const localR = await execSQL(
-      `SELECT invoice_number FROM invoices WHERE project_id = ? AND invoice_number LIKE ?`,
-      [projectId, `${prefix}%`]
-    );
-    for (const row of localR.rows._array || []) {
-      const m = String(row.invoice_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
-      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
-    }
-  } catch (e) { }
-
-  try {
-    const { data } = await supabase
+    const codePrefix = await getScopedMonthlyCodePrefix({
+      prefix: 'INV',
+      dateValue,
+      agentId,
+      projectId,
+    });
+    let query = supabase
       .from('invoices')
       .select('invoice_number')
       .eq('project_id', projectId)
-      .like('invoice_number', `${prefix}%`)
+      .like('invoice_number', `${codePrefix.value}%`)
       .limit(2000);
-    for (const row of data || []) {
-      const m = String(row.invoice_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
-      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
-    }
+    if (phaseId) query = query.eq('phase_id', phaseId);
+    if (agentId) query = query.eq('agent_id', agentId);
+    const { data } = await query;
+    remoteCodes = (data || []).map(row => row.invoice_number);
   } catch (e) { }
 
-  return `${prefix}${String(maxSeq + 1).padStart(2, '0')}`;
+  return getScopedMonthlySequentialCode({
+    table: 'invoices',
+    column: 'invoice_number',
+    prefix: 'INV',
+    dateValue,
+    projectId,
+    phaseId,
+    agentId,
+    additionalCodes: remoteCodes,
+  });
 };
 
-const nextProjectCollectionNumber = async ({ projectId, dateValue }) => {
-  const d = new Date(dateValue || new Date().toISOString());
-  const safeDate = Number.isNaN(d.getTime()) ? new Date() : d;
-  const yyyy = safeDate.getFullYear();
-  const mm = String(safeDate.getMonth() + 1).padStart(2, '0');
-  const prefix = `COL-${yyyy}-${mm}`;
-  let maxSeq = 0;
-
+const nextProjectCollectionNumber = async ({ projectId, phaseId = null, agentId = null, dateValue }) => {
+  let remoteCodes = [];
   try {
-    const localR = await execSQL(
-      `SELECT collection_number FROM collections WHERE project_id = ? AND collection_number LIKE ?`,
-      [projectId, `${prefix}%`]
-    );
-    for (const row of localR.rows._array || []) {
-      const m = String(row.collection_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
-      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
-    }
-  } catch (e) { }
-
-  try {
-    const { data } = await supabase
+    const codePrefix = await getScopedMonthlyCodePrefix({
+      prefix: 'COL',
+      dateValue,
+      agentId,
+      projectId,
+    });
+    let query = supabase
       .from('collections')
       .select('collection_number')
       .eq('project_id', projectId)
-      .like('collection_number', `${prefix}%`)
+      .like('collection_number', `${codePrefix.value}%`)
       .limit(2000);
-    for (const row of data || []) {
-      const m = String(row.collection_number || '').match(new RegExp(`^${prefix}(\\d{2})$`));
-      if (m) maxSeq = Math.max(maxSeq, Number(m[1] || 0));
-    }
+    if (phaseId) query = query.eq('phase_id', phaseId);
+    if (agentId) query = query.eq('agent_id', agentId);
+    const { data } = await query;
+    remoteCodes = (data || []).map(row => row.collection_number);
   } catch (e) { }
 
-  return `${prefix}${String(maxSeq + 1).padStart(2, '0')}`;
+  return getScopedMonthlySequentialCode({
+    table: 'collections',
+    column: 'collection_number',
+    prefix: 'COL',
+    dateValue,
+    projectId,
+    phaseId,
+    agentId,
+    additionalCodes: remoteCodes,
+  });
 };
 
 const logInvoiceRenumber = async ({ invoiceId, projectId, phaseId, oldNumber, newNumber, reason }) => {
@@ -163,6 +160,7 @@ const repairDuplicateInvoiceNumberConflict = async ({ invoiceId, invoicePayload,
   const { data: remoteRows, error: lookupError } = await supabase
     .from('invoices')
     .select('id,project_id,phase_id,invoice_number,created_at')
+    .eq('project_id', invoicePayload.project_id)
     .eq('invoice_number', invoicePayload.invoice_number)
     .limit(10);
   if (lookupError) return false;
@@ -187,6 +185,8 @@ const repairDuplicateInvoiceNumberConflict = async ({ invoiceId, invoicePayload,
   const oldNumber = invoicePayload.invoice_number;
   const newNumber = await nextProjectInvoiceNumber({
     projectId: invoicePayload.project_id,
+    phaseId: invoicePayload.phase_id || null,
+    agentId: invoicePayload.agent_id || null,
     dateValue: invoicePayload.invoice_date || invoicePayload.created_at,
   });
   const nextPayload = { ...invoicePayload, invoice_number: newNumber };
@@ -248,6 +248,8 @@ const repairDuplicateCollectionNumberConflict = async ({ collectionId, collectio
   const oldNumber = collectionPayload.collection_number;
   const newNumber = await nextProjectCollectionNumber({
     projectId: collectionPayload.project_id,
+    phaseId: collectionPayload.phase_id || null,
+    agentId: collectionPayload.agent_id || null,
     dateValue: collectionPayload.collection_date || collectionPayload.created_at,
   });
   const nextPayload = { ...collectionPayload, collection_number: newNumber };

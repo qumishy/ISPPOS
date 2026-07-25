@@ -2,34 +2,7 @@ import { execSQL, withTransaction, addToSyncQueue, notifyDataChanged, getSetting
 import { getCached } from './cacheService';
 import { backfillOperationsFromSyncQueue } from './operationLogger';
 import { cancelInvoiceCardReturns } from './invoiceCardReturnService';
-
-const pad2 = (n) => String(n).padStart(2, '0');
-
-const getMonthlySequentialCode = async ({ table, column, prefix, dateValue, projectId = null }) => {
-  const baseDate = new Date(dateValue || new Date().toISOString());
-  const d = Number.isNaN(baseDate.getTime()) ? new Date() : baseDate;
-  const yyyy = d.getFullYear();
-  const mm = pad2(d.getMonth() + 1);
-  const monthPrefix = `${prefix}-${yyyy}-${mm}`;
-  const params = [`${monthPrefix}%`];
-  let where = `${column} LIKE ?`;
-  if (projectId) {
-    where += ` AND project_id = ?`;
-    params.push(projectId);
-  }
-  const r = await execSQL(`SELECT ${column} as code FROM ${table} WHERE ${where}`, params);
-  const rows = r.rows._array || [];
-  let maxSeq = 0;
-  for (const row of rows) {
-    const code = String(row.code || '');
-    const m = code.match(new RegExp(`^${prefix}-${yyyy}-${mm}(\\d{2})$`));
-    if (m) {
-      const seq = Number(m[1] || 0);
-      if (seq > maxSeq) maxSeq = seq;
-    }
-  }
-  return `${monthPrefix}${pad2(maxSeq + 1)}`;
-};
+import { getScopedMonthlySequentialCode } from './documentNumberService';
 
 const getUserBasic = async (userId) => {
   if (!userId) return null;
@@ -681,12 +654,14 @@ export const createLocalInvoice = async (data) => {
   for (let i = 0; i < 20; i++) {
     try {
       if (!invoice_number) {
-        invoice_number = await getMonthlySequentialCode({
+        invoice_number = await getScopedMonthlySequentialCode({
           table: 'invoices',
           column: 'invoice_number',
           prefix: 'INV',
           dateValue: payload.invoice_date,
           projectId: payload.project_id,
+          phaseId: payload.phase_id,
+          agentId: payload.agent_id,
         });
       }
       payload.invoice_number = invoice_number;
@@ -814,12 +789,14 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     }
   }
 
-  let invoiceNumber = data.invoice_number || await getMonthlySequentialCode({
+  let invoiceNumber = data.invoice_number || await getScopedMonthlySequentialCode({
     table: 'invoices',
     column: 'invoice_number',
     prefix: 'INV',
     dateValue: data.invoice_date || created_at,
     projectId,
+    phaseId,
+    agentId: data.agent_id,
   });
 
   const payload = {

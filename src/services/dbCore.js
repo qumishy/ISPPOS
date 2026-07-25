@@ -593,10 +593,12 @@ export const initDatabase = async () => {
         console.log('[SQLite] project collection_number unique index migration skipped:', e?.message || e);
       }
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_reports_project_phase ON invoices(project_id, phase_id, active)`);
+      await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_number_scope ON invoices(project_id, phase_id, agent_id, invoice_number)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_reports_agent ON invoices(project_id, agent_id, active)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoice_items_reports_invoice ON invoice_items(invoice_id)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoice_items_reports_batch ON invoice_items(batch_id)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_collections_reports_invoice_status ON collections(project_id, invoice_id, active, status)`);
+      await execSQL(`CREATE INDEX IF NOT EXISTS idx_collections_number_scope ON collections(project_id, phase_id, agent_id, collection_number)`);
       await execSQL(`UPDATE card_categories SET cards_per_sheet = 1 WHERE COALESCE(cards_per_sheet, 0) < 1`);
       await execSQL(`UPDATE card_categories SET card_value = COALESCE(NULLIF(card_value, 0), price, 0) WHERE COALESCE(card_value, 0) <= 0`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoice_card_returns_invoice_active ON invoice_card_returns(project_id, invoice_id, active, status)`);
