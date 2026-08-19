@@ -1,5 +1,11 @@
 import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
 import { getCached } from './cacheService';
+import {
+  supabase,
+  ensureOnlineForAdminWalletMutation,
+  createAdminWalletRemoteError,
+  isAdminManagerRole,
+} from './supabase';
 
 const ACTIVE_ROW_CLAUSE = (alias) => `(${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true')`;
 const ACTIVE_INVOICE_CLAUSE = (alias) => `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true') AND LOWER(COALESCE(${alias}.status, '')) NOT IN ('cancelled', 'canceled', 'rejected', 'deleted'))`;
@@ -415,6 +421,71 @@ export const createLocalBatch = async (data) => {
     [payload.id, payload.batch_number, payload.category_id, payload.serial_number, payload.total_cards, payload.available_cards, payload.received_date, payload.status, payload.synced, payload.project_id, payload.phase_id]);
   await addToSyncQueue('batches', 'INSERT', payload, id);
   notifyDataChanged('batches');
+};
+
+export const createOnlineAdminBatch = async (data) => {
+  if (!isAdminManagerRole(data.actor_role)) {
+    throw new Error('ليس لديك صلاحية تنفيذ هذه الإضافة الإدارية.');
+  }
+
+  const totalCards = Math.floor(Number(data.total_cards || 0));
+  if (!data.project_id || !data.category_id || !data.batch_number || totalCards <= 0) {
+    throw new Error('بيانات الدفعة غير مكتملة.');
+  }
+
+  await ensureOnlineForAdminWalletMutation(data.project_id);
+
+  const id = data.id || uuidv4();
+  const remotePayload = {
+    id,
+    batch_number: data.batch_number,
+    category_id: data.category_id,
+    serial_number: data.serial_number,
+    total_cards: totalCards,
+    available_cards: totalCards,
+    received_date: data.received_date || new Date().toISOString().slice(0, 10),
+    status: 'active',
+    active: true,
+    project_id: data.project_id,
+  };
+
+  let savedBatch;
+  let error;
+  try {
+    const response = await supabase
+      .from('batches')
+      .insert(remotePayload)
+      .select('id,project_id,batch_number,category_id,serial_number,total_cards,available_cards,received_date,status,active,created_at')
+      .single();
+    savedBatch = response.data;
+    error = response.error;
+  } catch (remoteError) {
+    throw createAdminWalletRemoteError(remoteError);
+  }
+  if (error || !savedBatch) throw createAdminWalletRemoteError(error);
+
+  await execSQL(
+    `INSERT OR REPLACE INTO batches
+      (id, project_id, batch_number, category_id, serial_number, total_cards, available_cards, received_date, status, active, created_at, synced, phase_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [
+      savedBatch.id,
+      savedBatch.project_id,
+      savedBatch.batch_number,
+      savedBatch.category_id,
+      savedBatch.serial_number,
+      savedBatch.total_cards,
+      savedBatch.available_cards,
+      savedBatch.received_date,
+      savedBatch.status,
+      savedBatch.active === false ? 0 : 1,
+      savedBatch.created_at,
+      data.phase_id || null,
+    ]
+  );
+
+  notifyDataChanged('batches', { ...savedBatch, synced: 1, phase_id: data.phase_id || null });
+  return { ...savedBatch, synced: 1, phase_id: data.phase_id || null };
 };
 
 export const updateLocalBatch = async (id, updates) => {

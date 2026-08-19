@@ -6,8 +6,39 @@ import { getScopedMonthlySequentialCode } from './documentNumberService';
 
 const getUserBasic = async (userId) => {
   if (!userId) return null;
-  const r = await execSQL(`SELECT id, name, role FROM users WHERE id = ? LIMIT 1`, [userId]);
+  const r = await execSQL(`SELECT id, project_id, name, role FROM users WHERE id = ? LIMIT 1`, [userId]);
   return r.rows._array?.[0] || null;
+};
+
+const normalizeRole = (role) => String(role || '').trim().toLowerCase();
+const isAgentRole = (role) => ['agent', 'مندوب'].includes(normalizeRole(role));
+const isDiscountApproverRole = (role) => ['admin', 'manager', 'مدير'].includes(normalizeRole(role));
+const isCashInvoiceType = (type) => ['cash', 'نقد', 'نقدي'].includes(normalizeRole(type));
+
+const ensureCashInvoiceCollection = async (invoice, operationGroupId) => {
+  if (!isCashInvoiceType(invoice?.type)) return null;
+  try {
+    const { createCollectionForCashInvoiceIfNeeded } = require('./collectionService');
+    return await createCollectionForCashInvoiceIfNeeded(invoice, { operationGroupId });
+  } catch (e) {
+    console.log('[CashInvoice] automatic collection failed:', e?.message || e);
+    const error = new Error('تم حفظ الفاتورة، لكن تعذر إنشاء التحصيل التلقائي. يرجى المحاولة أو مراجعة التحصيلات.');
+    error.code = 'CASH_COLLECTION_CREATION_FAILED';
+    error.originalError = e;
+    throw error;
+  }
+};
+
+export const resolveInvoiceItemUnitPriceForRole = ({ role, requestedPrice, trustedPrice }) => {
+  const requested = Number(requestedPrice);
+  const trusted = Number(trustedPrice);
+  if (isAgentRole(role)) {
+    const trustedMissing = trustedPrice === null || trustedPrice === undefined || String(trustedPrice).trim() === '';
+    if (trustedMissing || !Number.isFinite(trusted) || trusted < 0) throw new Error('تعذر تحديد سعر الورقة المعتمد للفئة.');
+    return trusted;
+  }
+  if (!Number.isFinite(requested) || requested < 0) throw new Error('سعر البند غير صحيح.');
+  return requested;
 };
 
 const isApprovedDiscount = (invoiceLike) =>
@@ -60,6 +91,29 @@ export const deriveInvoiceApprovalStatus = (invoiceLike) => {
   if (approved <= STATUS_EPSILON) return 'unapproved';
   if (approved >= (net - STATUS_EPSILON)) return 'approved';
   return 'approval_partial';
+};
+
+export const shouldHideInvoiceFromAgentList = (invoiceLike = {}, userRole) => {
+  const normalizedRole = String(userRole || '').trim().toLowerCase();
+  if (normalizedRole !== 'agent' && normalizedRole !== 'مندوب') return false;
+
+  const paymentStatus = String(invoiceLike.payment_status || invoiceLike.status || '').trim().toLowerCase();
+  const approvalStatus = String(invoiceLike.approval_status || '').trim().toLowerCase();
+  const paidAndApproved = ['paid', 'مسددة'].includes(paymentStatus)
+    && ['approved', 'معتمدة'].includes(approvalStatus);
+
+  const netAmount = Number(
+    invoiceLike.net_amount
+      ?? invoiceLike.original_invoice_total
+      ?? invoiceLike.total_amount
+      ?? 0
+  );
+  const approvedCoverage = resolveInvoiceApprovedAmount(invoiceLike);
+  const hasFullApprovedCoverage = Number.isFinite(netAmount)
+    && netAmount > STATUS_EPSILON
+    && approvedCoverage >= (netAmount - STATUS_EPSILON);
+
+  return paidAndApproved || hasFullApprovedCoverage;
 };
 
 export const decorateInvoiceStatusFields = (invoiceLike = {}) => {
@@ -189,7 +243,8 @@ const addDiscountDecisionAudit = async ({
   approvedBy,
   approvedAt,
   status,
-  decisionNote = ''
+  decisionNote = '',
+  projectId = null,
 }) => {
   const id = uuidv4();
   const now = new Date().toISOString();
@@ -207,7 +262,7 @@ const addDiscountDecisionAudit = async ({
     created_at: now,
     updated_at: now,
     synced: 0,
-    project_id: data.project_id
+    project_id: projectId
   };
   await execSQL(
     `INSERT INTO invoice_discount_approvals
@@ -732,6 +787,21 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
   if (!data.agent_id) throw new Error('تعذر تحديد المندوب. لا يمكن حفظ الفاتورة.');
   if (!Array.isArray(invoiceItems) || invoiceItems.length === 0) throw new Error('أضف بنداً واحداً على الأقل.');
 
+  if (data.id) {
+    const existingR = await execSQL(
+      `SELECT * FROM invoices WHERE id = ? AND project_id = ? LIMIT 1`,
+      [data.id, projectId]
+    );
+    const existingInvoice = existingR.rows._array?.[0];
+    if (existingInvoice) {
+      if (String(existingInvoice.agent_id || '') !== String(data.agent_id || '')) {
+        throw new Error('الفاتورة المحفوظة لا تخص المندوب المحدد.');
+      }
+      const automaticCollection = await ensureCashInvoiceCollection(existingInvoice, operationGroupId);
+      return { ...existingInvoice, automatic_collection: automaticCollection };
+    }
+  }
+
   const posRes = await execSQL(
     `SELECT id, name, credit_limit FROM pos_customers
      WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
@@ -748,14 +818,42 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
   const agent = agentRes.rows._array?.[0];
   if (!agent) throw new Error('المندوب غير موجود أو غير فعال.');
 
+  const actorUserId = data.actor_user_id || data.agent_id;
+  const actorRes = await execSQL(
+    `SELECT id, project_id, name, role FROM users
+     WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+    [actorUserId, projectId]
+  );
+  const actor = actorRes.rows._array?.[0];
+  if (!actor) throw new Error('تعذر التحقق من المستخدم الذي ينشئ الفاتورة.');
+  const actorIsAgent = isAgentRole(actor.role);
+
+  const trustedCategoryPrices = new Map();
+  if (actorIsAgent) {
+    const categoryIds = [...new Set(invoiceItems.map(item => item?.category_id).filter(Boolean))];
+    for (const categoryId of categoryIds) {
+      const categoryRes = await execSQL(
+        `SELECT id, price FROM card_categories
+         WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
+        [categoryId, projectId]
+      );
+      const category = categoryRes.rows._array?.[0];
+      if (!category) throw new Error('الفئة غير موجودة أو غير فعالة.');
+      trustedCategoryPrices.set(categoryId, category.price);
+    }
+  }
+
   const normalizedItems = invoiceItems.map((item, index) => {
     const qty = Number(item.quantity || 0);
-    const unitPrice = Number(item.unit_price || 0);
     if (!item.category_id) throw new Error(`يرجى اختيار الفئة للبند رقم ${index + 1}.`);
     if (!item.batch_id) throw new Error(`يرجى اختيار الدفعة للبند رقم ${index + 1}.`);
     if (!item.wallet_id) throw new Error(`يرجى اختيار المحفظة للبند رقم ${index + 1}.`);
     if (!Number.isFinite(qty) || qty <= 0) throw new Error(`كمية البند رقم ${index + 1} غير صحيحة.`);
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error(`سعر البند رقم ${index + 1} غير صحيح.`);
+    const unitPrice = resolveInvoiceItemUnitPriceForRole({
+      role: actor.role,
+      requestedPrice: item.unit_price,
+      trustedPrice: trustedCategoryPrices.get(item.category_id),
+    });
     return {
       id: item.id && String(item.id).length > 20 ? item.id : uuidv4(),
       invoice_id: id,
@@ -766,20 +864,30 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
       wallet_id: item.wallet_id,
       quantity: qty,
       unit_price: unitPrice,
-      total_price: Number(item.total_price ?? item.total ?? (qty * unitPrice)),
+      total_price: actorIsAgent
+        ? qty * unitPrice
+        : Number(item.total_price ?? item.total ?? (qty * unitPrice)),
       created_at,
       synced: 0,
     };
   });
 
-  const totalAmt = Number(data.total_amount ?? normalizedItems.reduce((sum, item) => sum + item.total_price, 0));
+  const calculatedItemsTotal = normalizedItems.reduce((sum, item) => sum + item.total_price, 0);
+  const totalAmt = actorIsAgent ? calculatedItemsTotal : Number(data.total_amount ?? calculatedItemsTotal);
   const requestedDiscount = Math.max(0, Number(data.discount_requested_value ?? data.discount ?? 0));
   const requestedReason = String(data.discount_requested_reason || data.discount_reason || '').trim();
-  const discountStatus = String(data.discount_status || '').trim() || (requestedDiscount > 0 ? 'pending_discount_approval' : 'none');
+  const incomingDiscountStatus = String(data.discount_status || '').trim();
+  const discountStatus = actorIsAgent && requestedDiscount > 0
+    ? 'pending_discount_approval'
+    : (incomingDiscountStatus || (requestedDiscount > 0 ? 'pending_discount_approval' : 'none'));
   const appliedDiscount = (discountStatus === 'auto_approved' || discountStatus === 'approved')
     ? Math.max(0, Number(data.discount_applied_value ?? requestedDiscount))
-    : Math.max(0, Number(data.discount_applied_value || 0));
+    : 0;
   const netAmt = Math.max(0, totalAmt - appliedDiscount);
+  const discountResolved = ['approved', 'auto_approved', 'rejected', 'none', ''].includes(discountStatus);
+  if (isCashInvoiceType(data.type) && requestedDiscount > 0 && !discountResolved) {
+    throw new Error('لا يمكن حفظ فاتورة نقدية بخصم معلق. يجب اعتماد الخصم أولاً أو إنشاء الفاتورة بدون خصم.');
+  }
 
   if (Number(pos.credit_limit || 0) > 0) {
     const { getPOSRemainingCredit } = require('./posService');
@@ -798,13 +906,14 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     phaseId,
     agentId: data.agent_id,
   });
+  const invoiceType = isCashInvoiceType(data.type) ? 'cash' : (data.type || 'credit');
 
   const payload = {
     id,
     invoice_number: invoiceNumber,
     pos_id: data.pos_id,
     agent_id: data.agent_id,
-    type: data.type || 'credit',
+    type: invoiceType,
     total_amount: totalAmt,
     net_amount: netAmt,
     paid_amount: Number(data.paid_amount || 0),
@@ -828,6 +937,38 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     project_id: projectId,
     synced: 0,
   };
+
+  let automaticCollectionPayload = null;
+  if (isCashInvoiceType(payload.type)) {
+    const collectionNumber = await getScopedMonthlySequentialCode({
+      table: 'collections',
+      column: 'collection_number',
+      prefix: 'COL',
+      dateValue: payload.invoice_date || created_at,
+      projectId,
+      phaseId,
+      agentId: payload.agent_id,
+    });
+    automaticCollectionPayload = {
+      id: uuidv4(),
+      collection_number: collectionNumber,
+      project_id: projectId,
+      agent_id: payload.agent_id,
+      pos_id: payload.pos_id,
+      invoice_id: payload.id,
+      amount: resolveInvoiceNetAmount(payload),
+      method: 'cash',
+      reference_number: '',
+      status: 'pending',
+      approved_at: null,
+      rejection_reason: null,
+      collection_date: payload.invoice_date || created_at.slice(0, 10),
+      active: 1,
+      created_at,
+      phase_id: phaseId,
+      synced: 0,
+    };
+  }
 
   const result = await withTransaction(function* () {
     const phaseR = yield {
@@ -907,6 +1048,51 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
       params: [operationGroupId, JSON.stringify(payload), id, projectId],
     };
 
+    let automaticCollection = null;
+    if (automaticCollectionPayload) {
+      const existingCollectionR = yield {
+        sql: `SELECT * FROM collections
+              WHERE invoice_id = ? AND project_id = ?
+                AND (active = 1 OR active = 'true' OR active IS NULL)
+              ORDER BY created_at ASC
+              LIMIT 1`,
+        params: [payload.id, projectId],
+      };
+      automaticCollection = existingCollectionR.rows._array?.[0] || null;
+      if (!automaticCollection) {
+        yield {
+          sql: `INSERT INTO collections
+                (id, project_id, collection_number, agent_id, pos_id, invoice_id, amount, method, reference_number, status, approved_at, rejection_reason, collection_date, active, created_at, phase_id, synced)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          params: [
+            automaticCollectionPayload.id,
+            automaticCollectionPayload.project_id,
+            automaticCollectionPayload.collection_number,
+            automaticCollectionPayload.agent_id,
+            automaticCollectionPayload.pos_id,
+            automaticCollectionPayload.invoice_id,
+            automaticCollectionPayload.amount,
+            automaticCollectionPayload.method,
+            automaticCollectionPayload.reference_number,
+            automaticCollectionPayload.status,
+            automaticCollectionPayload.approved_at,
+            automaticCollectionPayload.rejection_reason,
+            automaticCollectionPayload.collection_date,
+            automaticCollectionPayload.active,
+            automaticCollectionPayload.created_at,
+            automaticCollectionPayload.phase_id,
+            automaticCollectionPayload.synced,
+          ],
+        };
+        yield {
+          sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at)
+                VALUES (?, 'collections', 'INSERT', ?, ?, ?, 0, datetime('now'))`,
+          params: [operationGroupId, JSON.stringify(automaticCollectionPayload), automaticCollectionPayload.id, projectId],
+        };
+        automaticCollection = automaticCollectionPayload;
+      }
+    }
+
     for (const item of normalizedItems) {
       yield {
         sql: `INSERT INTO invoice_items (id, project_id, phase_id, invoice_id, category_id, batch_id, wallet_id, quantity, unit_price, total_price, created_at, synced)
@@ -944,7 +1130,7 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
       };
     }
 
-    return { invoice: payload, items: normalizedItems, walletPayloads };
+    return { invoice: payload, items: normalizedItems, walletPayloads, automaticCollection };
   });
 
   console.log(`[InvoiceCreate] project_id=${projectId} phase_id=${phaseId} invoice_id=${id} invoice_number=${invoiceNumber} item_count=${normalizedItems.length} group_id=${operationGroupId}`);
@@ -958,11 +1144,14 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
   notifyDataChanged('invoices', payload);
   notifyDataChanged('invoice_items');
   notifyDataChanged('agent_wallets');
+  if (result.automaticCollection) notifyDataChanged('collections', result.automaticCollection);
   notifyDataChanged('sync_queue');
 
   backfillOperationsFromSyncQueue(50).catch((e) => {
     console.log('[SyncQueue] invoice bundle operation backfill skipped:', e?.message || e);
   });
+
+  if (result.automaticCollection) await updateInvoiceStatus(payload.id);
 
   try {
     const { recalculatePOSCreditBalance } = require('./posService');
@@ -971,7 +1160,7 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     console.log('[InvoiceCreate] POS credit recalculation skipped', e?.message || e);
   }
 
-  return payload;
+  return { ...payload, automatic_collection: result.automaticCollection || null };
 };
 
 export const addInvoiceItem = async (data) => {
@@ -1103,6 +1292,10 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
   const invR = await execSQL(`SELECT * FROM invoices WHERE id = ? LIMIT 1`, [invoiceId]);
   const inv = invR.rows._array?.[0];
   if (!inv) throw new Error('الفاتورة غير موجودة');
+  const approver = await getUserBasic(managerId);
+  if (!approver || !isDiscountApproverRole(approver.role) || (inv.project_id && approver.project_id !== inv.project_id)) {
+    throw new Error('هذه العملية متاحة للمدير أو مسؤول النظام فقط.');
+  }
 
   const currentStatus = String(inv.discount_status || 'none');
   if (currentStatus === 'approved' || currentStatus === 'auto_approved') {
@@ -1115,7 +1308,8 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
       approvedBy: managerId,
       approvedAt: new Date().toISOString(),
       status: currentStatus,
-      decisionNote: 'noop_already_approved'
+      decisionNote: 'noop_already_approved',
+      projectId: inv.project_id || null,
     });
     return { changed: false, status: currentStatus };
   }
@@ -1125,6 +1319,9 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
 
   const reqValue = Math.max(0, Number(inv.discount_requested_value || 0));
   const normalizedApplied = Math.max(0, Number(appliedValue ?? reqValue));
+  if (!Number.isFinite(normalizedApplied) || normalizedApplied > Number(inv.total_amount || 0) + STATUS_EPSILON) {
+    throw new Error('قيمة الخصم المعتمد لا يمكن أن تتجاوز إجمالي الفاتورة.');
+  }
   const effectiveNet = Math.max(0, Number(inv.total_amount || 0) - normalizedApplied);
   const approvedPaidR = await execSQL(
     `SELECT COALESCE(SUM(amount), 0) AS s
@@ -1155,7 +1352,9 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
     discount_applied_value: normalizedApplied,
     discount_approved_by: managerId,
     discount_approved_at: approvedAt,
-    net_amount: effectiveNet
+    net_amount: effectiveNet,
+    project_id: inv.project_id || null,
+    phase_id: inv.phase_id || null,
   }, invoiceId);
   await addDiscountDecisionAudit({
     invoiceId,
@@ -1166,7 +1365,8 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
     approvedBy: managerId,
     approvedAt,
     status: 'approved',
-    decisionNote: note || ''
+    decisionNote: note || '',
+    projectId: inv.project_id || null,
   });
   await updateInvoiceStatus(invoiceId);
   notifyDataChanged('invoices');
@@ -1178,6 +1378,10 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
   const invR = await execSQL(`SELECT * FROM invoices WHERE id = ? LIMIT 1`, [invoiceId]);
   const inv = invR.rows._array?.[0];
   if (!inv) throw new Error('الفاتورة غير موجودة');
+  const approver = await getUserBasic(managerId);
+  if (!approver || !isDiscountApproverRole(approver.role) || (inv.project_id && approver.project_id !== inv.project_id)) {
+    throw new Error('هذه العملية متاحة للمدير أو مسؤول النظام فقط.');
+  }
 
   const currentStatus = String(inv.discount_status || 'none');
   if (currentStatus === 'rejected') {
@@ -1190,7 +1394,8 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
       approvedBy: managerId,
       approvedAt: new Date().toISOString(),
       status: 'rejected',
-      decisionNote: 'noop_already_rejected'
+      decisionNote: 'noop_already_rejected',
+      projectId: inv.project_id || null,
     });
     return { changed: false, status: 'rejected' };
   }
@@ -1217,7 +1422,9 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
     discount_applied_value: 0,
     discount_approved_by: managerId,
     discount_approved_at: rejectedAt,
-    net_amount: effectiveNet
+    net_amount: effectiveNet,
+    project_id: inv.project_id || null,
+    phase_id: inv.phase_id || null,
   }, invoiceId);
   await addDiscountDecisionAudit({
     invoiceId,
@@ -1228,7 +1435,8 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
     approvedBy: managerId,
     approvedAt: rejectedAt,
     status: 'rejected',
-    decisionNote: reason || ''
+    decisionNote: reason || '',
+    projectId: inv.project_id || null,
   });
   await updateInvoiceStatus(invoiceId);
   notifyDataChanged('invoices');

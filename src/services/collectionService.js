@@ -7,11 +7,43 @@ import { getScopedMonthlySequentialCode } from './documentNumberService';
 const ACTIVE_INVOICE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active IS NULL OR i.active = 'true'))`;
 
 const MONEY_EPSILON = 0.01;
+const AGENT_VISIBILITY_EPSILON = 0.1;
+const cashInvoiceCollectionLocks = new Map();
 
 const toNumber = (value) => {
   const normalized = String(value ?? '').replace(/,/g, '').trim();
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const shouldHideCollectionFromAgentList = (collectionLike = {}, userRole) => {
+  const normalizedRole = String(userRole || '').trim().toLowerCase();
+  if (!['agent', 'مندوب'].includes(normalizedRole)) return false;
+
+  const collectionStatus = String(collectionLike.status || '').trim().toLowerCase();
+  if (!['approved', 'معتمدة'].includes(collectionStatus)) return false;
+
+  const invoicePaymentStatus = String(collectionLike.inv_payment_status || '').trim().toLowerCase();
+  const invoiceApprovalStatus = String(collectionLike.inv_approval_status || '').trim().toLowerCase();
+  const paidAndApproved = ['paid', 'مسددة'].includes(invoicePaymentStatus)
+    && ['approved', 'معتمدة'].includes(invoiceApprovalStatus);
+
+  const invoiceNet = toNumber(
+    collectionLike.inv_net
+      ?? collectionLike.inv_net_amount
+      ?? collectionLike.invoice_net_amount
+      ?? 0
+  );
+  const approvedCoverage = toNumber(
+    collectionLike.inv_effective_approved_amount
+      ?? collectionLike.inv_approved_amount
+      ?? collectionLike.inv_approved
+      ?? 0
+  );
+  const hasFullApprovedCoverage = invoiceNet > AGENT_VISIBILITY_EPSILON
+    && approvedCoverage >= (invoiceNet - AGENT_VISIBILITY_EPSILON);
+
+  return paidAndApproved || hasFullApprovedCoverage;
 };
 
 const getUserBasic = async (userId) => {
@@ -209,6 +241,8 @@ export const getLocalCollections = async (filters = {}) => {
         inv_approved_card_returns_total: invoiceFields.approved_card_returns_total,
         inv_pending_card_returns_total: invoiceFields.pending_card_returns_total,
         inv_effective_paid_amount: invoiceFields.effective_paid_amount,
+        inv_effective_approved_amount: invoiceFields.approval_coverage_amount,
+        inv_approved_amount: invoiceFields.approved_amount,
         inv_net_after_returns: invoiceFields.net_after_returns,
         inv_collection_amount: collectionAmount,
         inv_collection_linked_returns_total: linkedReturnsTotal,
@@ -371,6 +405,59 @@ export const createLocalCollection = async (data) => {
     }
   } catch (e) { }
   return payload;
+};
+
+export const createCollectionForCashInvoiceIfNeeded = async (invoice = {}, context = {}) => {
+  const invoiceType = String(invoice.type || '').trim().toLowerCase();
+  if (!['cash', 'نقد', 'نقدي'].includes(invoiceType)) return null;
+  if (!invoice.id || !invoice.project_id) {
+    throw new Error('تعذر تحديد الفاتورة النقدية أو المشروع لإنشاء التحصيل التلقائي.');
+  }
+
+  const lockKey = `${invoice.project_id}:${invoice.id}`;
+  if (cashInvoiceCollectionLocks.has(lockKey)) return cashInvoiceCollectionLocks.get(lockKey);
+
+  const creationPromise = (async () => {
+    const existingR = await execSQL(
+      `SELECT * FROM collections
+       WHERE invoice_id = ? AND project_id = ?
+         AND (active = 1 OR active = 'true' OR active IS NULL)
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [invoice.id, invoice.project_id]
+    );
+    const existing = existingR.rows._array?.[0];
+    if (existing) {
+      await updateInvoiceStatus(invoice.id);
+      return existing;
+    }
+
+    const amount = resolveInvoiceNetAmount(invoice);
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new Error('تعذر تحديد صافي مبلغ الفاتورة النقدية.');
+    }
+
+    return createLocalCollection({
+      invoice_id: invoice.id,
+      pos_id: invoice.pos_id,
+      agent_id: invoice.agent_id,
+      project_id: invoice.project_id,
+      phase_id: invoice.phase_id || null,
+      amount,
+      method: 'cash',
+      collection_date: invoice.invoice_date || new Date().toISOString().slice(0, 10),
+      status: 'pending',
+      active: 1,
+      operation_group_id: context.operation_group_id || context.operationGroupId || null,
+    });
+  })();
+
+  cashInvoiceCollectionLocks.set(lockKey, creationPromise);
+  try {
+    return await creationPromise;
+  } finally {
+    cashInvoiceCollectionLocks.delete(lockKey);
+  }
 };
 
 export const approveLocalCollection = async (id, notes = '', approvedBy = null) => {

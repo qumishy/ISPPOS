@@ -953,7 +953,20 @@ const syncInvoiceBundleGroup = async (items, groupId) => {
     return walletPayload;
   });
 
-  console.log(`[InvoiceSyncBundle] start rpc=${INVOICE_BUNDLE_RPC} project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} wallet_updates=${walletPayloads.length} group_id=${groupId}`);
+  const collectionItems = items.filter(item => item.table_name === 'collections');
+  const collectionPayloads = collectionItems.map((collectionItem) => {
+    if (collectionItem.operation !== 'INSERT') {
+      throw new Error(`عملية مزامنة تحصيل غير مدعومة داخل مجموعة إنشاء الفاتورة: ${collectionItem.operation}`);
+    }
+    const collectionPayload = sanitizePayload('collections', JSON.parse(collectionItem.payload || '{}'));
+    if (!collectionPayload.project_id && collectionItem.record_id) collectionPayload.project_id = invoicePayload.project_id;
+    if (collectionPayload.project_id !== _currentUser?.project_id) {
+      throw new Error('تم تجاهل تحصيل يخص مشروعاً آخر على هذا الجهاز.');
+    }
+    return { queueItem: collectionItem, payload: collectionPayload };
+  });
+
+  console.log(`[InvoiceSyncBundle] start rpc=${INVOICE_BUNDLE_RPC} project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} wallet_updates=${walletPayloads.length} collections=${collectionPayloads.length} group_id=${groupId}`);
   const { error: rpcError } = await supabase.rpc(INVOICE_BUNDLE_RPC, {
     p_invoice: invoicePayload,
     p_invoice_items: localItemsPayloads,
@@ -973,6 +986,27 @@ const syncInvoiceBundleGroup = async (items, groupId) => {
       }
     }
     throw rpcError;
+  }
+
+  for (const { queueItem, payload: collectionPayload } of collectionPayloads) {
+    const { error: upsertError } = await supabase.from('collections').upsert(collectionPayload, { onConflict: 'id' });
+    let collectionError = upsertError;
+
+    if (collectionError && isDuplicateCollectionNumberError(collectionError)) {
+      const repaired = await repairDuplicateCollectionNumberConflict({
+        collectionId: queueItem.record_id,
+        collectionPayload,
+        queueItemId: queueItem.id,
+        operationGroupId: groupId,
+        error: collectionError,
+      });
+      if (repaired === 'synced') collectionError = null;
+      else if (repaired === 'renumbered') {
+        throw new Error('تمت معالجة تعارض رقم سند التحصيل محلياً، وستتم إعادة المحاولة تلقائياً.');
+      }
+    }
+    if (collectionError) throw collectionError;
+    await execSQL(`UPDATE collections SET synced = 1 WHERE id = ?`, [queueItem.record_id]);
   }
 
   const queueIds = items.map(i => i.id);
@@ -998,8 +1032,9 @@ const syncInvoiceBundleGroup = async (items, groupId) => {
   notifyDataChanged('invoices');
   notifyDataChanged('invoice_items');
   notifyDataChanged('agent_wallets');
+  if (collectionPayloads.length > 0) notifyDataChanged('collections');
   notifyDataChanged('sync_queue');
-  console.log(`[InvoiceSyncBundle] success project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} group_id=${groupId}`);
+  console.log(`[InvoiceSyncBundle] success project_id=${invoicePayload.project_id} phase_id=${invoicePayload.phase_id || ''} invoice_id=${invoiceQueueItem.record_id} invoice_number=${invoicePayload.invoice_number || ''} item_count=${localItemsPayloads.length} collections=${collectionPayloads.length} group_id=${groupId}`);
   return true;
 };
 

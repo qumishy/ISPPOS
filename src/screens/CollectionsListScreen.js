@@ -5,7 +5,8 @@ import * as Print from 'expo-print';
 import { useTheme } from '../theme';
 import {
   getLocalCollections, deleteLocalCollection, subscribeDataChanges,
-  approveLocalCollection, cancelLocalCollectionApproval
+  approveLocalCollection, cancelLocalCollectionApproval,
+  shouldHideCollectionFromAgentList,
 } from '../services/database';
 import { setCurrentUser } from '../services/SyncService';
 import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
@@ -18,6 +19,7 @@ export default function CollectionsScreen({ navigation }) {
   const { user, selectedPhase, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const isAgentUser = ['agent', 'مندوب'].includes(String(user?.role || '').trim().toLowerCase());
 
   const [cols, setCols] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -38,7 +40,7 @@ export default function CollectionsScreen({ navigation }) {
   const load = useCallback(async (quiet = false) => {
     try {
       if (!projectId) return;
-      const filters = user?.role === 'agent' ? { agent_id: user.id } : {};
+      const filters = isAgentUser ? { agent_id: user.id } : {};
       if (selectedPhase) filters.phase_id = selectedPhase.id;
       if (projectId) filters.project_id = projectId;
 
@@ -111,8 +113,10 @@ export default function CollectionsScreen({ navigation }) {
   );
 
   const visibleCollections = useMemo(
-    () => (Array.isArray(cols) ? cols : []).filter(isActiveCollectionRow),
-    [cols]
+    () => (Array.isArray(cols) ? cols : [])
+      .filter(isActiveCollectionRow)
+      .filter(collection => !shouldHideCollectionFromAgentList(collection, user?.role)),
+    [cols, user?.role]
   );
 
   const pending = useMemo(

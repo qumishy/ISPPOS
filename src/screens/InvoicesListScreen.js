@@ -2,7 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
-import { getLocalInvoices, subscribeDataChanges, getInvoiceCountdownMeta } from '../services/database';
+import {
+  getLocalInvoices,
+  subscribeDataChanges,
+  getInvoiceCountdownMeta,
+  shouldHideInvoiceFromAgentList,
+} from '../services/database';
 import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
 import { Badge, Loading, Empty, Row, ScreenHeader } from '../components/UI';
 import { useAuth } from '../services/AuthContext';
@@ -14,6 +19,7 @@ export default function InvoicesScreen({ navigation, route }) {
   const { user, selectedPhase, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const isAgentUser = ['agent', 'مندوب'].includes(String(user?.role || '').trim().toLowerCase());
 
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,10 +38,10 @@ export default function InvoicesScreen({ navigation, route }) {
         return;
       }
       const filters = tab !== 'all' ? { status: tab } : {};
-      if (user?.role !== 'agent' && tab === 'all') {
+      if (!isAgentUser && tab === 'all') {
         filters.includeInactive = true;
       }
-      if (user?.role === 'agent') filters.agent_id = user.id;
+      if (isAgentUser) filters.agent_id = user.id;
       if (selectedPhase) filters.phase_id = selectedPhase.id;
       if (projectId) filters.project_id = projectId;
 
@@ -69,7 +75,10 @@ export default function InvoicesScreen({ navigation, route }) {
   }, [route?.params?.refresh_at, load]);
 
 
-  const visibleInvoices = invoices;
+  const visibleInvoices = useMemo(
+    () => invoices.filter(inv => !shouldHideInvoiceFromAgentList(inv, user?.role)),
+    [invoices, user?.role]
+  );
   const filtered = useMemo(
     () => visibleInvoices.filter(inv => !search || JSON.stringify(inv).toLowerCase().includes(search.toLowerCase())),
     [visibleInvoices, search]
@@ -133,13 +142,13 @@ export default function InvoicesScreen({ navigation, route }) {
         kpis={[
           { label: 'الإجمالي', value: formatCurrency(total), color: colors.primary },
           { label: 'مسدد', value: formatCurrency(paid), color: colors.success },
-          { label: 'العدد', value: invoices.length, color: colors.t1 },
+          { label: 'العدد', value: visibleInvoices.length, color: colors.t1 },
         ]}
         tabs={[
           { k: 'all', l: 'الكل' },
           { k: 'pending', l: 'معلقة' },
           { k: 'due_soon', l: 'فواتير يجب سدادها' },
-          ...(user?.role !== 'agent' ? [{ k: 'paid', l: 'مسددة' }] : []),
+          ...(!isAgentUser ? [{ k: 'paid', l: 'مسددة' }] : []),
           { k: 'overdue', l: 'متأخرة' },
         ]}
         activeTab={tab} onTabSelect={setTab} search={search} onSearch={setSearch}

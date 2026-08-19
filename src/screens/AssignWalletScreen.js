@@ -3,15 +3,16 @@ import { ScrollView, View, Text, Alert } from 'react-native';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
 import {
-  getLocalUsers, getLocalBatches, getLocalCategories, createLocalAgentWallet
+  getLocalUsers, getLocalBatches, getLocalCategories, createOnlineAdminAgentWallet
 } from '../services/database';
+import { ADMIN_WALLET_ONLINE_NOTE, isAdminManagerRole } from '../services/supabase';
 import { formatCurrency } from '../utils/helpers';
 import { Input, Btn, Loading, Row, Picker } from '../components/UI';
 import { makeStyles } from '../styles/form.styles';
 import { useLoading } from '../services/LoadingContext';
 
 export default function AssignWalletScreen({ navigation }) {
-  const { user, projectId, selectedPhase } = useAuth();
+  const { user, projectId, selectedPhase, canAccess } = useAuth();
   const { showLoading, hideLoading } = useLoading();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
@@ -34,6 +35,7 @@ export default function AssignWalletScreen({ navigation }) {
 
   const save = async () => {
     if (saving) return;
+    if (!isAdminManagerRole(user?.role) || !canAccess('Wallets', 'can_add')) { Alert.alert('تنبيه', 'ليس لديك صلاحية تنفيذ هذه الإضافة الإدارية.'); return; }
     if (!form.agent_id || !form.batch_id || !form.quantity) { Alert.alert('تنبيه', 'أكمل البيانات'); return; }
     if (batchInfo && parseInt(form.quantity) > batchInfo.available_cards) { Alert.alert('خطأ', `المتاح: ${batchInfo.available_cards}`); return; }
     try {
@@ -43,9 +45,9 @@ export default function AssignWalletScreen({ navigation }) {
           text: 'تأكيد التوزيع', onPress: async () => {
             if (saving) return;
             setSaving(true);
-            showLoading('جاري حفظ التوزيع محلياً...');
+            showLoading('جاري حفظ التوزيع على السيرفر...');
             try {
-              await createLocalAgentWallet({ ...form, total_cards: parseInt(form.quantity), issued_by: user.id, project_id: projectId, phase_id: selectedPhase?.id });
+              await createOnlineAdminAgentWallet({ ...form, total_cards: parseInt(form.quantity), issued_by: user.id, project_id: projectId, phase_id: selectedPhase?.id, actor_role: user?.role });
               hideLoading();
               navigation.goBack();
               setTimeout(() => {
@@ -73,6 +75,9 @@ export default function AssignWalletScreen({ navigation }) {
         {batchInfo && <View style={s.infoBox}><Text style={{ color: colors.t3 }}>المتاح للتوزيع:</Text><Text style={{ color: colors.green, fontSize: 18, fontWeight: '800' }}>{batchInfo.available_cards} ورقة</Text></View>}
         <Input label="الكمية *" value={form.quantity} onChangeText={v => setForm({ ...form, quantity: v })} keyboardType="numeric" />
         <Input label="ملاحظات" value={form.notes} onChangeText={v => setForm({ ...form, notes: v })} multiline />
+        <View style={{ backgroundColor: colors.blue + '12', borderWidth: 1, borderColor: colors.blue + '35', borderRadius: radius.md, padding: spacing.sm, marginBottom: spacing.md }}>
+          <Text style={{ color: colors.blue, fontSize: fontSize.xs, fontWeight: '700', textAlign: 'right', lineHeight: 20 }}>{ADMIN_WALLET_ONLINE_NOTE}</Text>
+        </View>
         <Row style={s.actions}><Btn label="إلغاء" variant="outline" style={{ flex: 1 }} onPress={() => navigation.goBack()} disabled={saving} /><Btn label={saving ? 'جاري الحفظ...' : 'حفظ'} icon={saving ? undefined : "save"} variant="primary" style={{ flex: 2 }} onPress={save} disabled={saving} /></Row>
       </View>
     </ScrollView>

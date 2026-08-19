@@ -19,7 +19,8 @@ import { uuidv4 } from '../services/dbCore';
 export default function DiscountApprovalsScreen({ navigation }) {
   const { user, selectedPhase, projectId, canAccess } = useAuth();
   const { colors, spacing, radius, fontSize } = useTheme();
-  const canApproveDiscounts = user?.role === 'admin';
+  const normalizedRole = String(user?.role || '').trim().toLowerCase();
+  const canApproveDiscounts = ['admin', 'manager', 'مدير'].includes(normalizedRole);
   const canApproveCardReturns = user?.role === 'admin' || user?.role === 'manager' || canAccess?.('approve_card_returns');
 
   if (!canApproveDiscounts && !canApproveCardReturns) {
@@ -60,6 +61,9 @@ export default function DiscountApprovalsScreen({ navigation }) {
       ]);
       setRows(pending || []);
       setCardRows(pendingCardReturns || []);
+    } catch (e) {
+      console.error('[DiscountApprovals] load failed:', e?.message || e);
+      if (!quiet) Alert.alert('خطأ', e?.message || 'تعذر تحميل طلبات الاعتماد');
     } finally {
       if (!quiet) setLoading(false);
       setRefreshing(false);

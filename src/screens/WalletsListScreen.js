@@ -11,7 +11,7 @@ import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
 
 export default function WalletsScreen({ navigation }) {
-  const { user, can, selectedPhase, projectId } = useAuth();
+  const { user, can, canAccess, selectedPhase, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
@@ -24,6 +24,8 @@ export default function WalletsScreen({ navigation }) {
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [selectedWallet, setSelectedWallet] = useState(null);
   const [returnQty, setReturnQty] = useState('');
+  const canAddWallet = ['admin', 'manager'].includes(user?.role)
+    && canAccess('Wallets', 'can_add');
 
   const load = useCallback(async (quiet = false) => {
     try {
@@ -135,8 +137,8 @@ export default function WalletsScreen({ navigation }) {
         ]}
         search={search} onSearch={setSearch}
         searchPlaceholder="بحث باسم المندوب..."
-        action={selectedPhase?.status !== 'closed' && can('canManageWallets') ? '+ توزيع جديد' : undefined}
-        onAction={selectedPhase?.status !== 'closed' ? () => navigation.push('AssignWallet') : undefined}
+        action={selectedPhase?.status !== 'closed' && canAddWallet ? '+ توزيع جديد' : undefined}
+        onAction={selectedPhase?.status !== 'closed' && canAddWallet ? () => navigation.push('AssignWallet') : undefined}
       />
 
       {selectedPhase?.status === 'closed' && (

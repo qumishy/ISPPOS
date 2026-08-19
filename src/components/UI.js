@@ -102,23 +102,24 @@ export function Btn({ label, onPress, variant = 'primary', size = 'md', icon, st
   );
 }
 
-export function Input({ label, value, onChangeText, placeholder, icon, secureTextEntry, keyboardType, multiline, style, error }) {
+export function Input({ label, value, onChangeText, placeholder, icon, secureTextEntry, keyboardType, multiline, style, error, editable = true }) {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   const [isFocused, setIsFocused] = React.useState(false);
 
   return (
     <View style={s.inputWrap}>
-      {label && <Text style={[s.label, isFocused && { color: colors.primary }]}>{label}</Text>}
+      {label && <Text style={[s.label, isFocused && editable && { color: colors.primary }, !editable && { color: colors.t3 }]}>{label}</Text>}
       <View style={[
         s.inputContainer,
         multiline && { height: undefined, minHeight: 100 },
-        isFocused && { borderColor: colors.primary, backgroundColor: colors.bg2 },
+        isFocused && editable && { borderColor: colors.primary, backgroundColor: colors.bg2 },
+        !editable && { backgroundColor: colors.bg2, borderColor: colors.border, opacity: 0.72 },
         error && { borderColor: colors.danger },
         style
       ]}>
         <TextInput
-          style={[s.input, multiline && { height: 100, textAlignVertical: 'top' }, multiline && style && { height: style.height }]}
+          style={[s.input, multiline && { height: 100, textAlignVertical: 'top' }, multiline && style && { height: style.height }, !editable && { color: colors.t3 }]}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
@@ -126,7 +127,9 @@ export function Input({ label, value, onChangeText, placeholder, icon, secureTex
           secureTextEntry={secureTextEntry}
           keyboardType={keyboardType}
           multiline={multiline}
-          onFocus={() => setIsFocused(true)}
+          editable={editable}
+          selectTextOnFocus={editable}
+          onFocus={() => { if (editable) setIsFocused(true); }}
           onBlur={() => setIsFocused(false)}
         />
         {icon && <Feather name={icon} size={18} color={colors.t3} style={{ marginLeft: spacing.sm }} />}

@@ -1,6 +1,12 @@
 import { execSQL, withTransaction, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
 import { getCached } from './cacheService';
 import { backfillOperationsFromSyncQueue } from './operationLogger';
+import {
+  supabase,
+  ensureOnlineForAdminWalletMutation,
+  createAdminWalletRemoteError,
+  isAdminManagerRole,
+} from './supabase';
 
 const loggedWalletBalanceWarnings = new Set();
 const ACTIVE_INVOICE_CLAUSE = (alias) => `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true'))`;
@@ -390,6 +396,96 @@ export const createLocalAgentWallet = async (data) => {
       excludeUserIds: issuer?.id ? [issuer.id] : [],
     });
   } catch (e) { }
+};
+
+export const createOnlineAdminAgentWallet = async (data) => {
+  if (!isAdminManagerRole(data.actor_role)) {
+    throw new Error('ليس لديك صلاحية تنفيذ هذه الإضافة الإدارية.');
+  }
+
+  const totalCards = Math.floor(Number(data.total_cards || 0));
+  if (!data.project_id || !data.agent_id || !data.batch_id || !data.category_id || !data.issued_by || totalCards <= 0) {
+    throw new Error('بيانات التوزيع غير مكتملة.');
+  }
+
+  await ensureOnlineForAdminWalletMutation(data.project_id);
+
+  const payload = {
+    id: data.id || uuidv4(),
+    agent_id: data.agent_id,
+    batch_id: data.batch_id,
+    category_id: data.category_id,
+    total_cards: totalCards,
+    sold_cards: 0,
+    issued_by: data.issued_by,
+    notes: data.notes || '',
+    created_at: data.created_at || new Date().toISOString(),
+    project_id: data.project_id,
+    phase_id: data.phase_id || null,
+  };
+
+  let remoteResult;
+  let error;
+  try {
+    const response = await supabase.rpc('create_admin_wallet_distribution_atomic', {
+      p_wallet: payload,
+    });
+    remoteResult = response.data;
+    error = response.error;
+  } catch (remoteError) {
+    throw createAdminWalletRemoteError(remoteError);
+  }
+  const savedWallet = remoteResult?.wallet;
+  const savedBatch = remoteResult?.batch;
+  if (error || !savedWallet || !savedBatch) throw createAdminWalletRemoteError(error);
+
+  await withTransaction(function* () {
+    yield {
+      sql: `INSERT OR IGNORE INTO batches
+        (id, project_id, batch_number, category_id, serial_number, total_cards, available_cards, received_date, status, active, created_at, synced, phase_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      params: [
+        savedBatch.id,
+        savedBatch.project_id,
+        savedBatch.batch_number,
+        savedBatch.category_id,
+        savedBatch.serial_number,
+        savedBatch.total_cards,
+        savedBatch.available_cards,
+        savedBatch.received_date,
+        savedBatch.status,
+        savedBatch.active === false ? 0 : 1,
+        savedBatch.created_at,
+        payload.phase_id,
+      ]
+    };
+    yield {
+      sql: `UPDATE batches SET available_cards = ?, status = ?, active = ?, synced = 1 WHERE id = ?`,
+      params: [savedBatch.available_cards, savedBatch.status, savedBatch.active === false ? 0 : 1, savedBatch.id]
+    };
+    yield {
+      sql: `INSERT OR REPLACE INTO agent_wallets
+        (id, agent_id, batch_id, category_id, total_cards, sold_cards, issued_by, notes, created_at, synced, project_id, phase_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      params: [
+        savedWallet.id,
+        savedWallet.agent_id,
+        savedWallet.batch_id,
+        savedWallet.category_id,
+        savedWallet.total_cards,
+        savedWallet.sold_cards,
+        savedWallet.issued_by,
+        savedWallet.notes || '',
+        savedWallet.created_at,
+        savedWallet.project_id,
+        savedWallet.phase_id || null,
+      ]
+    };
+  });
+
+  notifyDataChanged('agent_wallets', { ...savedWallet, synced: 1 });
+  notifyDataChanged('batches', { ...savedBatch, synced: 1 });
+  return { ...savedWallet, synced: 1 };
 };
 
 export const updateLocalWalletCards = async (walletId, qtySold) => {

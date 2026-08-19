@@ -23,6 +23,7 @@ export default function NewInvoiceScreen({ navigation }) {
   const { showLoading, hideLoading } = useLoading();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const isAgentUser = ['agent', 'مندوب'].includes(String(user?.role || '').trim().toLowerCase());
 
   // 🛡️ فحص الصلاحية: المدير لا يضيف فواتير
   if (user?.role === 'admin') {
@@ -70,6 +71,7 @@ export default function NewInvoiceScreen({ navigation }) {
   const [saveError, setSaveError] = useState('');
   const savePromptOpenRef = useRef(false);
   const saveInFlightRef = useRef(false);
+  const saveAttemptRef = useRef(null);
   // Live credit state: loaded from SQLite whenever POS or items change
   const [posCredit, setPosCredit] = useState(null); // { creditLimit, usedCredit, remainingCredit }
 
@@ -152,7 +154,8 @@ export default function NewInvoiceScreen({ navigation }) {
     if (!wallet || wallet.batch_id !== newItem.batch_id) { Alert.alert('تنبيه', 'يرجى اختيار الدفعة'); return; }
     if (wallet && qty > wallet.remaining_cards) { Alert.alert('خطأ', `المتاح المتبقي في المحفظة هو: ${wallet.remaining_cards} ورقة فقط`); return; }
     const cat = categories.find(c => c.id === newItem.category_id);
-    setItems(prev => [...prev, { ...newItem, cat_name: cat?.name || '—', batch_number: wallet?.batches?.serial_number || '', quantity: qty, unit_price: parseFloat(newItem.unit_price), total: qty * parseFloat(newItem.unit_price), id: Date.now().toString() }]);
+    const unitPrice = isAgentUser ? Number(cat?.price || 0) : parseFloat(newItem.unit_price);
+    setItems(prev => [...prev, { ...newItem, cat_name: cat?.name || '—', batch_number: wallet?.batches?.serial_number || '', quantity: qty, unit_price: unitPrice, total: qty * unitPrice, id: Date.now().toString() }]);
     setNewItem({ category_id: '', wallet_id: '', batch_id: '', unit_price: '', quantity: '' });
   };
 
@@ -190,10 +193,15 @@ export default function NewInvoiceScreen({ navigation }) {
     console.log('[InvoiceSave] save start');
 
     try {
-      const operationGroupId = uuidv4();
+      const saveAttempt = saveAttemptRef.current || {
+        invoiceId: uuidv4(),
+        operationGroupId: uuidv4(),
+      };
+      saveAttemptRef.current = saveAttempt;
       const sub = items.reduce((s, i) => s + i.total, 0);
       const { id } = await createLocalInvoiceWithItems({
         ...form,
+        id: saveAttempt.invoiceId,
         total_amount: sub,
         discount_requested_value: discountAmount,
         discount_requested_reason: String(form.discount_reason || '').trim(),
@@ -201,7 +209,8 @@ export default function NewInvoiceScreen({ navigation }) {
         project_id: projectId,
         phase_id: selectedPhase?.id || null,
         agent_id: form.agent_id || user?.id || null,
-        operation_group_id: operationGroupId,
+        actor_user_id: user?.id || null,
+        operation_group_id: saveAttempt.operationGroupId,
       }, items.map(item => ({
         category_id: item.category_id,
         batch_id: item.batch_id || '',
@@ -213,6 +222,7 @@ export default function NewInvoiceScreen({ navigation }) {
       console.log('[InvoiceCreate] screen saved invoice_id=' + id + ' item_count=' + items.length);
 
       await openSavedInvoiceDetails(id);
+      saveAttemptRef.current = null;
     } catch (e) {
       const message = e?.message || 'حدث خطأ أثناء الحفظ';
       setSaveError(message);
@@ -359,7 +369,15 @@ export default function NewInvoiceScreen({ navigation }) {
               <View style={{ height: spacing.sm }} />
               <Row style={{ gap: spacing.md }}>
                 <View style={{ flex: 1 }}><Input label="العدد المطلوب *" value={newItem.quantity} onChangeText={v => setNewItem({ ...newItem, quantity: v })} keyboardType="numeric" /></View>
-                <View style={{ flex: 1 }}><Input label="سعر بيع الورقة *" value={newItem.unit_price} onChangeText={v => setNewItem({ ...newItem, unit_price: v })} keyboardType="numeric" /></View>
+                <View style={{ flex: 1 }}>
+                  <Input
+                    label="سعر الورقة *"
+                    value={newItem.unit_price}
+                    onChangeText={isAgentUser ? undefined : (v => setNewItem({ ...newItem, unit_price: v }))}
+                    keyboardType="numeric"
+                    editable={!isAgentUser}
+                  />
+                </View>
               </Row>
               <View style={{ height: spacing.sm }} />
               <Btn label="إضافة البند" icon="plus" variant="primary" style={{ marginTop: spacing.xs }} size="lg" onPress={addItem} />

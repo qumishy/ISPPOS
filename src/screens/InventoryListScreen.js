@@ -13,7 +13,7 @@ import { useAuth } from '../services/AuthContext';
 import { makeStyles } from '../styles/main.styles';
 
 export default function InventoryScreen({ navigation }) {
-  const { can, selectedPhase, projectId } = useAuth();
+  const { user, can, canAccess, selectedPhase, projectId } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
 
@@ -27,6 +27,8 @@ export default function InventoryScreen({ navigation }) {
   const [globalTotals, setGlobalTotals] = useState({ total: 0, sold: 0, remaining: 0 });
   const [activeTab, setActiveTab] = useState('pending');
   const [selectedCatId, setSelectedCatId] = useState(null);
+  const canAddBatch = ['admin', 'manager'].includes(user?.role)
+    && canAccess('Inventory', 'can_add');
 
   const runWithConcurrency = useCallback(async (items, limit, worker) => {
     const safeLimit = Math.max(1, Number(limit || 1));
@@ -200,8 +202,8 @@ export default function InventoryScreen({ navigation }) {
         ]}
         search={search} onSearch={setSearch}
         searchPlaceholder="بحث..."
-        action="+ إضافة دفعة"
-        onAction={() => navigation.push('AddBatch')}
+        action={selectedPhase?.status !== 'closed' && canAddBatch ? '+ إضافة دفعة' : undefined}
+        onAction={selectedPhase?.status !== 'closed' && canAddBatch ? () => navigation.push('AddBatch') : undefined}
       />
 
       {/* Category Filter Chips */}
