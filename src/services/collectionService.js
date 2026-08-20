@@ -1,8 +1,14 @@
-import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
+import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4, ensureSingleRowAffected } from './dbCore';
 import { updateInvoiceStatus, decorateInvoiceStatusFields, resolveInvoiceNetAmount } from './invoiceService';
 import { createInvoiceCardReturns, cancelInvoiceCardReturns } from './invoiceCardReturnService';
 import { getCached } from './cacheService';
 import { getScopedMonthlySequentialCode } from './documentNumberService';
+import {
+  AGENT_SELF_COLLECTION_APPROVAL_PERMISSION,
+  getCollectionApprovalDecision,
+  hasUnresolvedCollectionDiscount,
+} from './permissionPolicy';
+import { hasEffectivePermission } from './permissionsService';
 
 const ACTIVE_INVOICE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active IS NULL OR i.active = 'true'))`;
 
@@ -139,7 +145,14 @@ export const getLocalCollections = async (filters = {}) => {
       i.total_amount as inv_total_amount,
       i.discount_applied_value as inv_discount_applied_value,
       i.discount_status as inv_discount_status,
+      i.discount_requested_value as inv_discount_requested_value,
       i.status as inv_status,
+      (SELECT COUNT(1)
+       FROM invoice_card_returns cr
+       WHERE cr.collection_id = c.id
+         AND cr.project_id = c.project_id
+         AND (cr.active = 1 OR cr.active IS NULL OR cr.active = 'true')
+         AND LOWER(TRIM(COALESCE(cr.status, 'pending'))) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')) as inv_collection_pending_card_returns_count,
       (SELECT COALESCE(SUM(pc.amount), 0)
        FROM collections pc
        WHERE pc.invoice_id = i.id
@@ -461,46 +474,129 @@ export const createCollectionForCashInvoiceIfNeeded = async (invoice = {}, conte
 };
 
 export const approveLocalCollection = async (id, notes = '', approvedBy = null) => {
-  const guardR = await execSQL(
-    `SELECT c.status as collection_status, i.discount_status, i.discount_requested_value
+  if (!approvedBy) throw new Error('تعذر التحقق من المستخدم المخول بالاعتماد.');
+  const actorR = await execSQL(
+    `SELECT id, role, active, project_id
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
+    [approvedBy]
+  );
+  const actor = actorR.rows._array?.[0] || null;
+  const collectionR = await execSQL(
+    `SELECT c.id, c.project_id, c.phase_id, c.invoice_id, c.pos_id, c.agent_id, c.status, c.active,
+            i.discount_status, i.discount_requested_value
      FROM collections c
-     LEFT JOIN invoices i ON i.id = c.invoice_id
+     LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id
      WHERE c.id = ? LIMIT 1`,
     [id]
   );
-  const inv = guardR.rows._array?.[0];
-  const discountPending =
-    Number(inv?.discount_requested_value || 0) > 0 &&
-    !['approved', 'auto_approved', 'rejected', 'none', ''].includes(
-      String(inv?.discount_status || '').trim()
-    );
-  if (discountPending) {
-    throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد الخصم من المدير.');
-  }
-  if (String(inv?.collection_status || '') === 'pending_card_return_approval') {
-    throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد مرتجع الكروت.');
-  }
+  const collection = collectionR.rows._array?.[0] || null;
+  const actorRole = String(actor?.role || '').trim().toLowerCase();
+  const hasAgentSelfApprovalPermission = actorRole === 'agent'
+    ? await hasEffectivePermission(actor, AGENT_SELF_COLLECTION_APPROVAL_PERMISSION)
+    : false;
+
   const pendingReturnsR = await execSQL(
     `SELECT id FROM invoice_card_returns
      WHERE collection_id = ?
+       AND project_id = ?
        AND (active = 1 OR active = 'true' OR active IS NULL)
-       AND LOWER(COALESCE(status, 'pending')) = 'pending'
+       AND LOWER(TRIM(COALESCE(status, 'pending'))) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
      LIMIT 1`,
-    [id]
+    [id, collection?.project_id || '']
   );
-  if ((pendingReturnsR.rows._array || []).length > 0) {
-    throw new Error('لا يمكن اعتماد التحصيل قبل اعتماد مرتجع الكروت.');
-  }
+  const decision = getCollectionApprovalDecision({
+    actor,
+    collection,
+    hasAgentSelfApprovalPermission,
+    hasPendingCardReturn: String(collection?.status || '').trim().toLowerCase() === 'pending_card_return_approval'
+      || (pendingReturnsR.rows._array || []).length > 0,
+    hasBlockingDiscount: hasUnresolvedCollectionDiscount(collection || {}),
+  });
+  if (!decision.allowed) throw new Error(decision.message);
 
   const approved_at = new Date().toISOString();
-  await execSQL(`UPDATE collections SET status='approved', approved_at=?, approval_notes=?, rejection_reason=NULL, approved_by=?, synced=0 WHERE id=?`, [approved_at, notes, approvedBy, id]);
-  await addToSyncQueue('collections', 'UPDATE', { status: 'approved', approved_at, approval_notes: notes, rejection_reason: null, approved_by: approvedBy }, id);
-  const colR = await execSQL(`SELECT invoice_id, pos_id FROM collections WHERE id=?`, [id]);
-  const row = colR.rows._array[0];
-  if (row?.invoice_id) await updateInvoiceStatus(row.invoice_id);
+  const updateResult = await execSQL(
+    `UPDATE collections
+     SET status = 'approved', approved_at = ?, approval_notes = ?, rejection_reason = NULL, approved_by = ?, synced = 0
+     WHERE id = ?
+       AND project_id = ?
+       AND (active = 1 OR active = 'true' OR active IS NULL)
+       AND LOWER(TRIM(COALESCE(status, 'pending'))) IN ('pending', 'pending_collection_approval')
+       AND (? <> 'agent' OR agent_id = ?)
+       AND (
+         ? <> 'agent'
+         OR COALESCE((
+           SELECT assigned_permission.can_view
+           FROM app_permissions assigned_permission
+           WHERE assigned_permission.project_id = collections.project_id
+             AND UPPER(TRIM(assigned_permission.entity_type)) = 'USER'
+             AND assigned_permission.entity_id = ?
+             AND assigned_permission.screen_name = ?
+           ORDER BY COALESCE(assigned_permission.updated_at, assigned_permission.created_at, '') DESC,
+                    assigned_permission.id DESC
+           LIMIT 1
+         ), 0) IN (1, '1', 'true')
+       )
+       AND EXISTS (
+         SELECT 1
+         FROM users current_actor
+         WHERE current_actor.id = ?
+           AND current_actor.project_id = collections.project_id
+           AND (current_actor.active = 1 OR current_actor.active = 'true')
+           AND LOWER(TRIM(current_actor.role)) = ?
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM invoice_card_returns pending_return
+         WHERE pending_return.collection_id = collections.id
+           AND pending_return.project_id = collections.project_id
+           AND (pending_return.active = 1 OR pending_return.active = 'true' OR pending_return.active IS NULL)
+           AND LOWER(TRIM(COALESCE(pending_return.status, 'pending'))) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM invoices blocked_invoice
+         WHERE blocked_invoice.id = collections.invoice_id
+           AND blocked_invoice.project_id = collections.project_id
+           AND COALESCE(blocked_invoice.discount_requested_value, 0) > 0
+           AND LOWER(TRIM(COALESCE(blocked_invoice.discount_status, ''))) NOT IN ('approved', 'auto_approved', 'rejected', 'none', '')
+       )`,
+    [
+      approved_at,
+      notes,
+      approvedBy,
+      id,
+      collection.project_id,
+      String(actor.role || '').trim().toLowerCase(),
+      actor.id,
+      actorRole,
+      actor.id,
+      AGENT_SELF_COLLECTION_APPROVAL_PERMISSION,
+      actor.id,
+      String(actor.role || '').trim().toLowerCase(),
+    ]
+  );
+  try {
+    ensureSingleRowAffected(updateResult, `approve collection ${id}`);
+  } catch (error) {
+    throw new Error('تعذر اعتماد التحصيل لأن حالته تغيرت. حدّث القائمة وحاول مرة أخرى.');
+  }
+  await addToSyncQueue('collections', 'UPDATE', {
+    status: 'approved',
+    approved_at,
+    approval_notes: notes,
+    rejection_reason: null,
+    approved_by: approvedBy,
+    project_id: collection.project_id,
+    phase_id: collection.phase_id || null,
+  }, id);
+  if (collection.invoice_id) await updateInvoiceStatus(collection.invoice_id);
   const { recalculatePOSCreditBalance } = require('./posService');
-  if (row?.pos_id) await recalculatePOSCreditBalance(row.pos_id);
+  if (collection.pos_id) await recalculatePOSCreditBalance(collection.pos_id);
   notifyDataChanged('collections');
+  notifyDataChanged('invoices');
 
   try {
     const actor = await getUserBasic(approvedBy);

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, Alert, RefreshControl, Modal, TextInput } from 'react-native';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
-import { getLocalCollections, approveLocalCollection } from '../services/database';
+import { getLocalCollections, approveLocalCollection, getCollectionApprovalDecision } from '../services/database';
 import { formatCurrency, formatDateShort, invoicePaymentStatusMeta, invoiceApprovalStatusMeta } from '../utils/helpers';
 import { Badge, Btn, Loading, Empty, Row, ScreenHeader } from '../components/UI';
 import { makeStyles } from '../styles/cashier.styles';
@@ -127,6 +127,15 @@ export default function CashierScreen() {
               {(() => {
                 const paymentMeta = invoicePaymentStatusMeta(col.inv_payment_status);
                 const approvalMeta = invoiceApprovalStatusMeta(col.inv_approval_status);
+                const canApprove = getCollectionApprovalDecision({
+                  actor: {
+                    id: user?.id,
+                    role: user?.role,
+                    active: user?.active,
+                    project_id: projectId,
+                  },
+                  collection: col,
+                }).allowed;
                 return (
                   <>
               <Row style={s.cardTop}>
@@ -156,7 +165,7 @@ export default function CashierScreen() {
               )}
               {!!col.notes && <Text style={s.notes}>📝 ملاحظات: {col.notes}</Text>}
               {col.status === 'rejected' && col.rejection_reason && <Text style={s.rejection}>سبب الرفض: {col.rejection_reason}</Text>}
-              {col.status === 'pending' && (
+              {canApprove && (
                 <Row style={{ gap: spacing.sm, marginTop: spacing.sm }}>
                   <Btn label="✅ اعتماد" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleApprove(col.id, col.amount)} />
                 </Row>

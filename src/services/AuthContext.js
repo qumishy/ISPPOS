@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import { isOnline, setCurrentUser, hasBlockingPendingSyncForUser, runRequiredInitialSync, setInitialSyncReady, hasLocalRequiredData, syncNow } from './SyncService';
 import { registerForPushNotificationsAsync } from './NotificationService';
-import { getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting } from './database';
+import { AGENT_SELF_COLLECTION_APPROVAL_PERMISSION, getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, resolvePermissionForRole, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting } from './database';
 import { useLoading } from './LoadingContext';
 
 const AuthContext = createContext(null);
@@ -61,9 +61,11 @@ export function AuthProvider({ children }) {
   const reloadPermissions = async (userData) => {
     if (!userData) return;
     try {
-      const perms = await getEffectiveUserPermissions(userData.id, userData.role);
+      const perms = await getEffectiveUserPermissions(userData.id, userData.role, userData.project_id);
       setPermissions(perms);
-    } catch (e) {}
+    } catch (e) {
+      setPermissions({});
+    }
   };
 
   const selectPhase = async (phase) => {
@@ -104,10 +106,14 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (user) {
       reloadPermissions(user);
+      const unsubscribe = subscribeDataChanges((event) => {
+        if (event.type === 'app_permissions' || event.type === 'all') reloadPermissions(user);
+      });
+      return unsubscribe;
     } else {
       setPermissions({});
     }
-  }, [user]);
+  }, [user?.id, user?.role, user?.project_id]);
 
   useEffect(() => {
     loadActivePhase(projectId);
@@ -361,22 +367,33 @@ export function AuthProvider({ children }) {
 
   // Dynamic permission checker
   const canAccess = (screen, action = 'can_view') => {
-    if (!user || user.role === 'admin') return true; 
+    if (!user) return false;
+    if (user.role === 'admin') return true;
 
     // If fully loaded from SQLite, use it:
     if (permissions && Object.keys(permissions).length > 0) {
-      if (!permissions[screen]) return false;
-      return permissions[screen][action];
+      const resolved = resolvePermissionForRole(user.role, screen, permissions[screen]);
+      return !!resolved?.[action];
     }
 
     // Instant fallback immediately on login to prevent UI flashing (missing tabs!)
     const defaultPerms = DEFAULT_ROLE_PERMISSIONS[user.role] || {};
     if (!defaultPerms[screen]) return false;
-    return defaultPerms[screen][action];
+    return !!resolvePermissionForRole(user.role, screen, defaultPerms[screen])?.[action];
+  };
+
+  const hasEffectivePermission = (actor, permissionCode, action = 'can_view') => {
+    if (!user?.id || !actor?.id || String(user.id) !== String(actor.id)) return false;
+    if (actor.project_id && user.project_id && String(actor.project_id) !== String(user.project_id)) return false;
+    if (
+      permissionCode === AGENT_SELF_COLLECTION_APPROVAL_PERMISSION
+      && String(actor.role || '').trim().toLowerCase() !== 'agent'
+    ) return false;
+    return canAccess(permissionCode, action);
   };
 
   return (
-    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
+    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
       {children}
     </AuthContext.Provider>
   );

@@ -424,6 +424,20 @@ const updateRelatedAfterReturnDecision = async ({ invoiceId, collectionId }) => 
 
 export const approveCardReturnRequest = async ({ collectionId = null, invoiceId, approvedBy, notes = '', projectId = null, operationGroupId = null }) => {
   if (!invoiceId) throw new Error('لا يمكن اعتماد مرتجع بدون فاتورة.');
+  if (!approvedBy || !projectId) throw new Error('تعذر التحقق من المستخدم المخول بالاعتماد.');
+  const authorizationR = await execSQL(
+    `SELECT role, active
+     FROM users
+     WHERE id = ? AND project_id = ?
+     LIMIT 1`,
+    [approvedBy, projectId]
+  );
+  const approver = authorizationR.rows._array?.[0];
+  const approverActive = approver && approver.active !== 0 && approver.active !== false && approver.active !== 'false';
+  if (!approverActive || String(approver.role || '').trim().toLowerCase() !== 'admin') {
+    throw new Error('اعتماد مرتجع الكروت متاح للمدير العام فقط.');
+  }
+
   const now = new Date().toISOString();
   const whereParams = [invoiceId];
   let where = `invoice_id = ?`;
@@ -438,6 +452,9 @@ export const approveCardReturnRequest = async ({ collectionId = null, invoiceId,
     whereParams
   );
   const rowsBefore = rowsBeforeR.rows._array || [];
+  if (rowsBefore.some((row) => String(row.project_id || '') !== String(projectId))) {
+    throw new Error('لا يمكن اعتماد مرتجع تابع لمشروع آخر.');
+  }
   if (rowsBefore.length === 0) {
     await updateRelatedAfterReturnDecision({ invoiceId, collectionId });
     return true;

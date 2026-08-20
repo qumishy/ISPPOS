@@ -6,6 +6,8 @@ import { useTheme } from '../theme';
 import {
   getLocalCollections, deleteLocalCollection, subscribeDataChanges,
   approveLocalCollection, cancelLocalCollectionApproval,
+  AGENT_SELF_COLLECTION_APPROVAL_PERMISSION,
+  getCollectionApprovalDecision,
   shouldHideCollectionFromAgentList,
 } from '../services/database';
 import { setCurrentUser } from '../services/SyncService';
@@ -16,10 +18,12 @@ import { makeStyles } from '../styles/main.styles';
 import AdvancedFiltersModal from '../components/AdvancedFiltersModal';
 
 export default function CollectionsScreen({ navigation }) {
-  const { user, selectedPhase, projectId } = useAuth();
+  const { user, selectedPhase, projectId, hasEffectivePermission } = useAuth();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
   const isAgentUser = ['agent', 'مندوب'].includes(String(user?.role || '').trim().toLowerCase());
+  const hasAgentSelfApprovalPermission = isAgentUser
+    && hasEffectivePermission(user, AGENT_SELF_COLLECTION_APPROVAL_PERMISSION);
 
   const [cols, setCols] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -83,10 +87,16 @@ export default function CollectionsScreen({ navigation }) {
 
   const confirmApprove = async () => {
     if (!approvingId) return;
-    await approveLocalCollection(approvingId, approveNotes, user?.id || null);
-    setShowApproveModal(false);
-    setApprovingId(null);
-    load();
+    try {
+      await approveLocalCollection(approvingId, approveNotes, user?.id || null);
+      setShowApproveModal(false);
+      setApprovingId(null);
+      setApproveNotes('');
+      await load(true);
+      Alert.alert('تم الاعتماد', 'تم اعتماد التحصيل بنجاح.');
+    } catch (error) {
+      Alert.alert('تعذر الاعتماد', error?.message || 'تعذر اعتماد التحصيل.');
+    }
   };
 
   const handleCancelApproval = (id) => 
@@ -111,6 +121,18 @@ export default function CollectionsScreen({ navigation }) {
   const isPendingCollectionRow = (collection) => (
     isActiveCollectionRow(collection) && !isApprovedCollectionRow(collection)
   );
+  const canCurrentUserApproveCollection = useCallback((collection) => (
+    getCollectionApprovalDecision({
+      actor: {
+        id: user?.id,
+        role: user?.role,
+        active: user?.active,
+        project_id: projectId,
+      },
+      collection,
+      hasAgentSelfApprovalPermission,
+    }).allowed
+  ), [user?.id, user?.role, user?.active, projectId, hasAgentSelfApprovalPermission]);
 
   const visibleCollections = useMemo(
     () => (Array.isArray(cols) ? cols : [])
@@ -356,6 +378,7 @@ export default function CollectionsScreen({ navigation }) {
             const invoiceNet = Number(col.inv_net || 0);
             const combinedCoverageComplete = Number(col.inv_collection_remaining_after_request || 0) <= 0.1;
             const pendingCoverageComplete = combinedCoverageComplete && String(col.inv_approval_status || '').toLowerCase() !== 'approved';
+            const canApproveCollectionRow = canCurrentUserApproveCollection(col);
             return (
             <TouchableOpacity 
               style={s.colCard} 
@@ -364,7 +387,7 @@ export default function CollectionsScreen({ navigation }) {
               onLongPress={() => {
                 const opts = [{ text: 'إلغاء', style: 'cancel' }];
                 if (selectedPhase?.status !== 'closed') {
-                  if (isPendingCollectionRow(col) && (user?.role === 'admin' || user?.role === 'accountant')) opts.push({ text: 'اعتماد السند', onPress: () => handleApprovePress(col.id) });
+                  if (canApproveCollectionRow) opts.push({ text: 'اعتماد السند', onPress: () => handleApprovePress(col.id) });
                   if (isPendingCollectionRow(col) && user?.role === 'admin') opts.push({ text: 'إلغاء التحصيل', style: 'destructive', onPress: () => handleDelete(col.id) });
                   if (isApprovedCollectionRow(col) && user?.role === 'admin') opts.push({ text: 'إلغاء اعتماد', style: 'destructive', onPress: () => handleCancelApproval(col.id) });
                 }
@@ -536,7 +559,7 @@ export default function CollectionsScreen({ navigation }) {
                   <View style={[s.colActions, { paddingVertical: 8, gap: 10 }]}>
                     <Row style={{ gap: 10 }}>
                       <Btn label="طباعة" icon="printer" variant="glass" size="sm" style={{ flex: 1 }} onPress={() => handlePrint(col)} />
-                      {selectedPhase?.status !== 'closed' && isPendingCollectionRow(col) && (user?.role === 'admin' || user?.role === 'accountant') && (
+                      {selectedPhase?.status !== 'closed' && canApproveCollectionRow && (
                         <Btn label="اعتماد" icon="check-circle" variant="success" size="sm" style={{ flex: 1 }} onPress={() => handleApprovePress(col.id)} />
                       )}
                       {selectedPhase?.status !== 'closed' && isApprovedCollectionRow(col) && user?.role === 'admin' && (

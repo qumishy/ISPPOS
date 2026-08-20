@@ -21,7 +21,7 @@ export default function DiscountApprovalsScreen({ navigation }) {
   const { colors, spacing, radius, fontSize } = useTheme();
   const normalizedRole = String(user?.role || '').trim().toLowerCase();
   const canApproveDiscounts = ['admin', 'manager', 'مدير'].includes(normalizedRole);
-  const canApproveCardReturns = user?.role === 'admin' || user?.role === 'manager' || canAccess?.('approve_card_returns');
+  const canApproveCardReturns = user?.role === 'admin' && canAccess?.('approve_card_returns');
 
   if (!canApproveDiscounts && !canApproveCardReturns) {
     return (

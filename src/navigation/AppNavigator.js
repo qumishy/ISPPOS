@@ -216,24 +216,26 @@ function BottomTabs() {
   const { user, canAccess } = useAuth();
   const { colors, spacing, isLight } = useTheme();
   const isAdmin = user?.role === 'admin';
+  const canUseApprovals = isAdmin || user?.role === 'manager' || canAccess('approve_card_returns');
 
   const tabs = [
-    { name: 'DashboardTab',   component: DashboardStack,   icon: 'grid', label: 'الرئيسية', visible: canAccess('Dashboard')  },
-    { name: 'InvoicesTab',    component: InvoicesStack,    icon: 'file-text', label: 'الفواتير', visible: canAccess('Invoices') },
-    { name: 'CollectionsTab', component: CollectionsStack, icon: 'dollar-sign', label: 'التحصيل', visible: canAccess('Collections') },
-    { name: 'CashierTab',     component: CashierStack,     icon: 'check-circle', label: 'الاعتماد', visible: !isAdmin && canAccess('CashierApproval') },
-    { name: 'WalletsTab',     component: WalletsStack,     icon: 'briefcase', label: 'المحافظ', visible: canAccess('Wallets') },
+    { name: 'DashboardTab',   component: DashboardStack,   icon: 'grid', label: 'الرئيسية', available: canAccess('Dashboard'), visible: true },
+    { name: 'InvoicesTab',    component: InvoicesStack,    icon: 'file-text', label: 'الفواتير', available: canAccess('Invoices'), visible: true },
+    { name: 'CollectionsTab', component: CollectionsStack, icon: 'dollar-sign', label: 'التحصيل', available: canAccess('Collections'), visible: true },
+    { name: 'CashierTab',     component: CashierStack,     icon: 'check-circle', label: 'الاعتماد', available: !isAdmin && canAccess('CashierApproval'), visible: true },
+    { name: 'WalletsTab',     component: WalletsStack,     icon: 'briefcase', label: 'المحافظ', available: canAccess('Wallets'), visible: true },
     
     // Hidden from bottom tab bar, accessed via drawer only:
-    { name: 'InventoryTab',   component: InventoryStack,   icon: 'package', visible: false },
-    { name: 'POSTab',         component: POSStack,         icon: 'monitor', visible: false },
-    { name: 'ReportsTab',     component: ReportsStack,     icon: 'bar-chart-2', visible: false },
-    { name: 'DiscountApprovalsTab', component: DiscountApprovalsStack, icon: 'percent', visible: false },
-    { name: 'AdminTab',       component: AdminStack,       icon: 'settings', visible: false },
-    { name: 'PermissionsTab', component: PermissionsStack, icon: 'shield', visible: false },
-    { name: 'SuppliesTab',    component: SuppliesStack,    icon: 'credit-card', visible: false },
-    { name: 'SettingsTab',    component: SettingsStack,    icon: 'sliders', visible: false },
+    { name: 'InventoryTab',   component: InventoryStack,   icon: 'package', available: canAccess('Inventory'), visible: false },
+    { name: 'POSTab',         component: POSStack,         icon: 'monitor', available: canAccess('POS'), visible: false },
+    { name: 'ReportsTab',     component: ReportsStack,     icon: 'bar-chart-2', available: canAccess('Reports'), visible: false },
+    { name: 'DiscountApprovalsTab', component: DiscountApprovalsStack, icon: 'percent', available: canUseApprovals, visible: false },
+    { name: 'AdminTab',       component: AdminStack,       icon: 'settings', available: isAdmin, visible: false },
+    { name: 'PermissionsTab', component: PermissionsStack, icon: 'shield', available: isAdmin, visible: false },
+    { name: 'SuppliesTab',    component: SuppliesStack,    icon: 'credit-card', available: canAccess('Supplies'), visible: false },
+    { name: 'SettingsTab',    component: SettingsStack,    icon: 'sliders', available: canAccess('Settings'), visible: false },
   ];
+  const availableTabs = tabs.filter(item => item.available);
   return (
     <Tab.Navigator
       screenOptions={{
@@ -248,7 +250,7 @@ function BottomTabs() {
         tabBarShowLabel: false,
       }}
     >
-      {tabs.map(item => (
+      {availableTabs.map(item => (
         <Tab.Screen key={item.name} name={item.name} component={item.component}
           options={item.visible ? { tabBarIcon: ({ focused }) => <AnimatedTabIcon iconName={item.icon} label={item.label} focused={focused} colors={colors} /> } : { tabBarButton: () => null }}
         />
@@ -355,14 +357,15 @@ function CustomDrawer({ navigation, state }) {
     { route: 'SuppliesTab', label: 'التوريدات المالية', icon: 'credit-card', permission: 'Supplies' },
     { route: 'ReportsTab', label: 'الاستعلامات', icon: 'bar-chart-2', permission: 'Reports' },
     { route: 'DiscountApprovalsTab', label: 'اعتماد الخصومات', icon: 'percent', permission: 'Admin', altPermission: 'approve_card_returns', allowRoles: ['manager'] },
-    { route: 'AdminTab', label: 'الإدارة', icon: 'settings', permission: 'Admin' },
-    { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: 'shield', permission: 'Admin' }, 
+    { route: 'AdminTab', label: 'الإدارة', icon: 'settings', permission: 'Admin', adminOnly: true },
+    { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: 'shield', permission: 'Admin', adminOnly: true },
     { route: 'About', label: 'حول و اتصل بنا', icon: 'info', permission: 'About' },
     { route: 'SettingsTab', label: 'الإعدادات العامة', icon: 'sliders', permission: 'Settings' },
   ];
 
   const items = allItems.filter(i => {
     if (isAdmin && i.hideForAdmin) return false;
+    if (i.adminOnly) return isAdmin;
     return canAccess(i.permission) || (i.altPermission && canAccess(i.altPermission)) || (i.allowRoles || []).includes(user?.role);
   });
 
@@ -440,7 +443,7 @@ function MainDrawer() {
 }
 
 export default function AppNavigator() {
-  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync, logout } = useAuth();
+  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync, logout, canAccess } = useAuth();
   const { message: loadingMessage, progress: loadingPercent } = useLoading();
   const { isDark, colors, fontSize } = useTheme();
   const navigationRef = useRef();
@@ -550,7 +553,7 @@ export default function AppNavigator() {
         ) : (
           <>
             <Stack.Screen name="MainApp" component={MainDrawer} />
-            <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'حول اتصل بنا', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
+            {canAccess('About') && <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'حول اتصل بنا', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />}
             <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ headerShown: true, title: 'الإشعارات الذكية', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
             <Stack.Screen name="Operations" component={OperationsScreen} options={{ headerShown: true, title: 'العمليات', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
           </>
