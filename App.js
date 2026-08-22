@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, Text, TextInput, TouchableOpacity, Linking } from 'react-native';
+import { View, ActivityIndicator, Text, TextInput, TouchableOpacity, Linking, Alert } from 'react-native';
 import {
   IBMPlexSansArabic_400Regular,
   IBMPlexSansArabic_500Medium,
@@ -120,11 +120,23 @@ export default function App() {
   };
 
   const onMandatoryUpdatePress = async () => {
-    try {
-      await openUpdateUrl(mandatoryUpdate.apkUrl);
-    } catch (e) {
-      console.log('Failed to open update URL:', e?.message);
-    }
+    Alert.alert(
+      'تنزيل التحديث الإجباري',
+      'سيتم فتح رابط تحميل التحديث. بعد اكتمال التنزيل، افتح ملف APK واضغط تثبيت.\n\nإذا لم تظهر شاشة التثبيت، فعّل السماح بتثبيت التطبيقات من هذا المصدر من إعدادات أندرويد، ثم افتح ملف APK مرة أخرى.',
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        {
+          text: 'فتح رابط التنزيل',
+          onPress: async () => {
+            try {
+              await openUpdateUrl(mandatoryUpdate.apkUrl);
+            } catch (e) {
+              console.log('Failed to open update URL:', e?.message);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // ── Loading screen ──
@@ -151,10 +163,13 @@ export default function App() {
             يرجى تحديث التطبيق للمتابعة.
           </Text>
           {mandatoryUpdate.releaseNotes ? (
-            <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 20 }}>
+            <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 16 }}>
               {mandatoryUpdate.releaseNotes}
             </Text>
           ) : null}
+          <Text style={{ color: '#94A3B8', fontSize: 11, textAlign: 'center', lineHeight: 16, marginBottom: 16 }}>
+            بعد التنزيل، افتح ملف APK من التنزيلات واضغط تثبيت.
+          </Text>
           <TouchableOpacity
             onPress={onMandatoryUpdatePress}
             style={{

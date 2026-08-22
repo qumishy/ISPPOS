@@ -214,6 +214,7 @@ function AnimatedTabIcon({ iconName, label, focused, colors }) {
 
 function BottomTabs() {
   const { user, canAccess } = useAuth();
+  if (!user) return null;
   const { colors, spacing, isLight } = useTheme();
   const isAdmin = user?.role === 'admin';
   const canUseApprovals = isAdmin || user?.role === 'manager' || canAccess('approve_card_returns');

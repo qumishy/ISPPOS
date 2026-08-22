@@ -154,11 +154,23 @@ export default function SettingsScreen({ navigation }) {
   }, []);
 
   const handleOpenUpdate = useCallback(async () => {
-    try {
-      await openUpdateUrl(updateManifest?.apkUrl);
-    } catch (e) {
-      Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
-    }
+    Alert.alert(
+      'تنزيل التحديث',
+      'سيتم فتح رابط تحميل التحديث. بعد اكتمال التنزيل، افتح ملف APK واضغط تثبيت.\n\nإذا لم تظهر شاشة التثبيت، فعّل السماح بتثبيت التطبيقات من هذا المصدر من إعدادات أندرويد، ثم افتح ملف APK مرة أخرى.',
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        {
+          text: 'فتح رابط التنزيل',
+          onPress: async () => {
+            try {
+              await openUpdateUrl(updateManifest?.apkUrl);
+            } catch (e) {
+              Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
+            }
+          },
+        },
+      ]
+    );
   }, [updateManifest]);
 
   const formatLastCheck = (ts) => {

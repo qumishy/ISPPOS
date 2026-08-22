@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
 import {
@@ -7,12 +7,7 @@ import {
   getCurrentAppVersion,
   getCurrentBuildNumber,
   isExpoGo,
-  getLastUpdateCheck,
   openUpdateUrl,
-  downloadReleaseApk,
-  installDownloadedApk,
-  cancelApkDownload,
-  formatBytesAr,
   manualCheckForOtaUpdate,
 } from '../services/updateService';
 
@@ -20,9 +15,6 @@ export default function UpdatesScreen() {
   const { colors, spacing, radius, fontSize } = useTheme();
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [apkUri, setApkUri] = useState('');
 
   const [manifest, setManifest] = useState(null);
   const [updateResult, setUpdateResult] = useState(null);
@@ -52,47 +44,30 @@ export default function UpdatesScreen() {
 
   useEffect(() => {
     loadLatest();
-    return () => {
-      cancelApkDownload().catch(() => {});
-    };
   }, [loadLatest]);
 
-  const onDownload = async () => {
+  const onDownloadAndInstall = async () => {
     if (!manifest?.apkUrlValid) {
       Alert.alert('خطأ', 'رابط APK غير متوفر.');
       return;
     }
-    setDownloading(true);
-    setDownloadProgress(0);
-    try {
-      const uri = await downloadReleaseApk({
-        url: manifest.apkUrl,
-        filename: `update_${manifest.latestVersion || Date.now()}.apk`,
-        onProgress: (pct) => setDownloadProgress(Number(pct || 0)),
-      });
-      setApkUri(uri);
-      Alert.alert('نجاح', 'تم تنزيل التحديث بنجاح.');
-    } catch (e) {
-      Alert.alert('خطأ', e?.message || 'فشل تنزيل التحديث.');
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const onInstall = async () => {
-    try {
-      await installDownloadedApk(apkUri);
-    } catch (e) {
-      Alert.alert('خطأ', e?.message || 'تعذر بدء التثبيت.');
-    }
-  };
-
-  const onOpenUrl = async () => {
-    try {
-      await openUpdateUrl(manifest?.apkUrl);
-    } catch (e) {
-      Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
-    }
+    Alert.alert(
+      'تنزيل التحديث',
+      'سيتم فتح رابط تحميل التحديث. بعد اكتمال التنزيل، افتح ملف APK واضغط تثبيت.\n\nإذا لم تظهر شاشة التثبيت، فعّل السماح بتثبيت التطبيقات من هذا المصدر من إعدادات أندرويد، ثم افتح ملف APK مرة أخرى.',
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        {
+          text: 'فتح رابط التنزيل',
+          onPress: async () => {
+            try {
+              await openUpdateUrl(manifest.apkUrl);
+            } catch (e) {
+              Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const formatLastCheck = (ts) => {
@@ -182,10 +157,9 @@ export default function UpdatesScreen() {
       ) : null}
 
       {/* ── Download button ── */}
-      {updateResult?.hasUpdate && manifest?.apkUrlValid && !apkUri && (
+      {updateResult?.hasUpdate && manifest?.apkUrlValid && (
         <TouchableOpacity
-          disabled={downloading}
-          onPress={onDownload}
+          onPress={onDownloadAndInstall}
           style={{
             backgroundColor: colors.primary,
             borderRadius: radius.md,
@@ -194,55 +168,20 @@ export default function UpdatesScreen() {
             flexDirection: 'row',
             justifyContent: 'center',
             gap: 8,
-            opacity: downloading ? 0.7 : 1,
           }}
         >
-          {downloading ? <ActivityIndicator color="#fff" /> : <Feather name="download-cloud" size={18} color="#fff" />}
-          <Text style={{ color: '#fff', fontWeight: '800', fontSize: fontSize.md }}>
-            {downloading ? `جاري التنزيل ${downloadProgress}%` : 'تنزيل التحديث'}
+          <Feather name="download-cloud" size={18} color="#fff" />
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: fontSize.md }}>تنزيل التحديث</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ── Instruction note ── */}
+      {updateResult?.hasUpdate && manifest?.apkUrlValid && (
+        <View style={{ marginTop: spacing.sm, backgroundColor: colors.bg2, borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.border }}>
+          <Text style={{ color: colors.t3, fontSize: fontSize.xs, lineHeight: 18 }}>
+            بعد التنزيل، افتح ملف APK من التنزيلات واضغط تثبيت. قد يطلب أندرويد السماح بتثبيت التطبيقات من هذا المصدر.
           </Text>
-        </TouchableOpacity>
-      )}
-
-      {/* ── Open URL button (when download not started) ── */}
-      {updateResult?.hasUpdate && manifest?.apkUrlValid && !apkUri && (
-        <TouchableOpacity
-          onPress={onOpenUrl}
-          style={{
-            marginTop: spacing.sm,
-            borderRadius: radius.md,
-            paddingVertical: 12,
-            borderWidth: 1,
-            borderColor: colors.border,
-            alignItems: 'center',
-            flexDirection: 'row',
-            justifyContent: 'center',
-            gap: 8,
-            backgroundColor: colors.bg2,
-          }}
-        >
-          <Feather name="external-link" size={16} color={colors.t2} />
-          <Text style={{ color: colors.t2, fontWeight: '700' }}>فتح صفحة التنزيل</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* ── Install button ── */}
-      {!!apkUri && (
-        <TouchableOpacity
-          onPress={onInstall}
-          style={{
-            backgroundColor: colors.success,
-            borderRadius: radius.md,
-            paddingVertical: 14,
-            alignItems: 'center',
-            flexDirection: 'row',
-            justifyContent: 'center',
-            gap: 8,
-          }}
-        >
-          <Feather name="package" size={18} color="#fff" />
-          <Text style={{ color: '#fff', fontWeight: '800', fontSize: fontSize.md }}>تثبيت التحديث</Text>
-        </TouchableOpacity>
+        </View>
       )}
 
       {/* ── Refresh button ── */}
