@@ -14,6 +14,7 @@ import { makeStyles } from '../styles/settings.styles';
 import {
   getCurrentAppVersion,
   getCurrentBuildNumber,
+  isExpoGo,
   checkForApkUpdate,
   openUpdateUrl,
   getLastUpdateCheck,
@@ -301,32 +302,40 @@ export default function SettingsScreen({ navigation }) {
       <View style={s.section}>
         <Row style={s.row}>
           <Text style={s.rowLabel}>اسم التطبيق</Text>
-          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>نظام كروت الإنترنت</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm, marginStart: 8 }}>نظام كروت الإنترنت</Text>
         </Row>
         <Row style={s.row}>
           <Text style={s.rowLabel}>الإصدار</Text>
-          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{currentVersion}</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm, marginStart: 8 }}>{currentVersion}</Text>
         </Row>
         <Row style={s.row}>
           <Text style={s.rowLabel}>الرقم التسلسلي</Text>
-          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{currentBuild || '—'}</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm, marginStart: 8 }}>{currentBuild || '—'}</Text>
         </Row>
         <Row style={s.row}>
           <Text style={s.rowLabel}>العملة</Text>
-          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>ريال يمني (ر.ي)</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm, marginStart: 8 }}>ريال يمني (ر.ي)</Text>
         </Row>
+
+        {isExpoGo() && (
+          <View style={{ backgroundColor: colors.blue + '10', borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.blue + '20', marginVertical: spacing.sm }}>
+            <Text style={{ color: colors.blue, fontSize: fontSize.xs, fontWeight: '600' }}>
+              تشغيل عبر Expo Go — أرقام الإصدار من إعدادات التطبيق
+            </Text>
+          </View>
+        )}
 
         <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: spacing.sm }} />
 
         {/* ── Update Status ── */}
         <Row style={[s.row, { borderBottomWidth: 0 }]}>
           <Text style={s.rowLabel}>حالة التحديث</Text>
-          <Text style={{ color: updateStatusColor, fontSize: fontSize.sm, fontWeight: '700' }}>{updateStatusText}</Text>
+          <Text style={{ color: updateStatusColor, fontSize: fontSize.sm, fontWeight: '700', marginStart: 8 }}>{updateStatusText}</Text>
         </Row>
 
         <Row style={[s.row, { borderBottomWidth: 0 }]}>
           <Text style={s.rowLabel}>آخر فحص</Text>
-          <Text style={{ color: colors.t3, fontSize: fontSize.xs }}>{formatLastCheck(lastCheckTs)}</Text>
+          <Text style={{ color: colors.t3, fontSize: fontSize.xs, marginStart: 8 }}>{formatLastCheck(lastCheckTs)}</Text>
         </Row>
 
         {/* ── Latest version info (when checked) ── */}
@@ -334,7 +343,7 @@ export default function SettingsScreen({ navigation }) {
           <>
             <Row style={s.row}>
               <Text style={s.rowLabel}>أحدث إصدار</Text>
-              <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{updateManifest.latestVersion} (رقم {updateManifest.latestBuildNumber})</Text>
+              <Text style={{ color: colors.t2, fontSize: fontSize.sm, marginStart: 8 }}>{updateManifest.latestVersion} (رقم {updateManifest.latestBuildNumber})</Text>
             </Row>
           </>
         )}

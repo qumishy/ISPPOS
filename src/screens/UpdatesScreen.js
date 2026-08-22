@@ -6,6 +6,7 @@ import {
   checkForApkUpdate,
   getCurrentAppVersion,
   getCurrentBuildNumber,
+  isExpoGo,
   getLastUpdateCheck,
   openUpdateUrl,
   downloadReleaseApk,
@@ -136,6 +137,14 @@ export default function UpdatesScreen() {
           )}
           <Text style={{ color: colors.t2 }}>آخر فحص: <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatLastCheck(lastCheckTs)}</Text></Text>
         </View>
+
+        {isExpoGo() && (
+          <View style={{ marginTop: 12, backgroundColor: colors.blue + '10', borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.blue + '20' }}>
+            <Text style={{ color: colors.blue, fontSize: fontSize.xs, fontWeight: '600' }}>
+              تشغيل عبر Expo Go — أرقام الإصدار من إعدادات التطبيق
+            </Text>
+          </View>
+        )}
 
         {/* ── Status ── */}
         {checking ? (

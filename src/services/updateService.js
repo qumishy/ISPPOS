@@ -126,32 +126,53 @@ export const fetchUpdate = fetchOtaUpdate;
 export const checkAndApplyUpdateSilently = checkAndApplyOtaUpdateSilently;
 export const manualCheckForUpdate = manualCheckForOtaUpdate;
 
+// ─── Runtime environment detection ─────────────────────────────────
+
+export const isExpoGo = () => {
+  try {
+    if (Constants?.appOwnership === 'expo') return true;
+    const execEnv = Constants?.executionEnvironment;
+    if (execEnv === 'storeClient' || execEnv === 'expoGo') return true;
+    return false;
+  } catch (_) {
+    return false;
+  }
+};
+
+export const isStandalone = () => !isExpoGo();
+
 // ─── App version / build number ────────────────────────────────────
 
+const getConfigVersion = () => String(
+  Constants?.expoConfig?.version ||
+  Constants?.manifest2?.extra?.expoClient?.version ||
+  Constants?.manifest?.version ||
+  '0.0.0'
+);
+
+const getConfigBuildNumber = () => Number(
+  Constants?.expoConfig?.android?.versionCode ||
+  Constants?.manifest2?.extra?.expoClient?.android?.versionCode ||
+  Constants?.manifest?.android?.versionCode ||
+  0
+);
+
 export const getCurrentAppVersion = () => {
+  if (isExpoGo()) return getConfigVersion();
   try {
     const native = Application?.nativeApplicationVersion;
     if (native) return String(native);
   } catch (_) {}
-  return String(
-    Constants?.expoConfig?.version ||
-    Constants?.manifest2?.extra?.expoClient?.version ||
-    Constants?.manifest?.version ||
-    '0.0.0'
-  );
+  return getConfigVersion();
 };
 
 export const getCurrentBuildNumber = () => {
+  if (isExpoGo()) return getConfigBuildNumber();
   try {
     const native = Application?.nativeBuildVersion;
     if (native) return Number(native) || 0;
   } catch (_) {}
-  return Number(
-    Constants?.expoConfig?.android?.versionCode ||
-    Constants?.manifest2?.extra?.expoClient?.android?.versionCode ||
-    Constants?.manifest?.android?.versionCode ||
-    0
-  );
+  return getConfigBuildNumber();
 };
 
 // ─── Supabase APK update manifest ─────────────────────────────────
@@ -259,12 +280,16 @@ export const checkForApkUpdate = async () => {
     manifest = await fetchLatestSupabaseUpdate();
     await saveLastUpdateCheck();
   } catch (error) {
-    console.log('APK update check error:', error);
+    const runtime = isExpoGo() ? 'Expo Go' : 'standalone';
+    console.log(`[UpdateService] APK check failed (${runtime}):`, error?.message || error);
     throw new Error('تعذر فحص التحديثات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.');
   }
 
   const currentBuild = getCurrentBuildNumber();
   const currentVersion = getCurrentAppVersion();
+  const runtime = isExpoGo() ? 'Expo Go' : 'standalone';
+
+  console.log(`[UpdateService] Runtime: ${runtime}, local: v${currentVersion} build ${currentBuild}, remote: v${manifest.latestVersion} build ${manifest.latestBuildNumber}`);
 
   const hasUpdate = manifest.latestBuildNumber > currentBuild ||
     (manifest.latestBuildNumber === currentBuild && isVersionNewer(manifest.latestVersion, currentVersion));
@@ -283,6 +308,7 @@ export const checkForApkUpdate = async () => {
     currentVersion,
     currentBuild,
     lastCheck: Date.now(),
+    isExpoGo: isExpoGo(),
   };
 
   if (result.isMandatory && manifest.apkUrlValid) {
