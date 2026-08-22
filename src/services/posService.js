@@ -37,117 +37,105 @@ export const toggleLocalPOSBlock = async (id, blocked) => {
 
 export const recalculatePOSCreditBalance = async (posId) => {
   if (!posId) return;
-  // Total debt across active invoices: approved discount net, otherwise gross, minus active card returns.
-  const invRes = await execSQL(
-    `SELECT SUM(MAX(0, (CASE WHEN COALESCE(discount_status, 'none') IN ('approved', 'auto_approved')
-       THEN COALESCE(NULLIF(net_amount, 0), COALESCE(total_amount, 0) - COALESCE(discount_applied_value, 0))
-       ELSE COALESCE(total_amount, 0)
-     END) - COALESCE((
-       SELECT SUM(cr.return_amount)
-       FROM invoice_card_returns cr
-       WHERE cr.invoice_id = invoices.id
-         AND (cr.active = 1 OR cr.active = 'true' OR cr.active IS NULL)
-         AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
-     ), 0))) as total_debt
-     FROM invoices
-     WHERE pos_id = ?
-       AND COALESCE(is_deleted, 0) = 0
-       AND deleted_at IS NULL
-       AND (active = 1 OR active = 'true' OR active IS NULL)`,
-    [posId]
-  );
-  const totalDebt = Number(invRes.rows._array[0]?.total_debt || 0);
-
-  // Count all collections that are NOT rejected/cancelled/deleted (active=0).
-  // Pending, approved, synced, and offline collections all reduce credit immediately.
-  const colRes = await execSQL(
-    `SELECT SUM(amount) as total_paid
-     FROM collections
-     JOIN invoices i ON i.id = collections.invoice_id
-     WHERE collections.pos_id = ?
-       AND (COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active = 'true' OR i.active IS NULL))
-       AND (collections.active = 1 OR collections.active = 'true' OR collections.active IS NULL)
-       AND LOWER(COALESCE(collections.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')`,
-    [posId]
-  );
-  const totalPaid = Number(colRes.rows._array[0]?.total_paid || 0);
-  const finalCreditUsed = Math.max(0, totalDebt - totalPaid);
-  await execSQL(`UPDATE pos_customers SET credit_used = ? WHERE id = ?`, [finalCreditUsed, posId]);
+  const { outstandingBalance } = await getPOSAvailableCredit(posId);
+  await execSQL(`UPDATE pos_customers SET credit_used = ? WHERE id = ?`, [outstandingBalance, posId]);
   notifyDataChanged('pos_customers');
 };
 
+export const CREDIT_LIMIT_EXCEEDED_MESSAGE = 'لا يمكن حفظ الفاتورة. قيمة الفاتورة تتجاوز الحد الائتماني المتاح لنقطة البيع.';
+
 /**
- * getPOSRemainingCredit
+ * getPOSAvailableCredit
  * ──────────────────────────────────────────────────────────────────────────
- * Returns the live remaining credit for a POS customer, computed from SQLite.
+ * Returns the live credit figures for a POS customer, computed from SQLite.
  *
- *   remaining_credit = credit_limit
- *                    − SUM(remaining_unpaid_amount of all active, non-paid invoices)
+ *   outstanding_balance = SUM over non-cash invoices of
+ *                         MAX(0, invoice_net
+ *                                - active collections
+ *                                - active card returns)
+ *   available_credit = credit_limit - outstanding_balance
  *
- * "Non-paid" = status IN ('pending', 'partial') OR status IS NULL.
- * Fully paid (status = 'paid') and inactive (active != 1) invoices are excluded.
+ * Payment coverage intentionally includes pending collections and card returns,
+ * matching getInvoicePaidSum/getLocalInvoices. Cash invoices are filtered out
+ * before their linked coverage is evaluated. Rejected, cancelled, deleted,
+ * inactive, and soft-deleted financial rows are excluded.
  *
  * @param {string} posId
- * @returns {{ creditLimit: number, usedCredit: number, remainingCredit: number }}
+ * @param {string|null} projectId
+ * @param {string|null} phaseId
+ * @returns {{ creditLimit: number, outstandingBalance: number, availableCredit: number }}
  */
-export const getPOSRemainingCredit = async (posId) => {
-  if (!posId) return { creditLimit: 0, usedCredit: 0, remainingCredit: 0 };
+export const getPOSAvailableCredit = async (posId, projectId = null, phaseId = null) => {
+  if (!posId) return { creditLimit: 0, outstandingBalance: 0, availableCredit: 0 };
 
-  // Credit limit from POS record
+  // Reuse the exact amount and payment-coverage clauses trusted by invoiceService.
+  // The import stays dynamic because invoiceService calls this service at save time.
+  const {
+    ACTIVE_INVOICE_CLAUSE,
+    ACTIVE_FINANCIAL_INVOICE_STATUS_CLAUSE,
+    NON_CASH_INVOICE_TYPE_CLAUSE,
+    ACTIVE_COLLECTION_CLAUSE,
+    ACTIVE_CARD_RETURN_CLAUSE,
+    INVOICE_AMOUNT_EXPR,
+  } = require('./invoiceService');
+
+  const posParams = [posId];
+  let posWhere = 'id = ?';
+  if (projectId) {
+    posWhere += ' AND project_id = ?';
+    posParams.push(projectId);
+  }
   const posRes = await execSQL(
-    `SELECT credit_limit FROM pos_customers WHERE id = ? LIMIT 1`,
-    [posId]
+    `SELECT credit_limit FROM pos_customers WHERE ${posWhere} LIMIT 1`,
+    posParams
   );
   const creditLimit = Number(posRes.rows._array[0]?.credit_limit || 0);
 
-  // ── Business rule ────────────────────────────────────────────────────────
-  // credit_used = SUM over active invoices of:
-  //   MAX(0, invoice_net - all_collected_amounts)
-  //
-  // "all_collected_amounts" = any collection that is NOT rejected/cancelled
-  // and belongs to an active row (active = 1).  This includes:
-  //   • pending   – created by agent, awaiting cashier approval
-  //   • approved  – approved by cashier/admin
-  //   • synced    – already pushed to Supabase
-  //   • offline   – created offline, not yet in sync_queue
-  //
-  // Rejected, cancelled, and soft-deleted (active = 0) collections are
-  // excluded so they do NOT reduce outstanding balance.
-  // ─────────────────────────────────────────────────────────────────────────
+  const invoiceAmountExpr = INVOICE_AMOUNT_EXPR('i');
+  const collectionsExpr = `(SELECT COALESCE(SUM(c.amount), 0)
+    FROM collections c
+    WHERE c.invoice_id = i.id
+      AND ${ACTIVE_COLLECTION_CLAUSE('c')})`;
+  const cardReturnsExpr = `(SELECT COALESCE(SUM(r.return_amount), 0)
+    FROM invoice_card_returns r
+    WHERE r.invoice_id = i.id
+      AND ${ACTIVE_CARD_RETURN_CLAUSE('r')})`;
+
+  const debtParams = [posId];
+  let invoiceScope = `i.pos_id = ?
+    AND ${ACTIVE_INVOICE_CLAUSE('i')}
+    AND ${ACTIVE_FINANCIAL_INVOICE_STATUS_CLAUSE('i')}
+    AND ${NON_CASH_INVOICE_TYPE_CLAUSE('i')}`;
+  if (projectId) {
+    invoiceScope += ' AND i.project_id = ?';
+    debtParams.push(projectId);
+  }
+  if (phaseId) {
+    invoiceScope += ' AND i.phase_id = ?';
+    debtParams.push(phaseId);
+  }
+
   const debtRes = await execSQL(
     `SELECT
        COALESCE(SUM(
-         MAX(0,
-           (CASE WHEN COALESCE(i.discount_status, 'none') IN ('approved', 'auto_approved')
-             THEN COALESCE(NULLIF(i.net_amount, 0), COALESCE(i.total_amount, 0) - COALESCE(i.discount_applied_value, 0))
-             ELSE COALESCE(i.total_amount, 0)
-           END)
-           - COALESCE((
-               SELECT SUM(cr.return_amount)
-               FROM invoice_card_returns cr
-               WHERE cr.invoice_id = i.id
-                 AND (cr.active = 1 OR cr.active = 'true' OR cr.active IS NULL)
-                 AND LOWER(COALESCE(cr.status, 'pending')) = 'approved'
-             ), 0)
-           - COALESCE((
-               SELECT SUM(c.amount)
-               FROM collections c
-               JOIN invoices inv ON inv.id = c.invoice_id
-               WHERE c.invoice_id = i.id
-                 AND (COALESCE(inv.is_deleted, 0) = 0 AND inv.deleted_at IS NULL AND (inv.active = 1 OR inv.active = 'true' OR inv.active IS NULL))
-                 AND (c.active = 1 OR c.active = 'true' OR c.active IS NULL)
-                 AND LOWER(COALESCE(c.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'pending_card_return_approval')
-             ), 0)
-         )
+         MAX(0, ${invoiceAmountExpr} - (${collectionsExpr}) - (${cardReturnsExpr}))
        ), 0) AS total_unpaid
      FROM invoices i
-     WHERE i.pos_id = ?
-       AND (COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active = 'true' OR i.active IS NULL))
-       AND i.status IN ('pending', 'partial', 'overdue')`,
-    [posId]
+     WHERE ${invoiceScope}`,
+    debtParams
   );
-  const usedCredit = Number(debtRes.rows._array[0]?.total_unpaid || 0);
-  const remainingCredit = creditLimit - usedCredit;
+  const outstandingBalance = Number(debtRes.rows._array[0]?.total_unpaid || 0);
+  const availableCredit = creditLimit - outstandingBalance;
 
-  return { creditLimit, usedCredit, remainingCredit };
+  return { creditLimit, outstandingBalance, availableCredit };
+};
+
+// Backward-compatible shape for existing callers.
+export const getPOSRemainingCredit = async (posId, projectId = null, phaseId = null) => {
+  const result = await getPOSAvailableCredit(posId, projectId, phaseId);
+  return {
+    ...result,
+    usedCredit: result.outstandingBalance,
+    remainingCredit: result.availableCredit,
+  };
 };

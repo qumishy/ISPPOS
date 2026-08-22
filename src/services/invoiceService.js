@@ -13,7 +13,7 @@ const getUserBasic = async (userId) => {
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 const isAgentRole = (role) => ['agent', 'مندوب'].includes(normalizeRole(role));
 const isDiscountApproverRole = (role) => ['admin', 'manager', 'مدير'].includes(normalizeRole(role));
-const isCashInvoiceType = (type) => ['cash', 'نقد', 'نقدي'].includes(normalizeRole(type));
+export const isCashInvoiceType = (type) => ['cash', 'نقد', 'نقدي'].includes(normalizeRole(type));
 
 const ensureCashInvoiceCollection = async (invoice, operationGroupId) => {
   if (!isCashInvoiceType(invoice?.type)) return null;
@@ -185,19 +185,25 @@ export const decorateInvoiceStatusFields = (invoiceLike = {}) => {
   };
 };
 
-export const ACTIVE_INVOICE_WHERE_CLAUSE = `(COALESCE(i.is_deleted, 0) = 0 AND i.deleted_at IS NULL AND (i.active = 1 OR i.active = 'true' OR i.active IS NULL))`;
+export const ACTIVE_INVOICE_CLAUSE = (alias = 'i') =>
+  `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL))`;
+export const ACTIVE_INVOICE_WHERE_CLAUSE = ACTIVE_INVOICE_CLAUSE('i');
 const ACTIVE_INVOICE_WHERE_CLAUSE_NO_ALIAS = `(COALESCE(is_deleted, 0) = 0 AND deleted_at IS NULL AND (active = 1 OR active = 'true' OR active IS NULL))`;
-const ACTIVE_COLLECTION_CLAUSE = (alias = 'c') =>
-  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`;
+export const ACTIVE_FINANCIAL_INVOICE_STATUS_CLAUSE = (alias = 'i') =>
+  `LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'inactive')`;
+export const NON_CASH_INVOICE_TYPE_CLAUSE = (alias = 'i') =>
+  `LOWER(TRIM(COALESCE(${alias}.type, 'credit'))) NOT IN ('cash', 'نقد', 'نقدي')`;
+export const ACTIVE_COLLECTION_CLAUSE = (alias = 'c') =>
+  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'inactive')`;
 const APPROVED_COLLECTION_CLAUSE = (alias = 'c') =>
   `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) = 'approved'`;
-const INVOICE_AMOUNT_EXPR = (alias = 'i') =>
+export const INVOICE_AMOUNT_EXPR = (alias = 'i') =>
   `MAX(0, CASE WHEN COALESCE(${alias}.discount_status, 'none') IN ('approved', 'auto_approved')
     THEN COALESCE(NULLIF(${alias}.net_amount, 0), COALESCE(${alias}.total_amount, 0) - COALESCE(${alias}.discount_applied_value, 0))
     ELSE COALESCE(${alias}.total_amount, 0)
   END)`;
-const ACTIVE_CARD_RETURN_CLAUSE = (alias = 'r') =>
-  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted')`;
+export const ACTIVE_CARD_RETURN_CLAUSE = (alias = 'r') =>
+  `(${alias}.active = 1 OR ${alias}.active = 'true' OR ${alias}.active IS NULL) AND LOWER(COALESCE(${alias}.status, 'pending')) NOT IN ('rejected', 'cancelled', 'canceled', 'deleted', 'inactive')`;
 const APPROVED_CARD_RETURN_CLAUSE = (alias = 'r') =>
   `${ACTIVE_CARD_RETURN_CLAUSE(alias)} AND LOWER(COALESCE(${alias}.status, 'pending')) = 'approved'`;
 const INVOICE_CARD_RETURNS_EXPR = (alias = 'i') =>
@@ -629,15 +635,6 @@ export const createLocalInvoice = async (data) => {
     const pos = posRes.rows._array[0];
     if (pos) {
       posName = pos.name || posName;
-      if (Number(pos.credit_limit || 0) > 0) {
-        // Live SQLite check: remaining credit = credit_limit - sum of unpaid balances on existing invoices
-        const { getPOSRemainingCredit } = require('./posService');
-        const { remainingCredit } = await getPOSRemainingCredit(data.pos_id);
-        const draftNet = Number(data.total_amount || 0);
-        if (draftNet > remainingCredit + 0.01) {
-          throw new Error('تجاوزت الفاتورة الحد الائتماني المتبقي لنقطة البيع');
-        }
-      }
     }
   }
   const totalAmt = Number(data.total_amount || 0);
@@ -655,7 +652,7 @@ export const createLocalInvoice = async (data) => {
     invoice_number,
     pos_id: data.pos_id,
     agent_id: data.agent_id,
-    type: data.type || 'credit',
+    type: isCashInvoiceType(data.type) ? 'cash' : (data.type || 'credit'),
     total_amount: totalAmt,
     net_amount: netAmt,
     paid_amount: Number(data.paid_amount || 0),
@@ -704,6 +701,14 @@ export const createLocalInvoice = async (data) => {
   }
   if (!payload.agent_id) {
     throw new Error('تعذر تحديد المستخدم الحالي. لا يمكن حفظ الفاتورة.');
+  }
+
+  if (data.pos_id && !isCashInvoiceType(payload.type)) {
+    const { getPOSAvailableCredit, CREDIT_LIMIT_EXCEEDED_MESSAGE } = require('./posService');
+    const credit = await getPOSAvailableCredit(data.pos_id, payload.project_id, payload.phase_id);
+    if (netAmt > credit.availableCredit + 0.01) {
+      throw new Error(CREDIT_LIMIT_EXCEEDED_MESSAGE);
+    }
   }
 
   for (let i = 0; i < 20; i++) {
@@ -884,16 +889,17 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     ? Math.max(0, Number(data.discount_applied_value ?? requestedDiscount))
     : 0;
   const netAmt = Math.max(0, totalAmt - appliedDiscount);
+  const invoiceType = isCashInvoiceType(data.type) ? 'cash' : (data.type || 'credit');
   const discountResolved = ['approved', 'auto_approved', 'rejected', 'none', ''].includes(discountStatus);
-  if (isCashInvoiceType(data.type) && requestedDiscount > 0 && !discountResolved) {
+  if (isCashInvoiceType(invoiceType) && requestedDiscount > 0 && !discountResolved) {
     throw new Error('لا يمكن حفظ فاتورة نقدية بخصم معلق. يجب اعتماد الخصم أولاً أو إنشاء الفاتورة بدون خصم.');
   }
 
-  if (Number(pos.credit_limit || 0) > 0) {
-    const { getPOSRemainingCredit } = require('./posService');
-    const { remainingCredit } = await getPOSRemainingCredit(data.pos_id);
-    if (netAmt > remainingCredit + 0.01) {
-      throw new Error('تجاوزت الفاتورة الحد الائتماني المتبقي لنقطة البيع');
+  if (!isCashInvoiceType(invoiceType)) {
+    const { getPOSAvailableCredit, CREDIT_LIMIT_EXCEEDED_MESSAGE } = require('./posService');
+    const { availableCredit } = await getPOSAvailableCredit(data.pos_id, projectId, phaseId);
+    if (netAmt > availableCredit + 0.01) {
+      throw new Error(CREDIT_LIMIT_EXCEEDED_MESSAGE);
     }
   }
 
@@ -906,8 +912,6 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
     phaseId,
     agentId: data.agent_id,
   });
-  const invoiceType = isCashInvoiceType(data.type) ? 'cash' : (data.type || 'credit');
-
   const payload = {
     id,
     invoice_number: invoiceNumber,

@@ -1,5 +1,5 @@
 import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4, ensureSingleRowAffected } from './dbCore';
-import { updateInvoiceStatus, decorateInvoiceStatusFields, resolveInvoiceNetAmount } from './invoiceService';
+import { updateInvoiceStatus, decorateInvoiceStatusFields, resolveInvoiceNetAmount, isCashInvoiceType } from './invoiceService';
 import { createInvoiceCardReturns, cancelInvoiceCardReturns } from './invoiceCardReturnService';
 import { getCached } from './cacheService';
 import { getScopedMonthlySequentialCode } from './documentNumberService';
@@ -421,8 +421,7 @@ export const createLocalCollection = async (data) => {
 };
 
 export const createCollectionForCashInvoiceIfNeeded = async (invoice = {}, context = {}) => {
-  const invoiceType = String(invoice.type || '').trim().toLowerCase();
-  if (!['cash', 'نقد', 'نقدي'].includes(invoiceType)) return null;
+  if (!isCashInvoiceType(invoice.type)) return null;
   if (!invoice.id || !invoice.project_id) {
     throw new Error('تعذر تحديد الفاتورة النقدية أو المشروع لإنشاء التحصيل التلقائي.');
   }

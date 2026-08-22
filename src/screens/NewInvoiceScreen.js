@@ -9,7 +9,8 @@ import { useAuth } from '../services/AuthContext';
 import {
   getLocalUsers, getLocalCategories, getLocalWallets, getLocalInvoices,
   getBatchesByAgent, createLocalInvoiceWithItems, getLocalInvoiceItems,
-  getLocalPosDB, subscribeDataChanges, getPOSRemainingCredit
+  getLocalPosDB, subscribeDataChanges, getPOSAvailableCredit,
+  resolveInvoiceNetAmount, isCashInvoiceType, CREDIT_LIMIT_EXCEEDED_MESSAGE
 } from '../services/database';
 import { todayISO, formatCurrency } from '../utils/helpers';
 import { Input, Btn, Loading, Row, Picker } from '../components/UI';
@@ -72,8 +73,8 @@ export default function NewInvoiceScreen({ navigation }) {
   const savePromptOpenRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const saveAttemptRef = useRef(null);
-  // Live credit state: loaded from SQLite whenever POS or items change
-  const [posCredit, setPosCredit] = useState(null); // { creditLimit, usedCredit, remainingCredit }
+  // Live credit state: always derived from invoices and their payment coverage.
+  const [posCredit, setPosCredit] = useState(null); // { creditLimit, outstandingBalance, availableCredit }
 
   useEffect(() => {
     async function load() {
@@ -109,13 +110,24 @@ export default function NewInvoiceScreen({ navigation }) {
     return () => unsub && unsub();
   }, [user, projectId, selectedPhase?.id]);
 
-  // ── Live credit re-query whenever POS or draft items change ──
+  // ── Live credit re-query whenever the selected POS or its financial rows change ──
   useEffect(() => {
     if (!form.pos_id) { setPosCredit(null); return; }
-    getPOSRemainingCredit(form.pos_id)
-      .then(setPosCredit)
-      .catch(() => setPosCredit(null));
-  }, [form.pos_id, items]);
+    let cancelled = false;
+    const loadCredit = () => getPOSAvailableCredit(form.pos_id, projectId, selectedPhase?.id || null)
+      .then((credit) => { if (!cancelled) setPosCredit(credit); })
+      .catch(() => { if (!cancelled) setPosCredit(null); });
+    loadCredit();
+    const unsub = subscribeDataChanges((event) => {
+      if (['invoices', 'collections', 'invoice_card_returns', 'pos_customers', 'all'].includes(event.type)) {
+        loadCredit();
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
+  }, [form.pos_id, projectId, selectedPhase?.id]);
 
   const dynamicWallets = wallets.map(w => {
     const usedInForm = items.filter(i => i.wallet_id === w.id).reduce((sum, i) => sum + i.quantity, 0);
@@ -243,6 +255,23 @@ export default function NewInvoiceScreen({ navigation }) {
     if (disc > 0 && !discountReason) { Alert.alert('تنبيه', 'سبب الخصم مطلوب عند إدخال خصم.'); return; }
     if (isSaving || savePromptOpenRef.current || saveInFlightRef.current) return;
 
+    if (!isCashInvoiceType(form.type)) {
+      try {
+        const latestCredit = await getPOSAvailableCredit(form.pos_id, projectId, selectedPhase?.id || null);
+        setPosCredit(latestCredit);
+        if (netAmount > latestCredit.availableCredit + 0.01) {
+          setSaveError(CREDIT_LIMIT_EXCEEDED_MESSAGE);
+          Alert.alert('تنبيه', CREDIT_LIMIT_EXCEEDED_MESSAGE);
+          return;
+        }
+      } catch (e) {
+        const message = 'تعذر التحقق من الحد الائتماني المتاح. يرجى المحاولة مرة أخرى.';
+        setSaveError(message);
+        Alert.alert('خطأ', message);
+        return;
+      }
+    }
+
     setSaveError('');
     savePromptOpenRef.current = true;
     Alert.alert('تأكيد الحفظ', 'هل أنت متأكد من مراجعة البنود وحفظ الفاتورة؟', [
@@ -263,15 +292,20 @@ export default function NewInvoiceScreen({ navigation }) {
   const selectedPOS = pos.find(p => p.id === form.pos_id);
   const subtotal = items.reduce((s, i) => s + i.total, 0);
   const discountAmount = Math.max(0, parseFloat(form.discount) || 0);
-  const netAmount = Math.max(0, subtotal - discountAmount);
-  // Live credit figures from SQLite (excludes fully paid invoices, includes draft)
+  // A requested discount remains pending, so it must not reduce credit until approved.
+  const netAmount = resolveInvoiceNetAmount({
+    total_amount: subtotal,
+    net_amount: Math.max(0, subtotal - discountAmount),
+    discount_applied_value: 0,
+    discount_status: discountAmount > 0 ? 'pending_discount_approval' : 'none',
+  });
   const creditLimit   = posCredit?.creditLimit   ?? Number(selectedPOS?.credit_limit  || 0);
-  const usedCredit    = posCredit?.usedCredit    ?? Number(selectedPOS?.credit_used   || 0);
-  const remainingAfterDraft = posCredit != null
-    ? posCredit.remainingCredit - netAmount   // live: existing debt already excluded
-    : creditLimit - (usedCredit + netAmount); // fallback when posCredit not yet loaded
-  const isCreditExceeded = creditLimit > 0 && remainingAfterDraft < -0.01;
-  const isSaveDisabled = isWalletEmpty || isCreditExceeded || isSaving;
+  const outstandingBalance = posCredit?.outstandingBalance ?? Number(selectedPOS?.credit_used || 0);
+  const availableCredit = posCredit?.availableCredit ?? (creditLimit - outstandingBalance);
+  const remainingAfterDraft = availableCredit - netAmount;
+  const isCashInvoice = isCashInvoiceType(form.type);
+  const isCreditExceeded = !isCashInvoice && remainingAfterDraft < -0.01;
+  const isSaveDisabled = isWalletEmpty || isSaving;
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -279,6 +313,34 @@ export default function NewInvoiceScreen({ navigation }) {
         <View style={s.invoiceHeader}><Text style={s.invoiceTitle}>🧾 مبيعات</Text><Text style={s.invoiceDate}>{form.invoice_date}</Text></View>
         <View style={s.section}>
           <Picker label="نقطة البيع *" options={pos.map(p => ({ value: p.id, label: p.name }))} value={form.pos_id} onChange={v => setForm({ ...form, pos_id: v })} placeholder="اختر العميل..." searchable={true} />
+          {!!selectedPOS && (
+            <View style={{ backgroundColor: colors.primary + '10', padding: 12, borderRadius: radius.sm, marginTop: -8, marginBottom: 15, borderWidth: 1, borderColor: colors.primary + '35' }}>
+              <Row style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text style={{ color: colors.t2, fontSize: 12 }}>الحد الائتماني</Text>
+                <Text style={{ color: colors.t1, fontSize: 12, fontWeight: '700' }}>{formatCurrency(creditLimit)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text style={{ color: colors.t2, fontSize: 12 }}>المديونية الحالية</Text>
+                <Text style={{ color: colors.warning, fontSize: 12, fontWeight: '700' }}>{formatCurrency(outstandingBalance)}</Text>
+              </Row>
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Text style={{ color: colors.t2, fontSize: 12 }}>الحد المتاح</Text>
+                <Text style={{ color: colors.green, fontSize: 12, fontWeight: '800' }}>{formatCurrency(availableCredit)}</Text>
+              </Row>
+              {isCashInvoice && (
+                <Text style={{ color: colors.green, fontSize: 12, fontWeight: '700', textAlign: 'center', marginTop: 8 }}>
+                  الفاتورة النقدية لا تخضع للحد الائتماني.
+                </Text>
+              )}
+              {isCreditExceeded && (
+                <View style={{ marginTop: 8, backgroundColor: colors.red + '15', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: colors.red + '50' }}>
+                  <Text style={{ color: colors.red, fontSize: 12, fontWeight: '800', textAlign: 'center' }}>
+                    {CREDIT_LIMIT_EXCEEDED_MESSAGE}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
           {selectedPOS && (
             pendingInvoices.filter(i => i.pos_id === form.pos_id).length > 0 ? (
               <View style={{ backgroundColor: colors.orange + '15', padding: 12, borderRadius: radius.sm, marginTop: -8, marginBottom: 15, borderWidth: 1, borderStyle: 'dashed', borderColor: colors.orange }}>
@@ -304,7 +366,7 @@ export default function NewInvoiceScreen({ navigation }) {
           )}
 
           {user?.role !== 'agent' && <Picker label="المندوب *" options={agents.map(a => ({ value: a.id, label: a.name }))} value={form.agent_id} onChange={v => { setForm({ ...form, agent_id: v }); setNewItem({ category_id: '', wallet_id: '', batch_id: '', unit_price: '', quantity: '' }); setAutoSelectedWalletId(''); }} searchable={true} />}
-          <Row style={{ gap: spacing.md }}><View style={{ flex: 1 }}><Picker label="النوع" options={[{ value: 'credit', label: 'آجل' }, { value: 'cash', label: 'نقدي' }]} value={form.type} onChange={v => setForm({ ...form, type: v })} /></View><View style={{ flex: 1 }}><Input label="التاريخ" value={form.invoice_date} onChangeText={v => setForm({ ...form, invoice_date: v })} /></View></Row>
+          <Row style={{ gap: spacing.md }}><View style={{ flex: 1 }}><Picker label="النوع" options={[{ value: 'credit', label: 'آجل' }, { value: 'cash', label: 'نقدي' }]} value={form.type} onChange={v => { setForm({ ...form, type: v }); if (isCashInvoiceType(v)) setSaveError(''); }} /></View><View style={{ flex: 1 }}><Input label="التاريخ" value={form.invoice_date} onChangeText={v => setForm({ ...form, invoice_date: v })} /></View></Row>
           <Input label="ملاحظات" value={form.notes} onChangeText={v => setForm({ ...form, notes: v })} multiline />
         </View>
 
@@ -404,31 +466,6 @@ export default function NewInvoiceScreen({ navigation }) {
                 )}
                 <View style={s.divider} />
                 <Row style={{ justifyContent: 'space-between' }}><Text style={{ fontSize: 18, color: colors.cyan, fontWeight: 'bold' }}>الصافي:</Text><Text style={{ fontSize: 24, color: colors.green, fontWeight: '900' }}>{formatCurrency(netAmount)}</Text></Row>
-                {!!selectedPOS && (
-                  <View style={{ marginTop: 8 }}>
-                    <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-                      <Text style={{ color: colors.t2, fontSize: 12 }}>الحد الائتماني:</Text>
-                      <Text style={{ color: colors.t1, fontSize: 12, fontWeight: '700' }}>{formatCurrency(creditLimit)}</Text>
-                    </Row>
-                    <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-                      <Text style={{ color: colors.t2, fontSize: 12 }}>الديون القائمة:</Text>
-                      <Text style={{ color: colors.warning, fontSize: 12, fontWeight: '700' }}>{formatCurrency(usedCredit)}</Text>
-                    </Row>
-                    <Row style={{ justifyContent: 'space-between' }}>
-                      <Text style={{ color: colors.t2, fontSize: 12 }}>المتبقي بعد الفاتورة:</Text>
-                      <Text style={{ color: isCreditExceeded ? colors.red : colors.green, fontSize: 12, fontWeight: '800' }}>
-                        {formatCurrency(remainingAfterDraft)}
-                      </Text>
-                    </Row>
-                    {isCreditExceeded && (
-                      <View style={{ marginTop: 8, backgroundColor: colors.red + '15', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: colors.red + '50' }}>
-                        <Text style={{ color: colors.red, fontSize: 12, fontWeight: '800', textAlign: 'center' }}>
-                          🚫 تجاوزت الفاتورة الحد الائتماني المتبقي لنقطة البيع
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                )}
               </View>
             )}
           </View>
