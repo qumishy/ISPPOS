@@ -1,5 +1,7 @@
 # Project Root
 
+> **Deprecated migration source.** Use `AGENTS.md` and `docs/`. This file is retained temporarily for comparison and contains stale source-tree entries.
+
 ISPPOS is an offline-first Expo React Native app for ISP card inventory, invoice sales, collections, cashier approval, supplies, project/phase management, operations logs, notifications, and reports.
 
 ## Active Source Tree

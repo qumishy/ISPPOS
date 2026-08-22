@@ -1,5 +1,7 @@
 # Data Integrity Findings And Repair Policy
 
+> **Historical snapshot; not current production state unless revalidated.** See `docs/history/data-integrity-audit-2026-06-23.md`. This file is retained temporarily for comparison.
+
 Supabase data integrity audit found serious issues. Do not run repair SQL until root-cause analysis is complete and explicit approval is given.
 
 ## Critical Audit Findings

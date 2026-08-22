@@ -1,5 +1,7 @@
 # Roles And Permissions
 
+> **Deprecated migration source.** Canonical living documentation is `docs/domains/roles-and-permissions.md`. This file is retained temporarily and contains stale role behavior.
+
 Roles are enforced through `AuthContext.js`, `permissionsService.js`, and navigation filtering in `AppNavigator.js`. Critical restrictions must also be enforced in services.
 
 ## Admin / Manager

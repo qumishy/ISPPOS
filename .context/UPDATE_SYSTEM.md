@@ -1,5 +1,7 @@
 # Update System
 
+> **Deprecated migration source.** Canonical living documentation is `docs/updates.md`. This file is retained temporarily for comparison.
+
 ## In-App APK Updates
 Implemented concept:
 - `src/screens/UpdatesScreen.js`

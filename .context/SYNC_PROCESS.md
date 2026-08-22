@@ -1,5 +1,7 @@
 # Sync Process
 
+> **Deprecated migration source.** Canonical living documentation is `docs/sync.md`. This file is retained temporarily and contains stale initial-sync descriptions.
+
 ## Core Model
 - SQLite is the operational source of truth.
 - Supabase is sync transport and cloud copy.

@@ -1,5 +1,7 @@
 # UI Behavior Rules
 
+> **Deprecated migration source.** Canonical living documentation is `docs/domains/ui-behavior.md`. This file is retained temporarily and contains stale filenames.
+
 ## Invoice Cards
 Primary files:
 - `src/screens/InvoicesListScreen.js`

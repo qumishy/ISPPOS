@@ -1,5 +1,7 @@
 # Architecture
 
+> **Deprecated migration source.** Canonical living documentation is `docs/architecture.md`. This file is retained temporarily for comparison and may be stale.
+
 ## Runtime Flow
 `App.js` -> providers (`AuthContext`, loading/theme/etc.) -> `AppNavigator.js` -> screens -> services -> SQLite. Supabase sync runs through `SyncService.js` and should not be called directly by screens for business reads/writes.
 

@@ -1,5 +1,7 @@
 # Development
 
+> **Deprecated migration source.** Canonical living guidance is `docs/development.md`; dated incidents are under `docs/history/`. This file is retained temporarily for comparison.
+
 ## Commands
 - Install: `npm install`
 - Start: `npm start`

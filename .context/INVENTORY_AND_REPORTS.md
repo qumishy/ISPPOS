@@ -1,5 +1,7 @@
 # Inventory And Reports
 
+> **Deprecated migration source.** Canonical living documentation is `docs/domains/inventory-and-reports.md`. This file is retained temporarily for comparison and contains stale paths.
+
 ## Inventory Screens
 Primary files:
 - `src/screens/InventoryListScreen.js`

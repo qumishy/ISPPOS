@@ -1,5 +1,7 @@
 # Database
 
+> **Deprecated migration source.** Canonical living documentation is `docs/data-model.md`. This file is retained temporarily for comparison and may be stale.
+
 Local SQLite schema is created/migrated in `src/services/dbCore.js`. Supabase has a similar but not identical schema. Always inspect schemas before assuming columns exist remotely.
 
 ## Core Tables

@@ -1,5 +1,7 @@
 # Tech Stack
 
+> **Deprecated migration source.** Use `docs/development.md`, `package.json`, and `app.json`. This file is retained temporarily for comparison.
+
 - Expo React Native, JavaScript only.
 - React Navigation: stack/drawer/bottom tabs in `AppNavigator.js`.
 - Local DB: `expo-sqlite`.

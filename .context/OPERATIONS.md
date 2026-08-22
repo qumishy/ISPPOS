@@ -1,5 +1,7 @@
 # Operations Screen
 
+> **Deprecated migration source.** Canonical living documentation is `docs/domains/operations.md`. This file is retained temporarily for comparison and contains stale paths/role terminology.
+
 Primary files:
 - `src/screens/OperationsScreen.js`
 - `src/services/operationLogger.js`
