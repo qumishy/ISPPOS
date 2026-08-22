@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Linking } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTheme } from '../theme';
 import {
-  fetchLatestGithubApkRelease,
+  checkForApkUpdate,
   getCurrentAppVersion,
-  isVersionNewer,
-  formatBytesAr,
+  getCurrentBuildNumber,
+  getLastUpdateCheck,
+  openUpdateUrl,
   downloadReleaseApk,
   installDownloadedApk,
   cancelApkDownload,
+  formatBytesAr,
+  manualCheckForOtaUpdate,
 } from '../services/updateService';
 
 export default function UpdatesScreen() {
@@ -19,22 +22,27 @@ export default function UpdatesScreen() {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [apkUri, setApkUri] = useState('');
-  const [release, setRelease] = useState(null);
+
+  const [manifest, setManifest] = useState(null);
+  const [updateResult, setUpdateResult] = useState(null);
   const [error, setError] = useState('');
+  const [lastCheckTs, setLastCheckTs] = useState(0);
 
   const currentVersion = useMemo(() => getCurrentAppVersion(), []);
-  const latestVersion = String(release?.tag || '').replace(/^v/i, '');
-  const hasNewVersion = latestVersion ? isVersionNewer(latestVersion, currentVersion) : false;
+  const currentBuild = useMemo(() => getCurrentBuildNumber(), []);
 
   const loadLatest = useCallback(async () => {
     setChecking(true);
     setError('');
+    setManifest(null);
+    setUpdateResult(null);
     try {
-      const latest = await fetchLatestGithubApkRelease();
-      setRelease(latest);
+      const result = await checkForApkUpdate();
+      setUpdateResult(result);
+      setManifest(result.manifest);
+      setLastCheckTs(result.lastCheck);
     } catch (e) {
-      const msg = e?.message || 'تعذر التحقق من آخر إصدار.';
-      setError(msg);
+      setError(e?.message || 'تعذر التحقق من آخر إصدار.');
     } finally {
       setChecking(false);
       setLoading(false);
@@ -49,7 +57,7 @@ export default function UpdatesScreen() {
   }, [loadLatest]);
 
   const onDownload = async () => {
-    if (!release?.asset?.url) {
+    if (!manifest?.apkUrlValid) {
       Alert.alert('خطأ', 'رابط APK غير متوفر.');
       return;
     }
@@ -57,8 +65,8 @@ export default function UpdatesScreen() {
     setDownloadProgress(0);
     try {
       const uri = await downloadReleaseApk({
-        url: release.asset.url,
-        filename: release.asset.name || `update_${Date.now()}.apk`,
+        url: manifest.apkUrl,
+        filename: `update_${manifest.latestVersion || Date.now()}.apk`,
         onProgress: (pct) => setDownloadProgress(Number(pct || 0)),
       });
       setApkUri(uri);
@@ -78,18 +86,59 @@ export default function UpdatesScreen() {
     }
   };
 
+  const onOpenUrl = async () => {
+    try {
+      await openUpdateUrl(manifest?.apkUrl);
+    } catch (e) {
+      Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
+    }
+  };
+
+  const formatLastCheck = (ts) => {
+    if (!ts) return 'لم يُسجَّل بعد';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleDateString('ar', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return 'غير معروف';
+    }
+  };
+
+  const statusColor = useMemo(() => {
+    if (updateResult?.isMandatory) return colors.danger;
+    if (updateResult?.hasUpdate) return colors.warning;
+    if (error) return colors.danger;
+    return colors.success;
+  }, [updateResult, error, colors]);
+
+  const statusText = useMemo(() => {
+    if (error) return 'تعذر فحص التحديثات';
+    if (updateResult?.isMandatory) return 'يتطلب تحديث إجباري';
+    if (updateResult?.hasUpdate) return 'يوجد تحديث جديد';
+    if (updateResult && !updateResult.hasUpdate) return 'التطبيق محدث';
+    return '';
+  }, [updateResult, error]);
+
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ padding: spacing.md, paddingBottom: 80 }}>
+      {/* ── Version Info Card ── */}
       <View style={{ backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md }}>
         <Text style={{ color: colors.t1, fontSize: fontSize.lg, fontWeight: '800', marginBottom: 10 }}>التحديثات</Text>
 
         <View style={{ gap: 8 }}>
           <Text style={{ color: colors.t2 }}>الإصدار الحالي: <Text style={{ color: colors.t1, fontWeight: '700' }}>{currentVersion}</Text></Text>
-          <Text style={{ color: colors.t2 }}>آخر إصدار: <Text style={{ color: colors.t1, fontWeight: '700' }}>{latestVersion || '—'}</Text></Text>
-          <Text style={{ color: colors.t2 }}>حجم APK: <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatBytesAr(release?.asset?.size)}</Text></Text>
+          <Text style={{ color: colors.t2 }}>الرقم التسلسلي: <Text style={{ color: colors.t1, fontWeight: '700' }}>{currentBuild || '—'}</Text></Text>
+          {manifest && (
+            <>
+              <Text style={{ color: colors.t2 }}>آخر إصدار: <Text style={{ color: colors.t1, fontWeight: '700' }}>{manifest.latestVersion}</Text></Text>
+              <Text style={{ color: colors.t2 }}>الرقم التسلسلي للتحديث: <Text style={{ color: colors.t1, fontWeight: '700' }}>{manifest.latestBuildNumber}</Text></Text>
+            </>
+          )}
+          <Text style={{ color: colors.t2 }}>آخر فحص: <Text style={{ color: colors.t1, fontWeight: '700' }}>{formatLastCheck(lastCheckTs)}</Text></Text>
         </View>
 
-        {loading || checking ? (
+        {/* ── Status ── */}
+        {checking ? (
           <View style={{ marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <ActivityIndicator color={colors.primary} />
             <Text style={{ color: colors.t2 }}>جاري التحقق من آخر إصدار...</Text>
@@ -100,21 +149,31 @@ export default function UpdatesScreen() {
           <Text style={{ marginTop: 14, color: colors.danger, fontWeight: '700' }}>{error}</Text>
         )}
 
-        {!loading && !checking && !error && (
-          <Text style={{ marginTop: 14, color: hasNewVersion ? colors.warning : colors.success, fontWeight: '800' }}>
-            {hasNewVersion ? 'يتوفر إصدار أحدث للتطبيق.' : 'أنت تستخدم آخر إصدار.'}
+        {!loading && !checking && !error && !!statusText && (
+          <Text style={{ marginTop: 14, color: statusColor, fontWeight: '800' }}>
+            {statusText}
           </Text>
+        )}
+
+        {updateResult?.isMandatory && (
+          <View style={{ marginTop: 12, backgroundColor: colors.danger + '15', borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.danger + '30' }}>
+            <Text style={{ color: colors.danger, fontWeight: '700', fontSize: fontSize.sm }}>
+              هذا التحديث إجباري. يرجى تحديث التطبيق للمتابعة.
+            </Text>
+          </View>
         )}
       </View>
 
-      <View style={{ backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md }}>
-        <Text style={{ color: colors.t1, fontSize: fontSize.md, fontWeight: '800', marginBottom: 8 }}>ملاحظات الإصدار</Text>
-        <Text style={{ color: colors.t2, lineHeight: 22 }}>
-          {release?.body?.trim() || 'لا توجد ملاحظات متاحة.'}
-        </Text>
-      </View>
+      {/* ── Release Notes ── */}
+      {manifest?.releaseNotes ? (
+        <View style={{ backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md }}>
+          <Text style={{ color: colors.t1, fontSize: fontSize.md, fontWeight: '800', marginBottom: 8 }}>ملاحظات الإصدار</Text>
+          <Text style={{ color: colors.t2, lineHeight: 22 }}>{manifest.releaseNotes}</Text>
+        </View>
+      ) : null}
 
-      {hasNewVersion && !apkUri && (
+      {/* ── Download button ── */}
+      {updateResult?.hasUpdate && manifest?.apkUrlValid && !apkUri && (
         <TouchableOpacity
           disabled={downloading}
           onPress={onDownload}
@@ -136,6 +195,29 @@ export default function UpdatesScreen() {
         </TouchableOpacity>
       )}
 
+      {/* ── Open URL button (when download not started) ── */}
+      {updateResult?.hasUpdate && manifest?.apkUrlValid && !apkUri && (
+        <TouchableOpacity
+          onPress={onOpenUrl}
+          style={{
+            marginTop: spacing.sm,
+            borderRadius: radius.md,
+            paddingVertical: 12,
+            borderWidth: 1,
+            borderColor: colors.border,
+            alignItems: 'center',
+            flexDirection: 'row',
+            justifyContent: 'center',
+            gap: 8,
+            backgroundColor: colors.bg2,
+          }}
+        >
+          <Feather name="external-link" size={16} color={colors.t2} />
+          <Text style={{ color: colors.t2, fontWeight: '700' }}>فتح صفحة التنزيل</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ── Install button ── */}
       {!!apkUri && (
         <TouchableOpacity
           onPress={onInstall}
@@ -154,8 +236,10 @@ export default function UpdatesScreen() {
         </TouchableOpacity>
       )}
 
+      {/* ── Refresh button ── */}
       <TouchableOpacity
         onPress={loadLatest}
+        disabled={checking}
         style={{
           marginTop: spacing.md,
           borderRadius: radius.md,
@@ -167,11 +251,34 @@ export default function UpdatesScreen() {
           justifyContent: 'center',
           gap: 8,
           backgroundColor: colors.bg2,
+          opacity: checking ? 0.5 : 1,
         }}
       >
-        <Feather name="refresh-cw" size={16} color={colors.t2} />
-        <Text style={{ color: colors.t2, fontWeight: '700' }}>إعادة التحقق</Text>
+        {checking ? <ActivityIndicator size="small" color={colors.t2} /> : <Feather name="refresh-cw" size={16} color={colors.t2} />}
+        <Text style={{ color: colors.t2, fontWeight: '700' }}>{checking ? 'جاري الفحص...' : 'إعادة التحقق'}</Text>
       </TouchableOpacity>
+
+      {/* ── OTA check button (JS/assets only) ── */}
+      <View style={{ marginTop: spacing.lg, padding: spacing.md, backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border }}>
+        <Text style={{ color: colors.t3, fontSize: fontSize.xs, marginBottom: 8 }}>تحديثات JavaScript والأصول (OTA)</Text>
+        <TouchableOpacity
+          onPress={manualCheckForOtaUpdate}
+          style={{
+            borderRadius: radius.md,
+            paddingVertical: 10,
+            borderWidth: 1,
+            borderColor: colors.primary + '40',
+            alignItems: 'center',
+            flexDirection: 'row',
+            justifyContent: 'center',
+            gap: 8,
+            backgroundColor: colors.primary + '10',
+          }}
+        >
+          <Feather name="code" size={16} color={colors.primary} />
+          <Text style={{ color: colors.primary, fontWeight: '700', fontSize: fontSize.sm }}>فحص تحديثات OTA</Text>
+        </TouchableOpacity>
+      </View>
     </ScrollView>
   );
 }

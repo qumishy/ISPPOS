@@ -1,35 +1,41 @@
 import * as Updates from 'expo-updates';
-import { Alert, Linking } from 'react-native';
+import { Alert, Linking, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Application from 'expo-application';
 
-// Session state to prevent duplicate checks and duplicate alerts
-let hasCheckedThisSession = false;
-let isUpdateDownloaded = false;
+const LAST_UPDATE_CHECK_KEY = 'isp_last_update_check';
+const CACHED_MANDATORY_UPDATE_KEY = 'isp_cached_mandatory_update';
 
-export const checkForUpdate = async () => {
+// ─── OTA (Expo Updates) — JS/assets only ───────────────────────────
+
+let hasCheckedOtaThisSession = false;
+let isOtaUpdateDownloaded = false;
+
+export const checkForOtaUpdate = async () => {
   try {
     if (!Updates.isEnabled || __DEV__) {
-      return { isAvailable: false, message: 'Updates disabled in this environment' };
+      return { isAvailable: false, message: 'OTA updates disabled in this environment' };
     }
     const update = await Updates.checkForUpdateAsync();
     return { isAvailable: update.isAvailable };
   } catch (error) {
-    console.log('Error checking for update:', error);
+    console.log('OTA check error:', error);
     return { isAvailable: false, error };
   }
 };
 
-export const fetchUpdate = async () => {
+export const fetchOtaUpdate = async () => {
   try {
     const result = await Updates.fetchUpdateAsync();
     if (result.isNew) {
-      isUpdateDownloaded = true;
+      isOtaUpdateDownloaded = true;
       return true;
     }
     return false;
   } catch (error) {
-    console.log('Error fetching update:', error);
+    console.log('OTA fetch error:', error);
     return false;
   }
 };
@@ -38,55 +44,51 @@ export const reloadApp = async () => {
   try {
     await Updates.reloadAsync();
   } catch (error) {
-    console.log('Error reloading app:', error);
+    console.log('Reload error:', error);
   }
 };
 
-export const checkAndApplyUpdateSilently = async () => {
-  // Prevent multiple checks in the same app session
-  if (hasCheckedThisSession || isUpdateDownloaded) return;
-  hasCheckedThisSession = true;
+export const checkAndApplyOtaUpdateSilently = async () => {
+  if (hasCheckedOtaThisSession || isOtaUpdateDownloaded) return;
+  hasCheckedOtaThisSession = true;
 
   try {
     if (!Updates.isEnabled || __DEV__) return;
-    
+
     const update = await Updates.checkForUpdateAsync();
     if (update.isAvailable) {
-      // Download silently
       const fetched = await Updates.fetchUpdateAsync();
       if (fetched.isNew) {
-        isUpdateDownloaded = true;
-        // Prompt user for confirmation before reloading
+        isOtaUpdateDownloaded = true;
         Alert.alert(
           'تحديث جديد متاح',
           'تم تنزيل تحديث جديد للتطبيق في الخلفية. هل تريد إعادة تشغيل التطبيق لتطبيقه الآن؟',
           [
             { text: 'لاحقاً', style: 'cancel' },
-            { text: 'إعادة التشغيل', onPress: () => reloadApp() }
+            { text: 'إعادة التشغيل', onPress: () => reloadApp() },
           ]
         );
       }
     }
   } catch (error) {
-    console.log('Silent update error:', error);
+    console.log('Silent OTA update error:', error);
   }
 };
 
-export const manualCheckForUpdate = async () => {
+export const manualCheckForOtaUpdate = async () => {
   try {
     if (!Updates.isEnabled || __DEV__) {
       Alert.alert('تنبيه', 'التحديثات غير مفعلة في هذه البيئة (بيئة التطوير).');
       return;
     }
-    
-    // If we already downloaded an update but the user delayed restarting
-    if (isUpdateDownloaded) {
+
+    if (isOtaUpdateDownloaded) {
       Alert.alert(
         'التحديث جاهز',
         'تم تنزيل التحديث مسبقاً. هل تريد إعادة التشغيل الآن لتطبيقه؟',
         [
           { text: 'لاحقاً', style: 'cancel' },
-          { text: 'إعادة التشغيل', onPress: () => reloadApp() }
+          { text: 'إعادة التشغيل', onPress: () => reloadApp() },
         ]
       );
       return;
@@ -96,13 +98,13 @@ export const manualCheckForUpdate = async () => {
     if (update.isAvailable) {
       const fetched = await Updates.fetchUpdateAsync();
       if (fetched.isNew) {
-        isUpdateDownloaded = true;
+        isOtaUpdateDownloaded = true;
         Alert.alert(
           'تم تنزيل التحديث',
           'تم تنزيل التحديث بنجاح. هل تريد إعادة تشغيل التطبيق لتطبيقه الآن؟',
           [
             { text: 'لاحقاً', style: 'cancel' },
-            { text: 'إعادة التشغيل', onPress: () => reloadApp() }
+            { text: 'إعادة التشغيل', onPress: () => reloadApp() },
           ]
         );
       } else {
@@ -112,29 +114,86 @@ export const manualCheckForUpdate = async () => {
       Alert.alert('تنبيه', 'لا يوجد تحديث جديد. أنت تستخدم أحدث إصدار.');
     }
   } catch (error) {
-    console.log('Manual update error:', error);
+    console.log('Manual OTA update error:', error);
     Alert.alert('خطأ', 'حدث خطأ أثناء التحقق من التحديثات. قد لا يوجد اتصال بالإنترنت.');
   }
 };
 
-const getGithubReleaseConfig = () => {
-  const extra = Constants?.expoConfig?.extra || {};
-  const cfg = extra?.githubRelease || {};
-  return {
-    owner: cfg.owner || '',
-    repo: cfg.repo || '',
-    assetPattern: cfg.assetPattern || '.apk',
-    token: cfg.token || '',
-  };
-};
+// ─── Backward-compatible aliases (kept for existing callers) ───────
+
+export const checkForUpdate = checkForOtaUpdate;
+export const fetchUpdate = fetchOtaUpdate;
+export const checkAndApplyUpdateSilently = checkAndApplyOtaUpdateSilently;
+export const manualCheckForUpdate = manualCheckForOtaUpdate;
+
+// ─── App version / build number ────────────────────────────────────
 
 export const getCurrentAppVersion = () => {
+  try {
+    const native = Application?.nativeApplicationVersion;
+    if (native) return String(native);
+  } catch (_) {}
   return String(
     Constants?.expoConfig?.version ||
     Constants?.manifest2?.extra?.expoClient?.version ||
     Constants?.manifest?.version ||
     '0.0.0'
   );
+};
+
+export const getCurrentBuildNumber = () => {
+  try {
+    const native = Application?.nativeBuildVersion;
+    if (native) return Number(native) || 0;
+  } catch (_) {}
+  return Number(
+    Constants?.expoConfig?.android?.versionCode ||
+    Constants?.manifest2?.extra?.expoClient?.android?.versionCode ||
+    Constants?.manifest?.android?.versionCode ||
+    0
+  );
+};
+
+// ─── Supabase APK update manifest ─────────────────────────────────
+
+const isValidApkUrl = (url) => {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  return trimmed.length > 5 && (trimmed.startsWith('http://') || trimmed.startsWith('https://'));
+};
+
+export const fetchLatestSupabaseUpdate = async () => {
+  const { supabase } = require('./supabase');
+
+  const { data, error } = await supabase
+    .from('app_updates')
+    .select('platform, latest_version, latest_build_number, apk_url, release_notes, force_update, minimum_supported_build, published_at')
+    .eq('platform', 'android')
+    .eq('active', true)
+    .order('latest_build_number', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error('لم يتم العثور على سجل تحديث.');
+
+  return {
+    platform: data.platform || 'android',
+    latestVersion: data.latest_version || '0.0.0',
+    latestBuildNumber: Number(data.latest_build_number) || 0,
+    apkUrl: data.apk_url || '',
+    releaseNotes: data.release_notes || '',
+    forceUpdate: !!data.force_update,
+    minimumSupportedBuild: Number(data.minimum_supported_build) || 0,
+    publishedAt: data.published_at || '',
+    apkUrlValid: isValidApkUrl(data.apk_url),
+  };
+};
+
+// ─── Build-number comparison ───────────────────────────────────────
+
+export const isBuildNewer = (remoteBuild, localBuild) => {
+  return Number(remoteBuild) > Number(localBuild);
 };
 
 const parseSemver = (v) => String(v || '0.0.0').replace(/^v/i, '').split('.').map(x => Number(x || 0));
@@ -152,6 +211,109 @@ export const isVersionNewer = (latest, current) => {
   return false;
 };
 
+// ─── Last update check persistence ─────────────────────────────────
+
+export const getLastUpdateCheck = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_UPDATE_CHECK_KEY);
+    return raw ? Number(raw) : 0;
+  } catch (_) {
+    return 0;
+  }
+};
+
+const saveLastUpdateCheck = async () => {
+  try {
+    await AsyncStorage.setItem(LAST_UPDATE_CHECK_KEY, String(Date.now()));
+  } catch (_) {}
+};
+
+// ─── Cached mandatory update state ─────────────────────────────────
+
+export const getCachedMandatoryUpdate = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(CACHED_MANDATORY_UPDATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+const cacheMandatoryUpdate = async (manifest) => {
+  try {
+    await AsyncStorage.setItem(CACHED_MANDATORY_UPDATE_KEY, JSON.stringify(manifest));
+  } catch (_) {}
+};
+
+const clearCachedMandatoryUpdate = async () => {
+  try {
+    await AsyncStorage.removeItem(CACHED_MANDATORY_UPDATE_KEY);
+  } catch (_) {}
+};
+
+// ─── Unified APK update check ──────────────────────────────────────
+
+export const checkForApkUpdate = async () => {
+  let manifest;
+  try {
+    manifest = await fetchLatestSupabaseUpdate();
+    await saveLastUpdateCheck();
+  } catch (error) {
+    console.log('APK update check error:', error);
+    throw new Error('تعذر فحص التحديثات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.');
+  }
+
+  const currentBuild = getCurrentBuildNumber();
+  const currentVersion = getCurrentAppVersion();
+
+  const hasUpdate = manifest.latestBuildNumber > currentBuild ||
+    (manifest.latestBuildNumber === currentBuild && isVersionNewer(manifest.latestVersion, currentVersion));
+
+  const isMandatory = manifest.forceUpdate &&
+    manifest.latestBuildNumber > currentBuild &&
+    manifest.apkUrlValid;
+
+  const belowMinimum = manifest.minimumSupportedBuild > 0 &&
+    currentBuild < manifest.minimumSupportedBuild;
+
+  const result = {
+    hasUpdate,
+    isMandatory: isMandatory || belowMinimum,
+    manifest,
+    currentVersion,
+    currentBuild,
+    lastCheck: Date.now(),
+  };
+
+  if (result.isMandatory && manifest.apkUrlValid) {
+    await cacheMandatoryUpdate(manifest);
+  } else {
+    await clearCachedMandatoryUpdate();
+  }
+
+  return result;
+};
+
+// ─── Open update URL ───────────────────────────────────────────────
+
+export const openUpdateUrl = async (apkUrl) => {
+  if (!isValidApkUrl(apkUrl)) {
+    throw new Error('رابط التحديث غير صالح.');
+  }
+  try {
+    const supported = await Linking.canOpenURL(apkUrl);
+    if (supported) {
+      await Linking.openURL(apkUrl);
+    } else {
+      throw new Error('لا يمكن فتح رابط التنزيل.');
+    }
+  } catch (error) {
+    throw new Error('تعذر فتح رابط التنزيل. تأكد من اتصال الإنترنت.');
+  }
+};
+
+// ─── APK download (retained for in-app download flow) ──────────────
+
 export const formatBytesAr = (bytes) => {
   const n = Number(bytes || 0);
   if (!n) return 'غير معروف';
@@ -159,44 +321,6 @@ export const formatBytesAr = (bytes) => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} ك.ب`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} م.ب`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} ج.ب`;
-};
-
-export const fetchLatestGithubApkRelease = async () => {
-  const cfg = getGithubReleaseConfig();
-  if (!cfg.owner || !cfg.repo) {
-    throw new Error('إعدادات GitHub Release غير مكتملة. يرجى ضبط owner/repo في app.json.');
-  }
-
-  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/releases/latest`;
-  const headers = { Accept: 'application/vnd.github+json' };
-  if (cfg.token) headers.Authorization = `Bearer ${cfg.token}`;
-
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    throw new Error(`تعذر جلب آخر إصدار من GitHub (${res.status}).`);
-  }
-  const json = await res.json();
-  const assets = Array.isArray(json.assets) ? json.assets : [];
-  const pattern = String(cfg.assetPattern || '.apk').toLowerCase();
-  const apkAsset = assets.find((a) => String(a?.name || '').toLowerCase().includes(pattern))
-    || assets.find((a) => String(a?.name || '').toLowerCase().endsWith('.apk'));
-
-  if (!apkAsset?.browser_download_url) {
-    throw new Error('لم يتم العثور على ملف APK داخل آخر Release.');
-  }
-
-  return {
-    tag: json.tag_name || '',
-    name: json.name || '',
-    body: json.body || '',
-    publishedAt: json.published_at || '',
-    asset: {
-      name: apkAsset.name,
-      size: Number(apkAsset.size || 0),
-      url: apkAsset.browser_download_url,
-      contentType: apkAsset.content_type || '',
-    },
-  };
 };
 
 let _downloadTask = null;
@@ -216,7 +340,7 @@ export const downloadReleaseApk = async ({ url, filename, onProgress }) => {
         const written = Number(progress?.totalBytesWritten || 0);
         const pct = total > 0 ? Math.round((written / total) * 100) : 0;
         if (typeof onProgress === 'function') onProgress(pct, written, total);
-      } catch (e) { }
+      } catch (e) {}
     }
   );
 
@@ -232,7 +356,7 @@ export const cancelApkDownload = async () => {
       await _downloadTask.pauseAsync();
       _downloadTask = null;
     }
-  } catch (e) { }
+  } catch (e) {}
 };
 
 export const installDownloadedApk = async (apkUri) => {
@@ -245,7 +369,9 @@ export const installDownloadedApk = async (apkUri) => {
     }
     return true;
   } catch (e) {
-    try { await Linking.openSettings(); } catch (_) { }
+    try {
+      await Linking.openSettings();
+    } catch (_) {}
     throw new Error('تعذر فتح مثبت APK. تأكد من السماح بتثبيت التطبيقات من هذا المصدر.');
   }
 };

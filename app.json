@@ -2,7 +2,7 @@
   "expo": {
     "name": "Smart POS Net",
     "slug": "isp-cards-system",
-    "version": "2.0.2",
+    "version": "2.0.3",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -21,6 +21,7 @@
     },
     "android": {
       "package": "com.smartposnet.app",
+      "versionCode": 21,
       "permissions": [],
       "minSdkVersion": 24,
       "targetSdkVersion": 34

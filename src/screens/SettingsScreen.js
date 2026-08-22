@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  Switch, Alert,
+  Switch, Alert, ActivityIndicator,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../theme';
@@ -11,7 +11,14 @@ import { syncAll } from '../services/SyncService';
 import { Row, Btn, Avatar } from '../components/UI';
 import { Feather } from '@expo/vector-icons';
 import { makeStyles } from '../styles/settings.styles';
-import { manualCheckForUpdate } from '../services/updateService';
+import {
+  getCurrentAppVersion,
+  getCurrentBuildNumber,
+  checkForApkUpdate,
+  openUpdateUrl,
+  getLastUpdateCheck,
+  manualCheckForOtaUpdate,
+} from '../services/updateService';
 
 const SETTINGS_KEY = 'isp_app_settings';
 
@@ -36,20 +43,33 @@ export default function SettingsScreen({ navigation }) {
   const [syncing, setSyncing] = useState(false);
   const [dbInfo, setDbInfo] = useState({});
 
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateManifest, setUpdateManifest] = useState(null);
+  const [updateResult, setUpdateResult] = useState(null);
+  const [updateError, setUpdateError] = useState('');
+  const [lastCheckTs, setLastCheckTs] = useState(0);
+
+  const currentVersion = getCurrentAppVersion();
+  const currentBuild = getCurrentBuildNumber();
+
   useEffect(() => {
-    loadSettings(); loadDbInfo();
+    loadSettings();
+    loadDbInfo();
+    loadLastCheck();
   }, []);
 
   const loadSettings = async () => {
     try {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       if (stored) setSettings({ ...defaultSettings, ...JSON.parse(stored) });
-    } catch (e) { }
+    } catch (e) {}
   };
 
   const saveSettings = async (newSettings) => {
     setSettings(newSettings);
-    try { await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(newSettings)); } catch (e) { }
+    try {
+      await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(newSettings));
+    } catch (e) {}
   };
 
   const toggle = (key) => saveSettings({ ...settings, [key]: !settings[key] });
@@ -72,11 +92,19 @@ export default function SettingsScreen({ navigation }) {
         queue: qR.rows._array[0]?.cnt || 0,
       });
       setPendingSync(qR.rows._array[0]?.cnt || 0);
-    } catch (e) { }
+    } catch (e) {}
+  };
+
+  const loadLastCheck = async () => {
+    const ts = await getLastUpdateCheck();
+    setLastCheckTs(ts);
   };
 
   const handleManualSync = async () => {
-    setSyncing(true); await syncAll(); await loadDbInfo(); setSyncing(false);
+    setSyncing(true);
+    await syncAll();
+    await loadDbInfo();
+    setSyncing(false);
     Alert.alert('تمت المزامنة', 'تم مزامنة البيانات مع الخادم');
   };
 
@@ -99,14 +127,66 @@ export default function SettingsScreen({ navigation }) {
       { text: 'إلغاء', style: 'cancel' },
       {
         text: 'مسح', style: 'destructive', onPress: async () => {
-          await execSQL('DELETE FROM sync_queue'); loadDbInfo();
+          await execSQL('DELETE FROM sync_queue');
+          loadDbInfo();
           Alert.alert('تمت العملية', 'تم مسح طابور المزامنة');
         }
       },
     ]);
   };
 
+  const handleCheckUpdate = useCallback(async () => {
+    setUpdateChecking(true);
+    setUpdateError('');
+    setUpdateManifest(null);
+    setUpdateResult(null);
+    try {
+      const result = await checkForApkUpdate();
+      setUpdateResult(result);
+      setUpdateManifest(result.manifest);
+      setLastCheckTs(result.lastCheck);
+    } catch (e) {
+      setUpdateError(e?.message || 'تعذر فحص التحديثات.');
+    } finally {
+      setUpdateChecking(false);
+    }
+  }, []);
+
+  const handleOpenUpdate = useCallback(async () => {
+    try {
+      await openUpdateUrl(updateManifest?.apkUrl);
+    } catch (e) {
+      Alert.alert('خطأ', e?.message || 'تعذر فتح رابط التنزيل.');
+    }
+  }, [updateManifest]);
+
+  const formatLastCheck = (ts) => {
+    if (!ts) return 'لم يُسجَّل بعد';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleDateString('ar', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch (_) {
+      return 'غير معروف';
+    }
+  };
+
   const roleColor = { admin: colors.purple, cashier: colors.blue, agent: colors.green }[user?.role] || colors.blue;
+
+  const updateStatusColor = (() => {
+    if (updateError) return colors.danger;
+    if (updateResult?.isMandatory) return colors.danger;
+    if (updateResult?.hasUpdate) return colors.warning;
+    if (updateResult && !updateResult.hasUpdate) return colors.success;
+    return colors.t3;
+  })();
+
+  const updateStatusText = (() => {
+    if (updateError) return 'تعذر فحص التحديثات';
+    if (updateResult?.isMandatory) return 'يتطلب تحديث إجباري';
+    if (updateResult?.hasUpdate) return 'يوجد تحديث جديد';
+    if (updateResult && !updateResult.hasUpdate) return 'التطبيق محدث';
+    return 'لم يتم الفحص بعد';
+  })();
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
@@ -213,24 +293,100 @@ export default function SettingsScreen({ navigation }) {
         </View>
       </View>
 
+      {/* ══ About / Updates ══ */}
       <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 24, marginBottom: 12 }}>
         <Feather name="info" size={18} color={colors.primary} />
         <Text style={[s.sectionTitle, { marginBottom: 0, marginLeft: 8 }]}>عن التطبيق</Text>
       </View>
       <View style={s.section}>
-        {[
-          { l: 'اسم التطبيق', v: 'نظام كروت الإنترنت' },
-          { l: 'الإصدار', v: '1.0.0' },
-          { l: 'العملة', v: 'ريال يمني (ر.ي)' },
-        ].map((item, i) => (
-          <Row key={i} style={[s.row, i === 2 && { borderBottomWidth: 0 }]}>
-            <Text style={s.rowLabel}>{item.l}</Text>
-            <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{item.v}</Text>
-          </Row>
-        ))}
+        <Row style={s.row}>
+          <Text style={s.rowLabel}>اسم التطبيق</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>نظام كروت الإنترنت</Text>
+        </Row>
+        <Row style={s.row}>
+          <Text style={s.rowLabel}>الإصدار</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{currentVersion}</Text>
+        </Row>
+        <Row style={s.row}>
+          <Text style={s.rowLabel}>الرقم التسلسلي</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{currentBuild || '—'}</Text>
+        </Row>
+        <Row style={s.row}>
+          <Text style={s.rowLabel}>العملة</Text>
+          <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>ريال يمني (ر.ي)</Text>
+        </Row>
+
         <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: spacing.sm }} />
-        <Btn label="التحديثات" icon="package" variant="outline" size="sm" onPress={() => navigation.navigate('Updates')} style={{ marginTop: spacing.xs }} />
-        <Btn label="التحقق من وجود تحديثات" icon="download-cloud" variant="outline" size="sm" onPress={manualCheckForUpdate} style={{ marginTop: spacing.xs }} />
+
+        {/* ── Update Status ── */}
+        <Row style={[s.row, { borderBottomWidth: 0 }]}>
+          <Text style={s.rowLabel}>حالة التحديث</Text>
+          <Text style={{ color: updateStatusColor, fontSize: fontSize.sm, fontWeight: '700' }}>{updateStatusText}</Text>
+        </Row>
+
+        <Row style={[s.row, { borderBottomWidth: 0 }]}>
+          <Text style={s.rowLabel}>آخر فحص</Text>
+          <Text style={{ color: colors.t3, fontSize: fontSize.xs }}>{formatLastCheck(lastCheckTs)}</Text>
+        </Row>
+
+        {/* ── Latest version info (when checked) ── */}
+        {updateManifest && (
+          <>
+            <Row style={s.row}>
+              <Text style={s.rowLabel}>أحدث إصدار</Text>
+              <Text style={{ color: colors.t2, fontSize: fontSize.sm }}>{updateManifest.latestVersion} (رقم {updateManifest.latestBuildNumber})</Text>
+            </Row>
+          </>
+        )}
+
+        {updateResult?.isMandatory && (
+          <View style={{ backgroundColor: colors.danger + '15', borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.danger + '30', marginVertical: spacing.sm }}>
+            <Text style={{ color: colors.danger, fontWeight: '700', fontSize: fontSize.sm }}>
+              هذا التحديث إجباري. يرجى تحديث التطبيق للمتابعة.
+            </Text>
+          </View>
+        )}
+
+        {updateError ? (
+          <View style={{ backgroundColor: colors.danger + '15', borderRadius: radius.md, padding: spacing.sm, borderWidth: 1, borderColor: colors.danger + '30', marginVertical: spacing.sm }}>
+            <Text style={{ color: colors.danger, fontWeight: '600', fontSize: fontSize.xs }}>
+              تعذر فحص التحديثات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.
+            </Text>
+          </View>
+        ) : null}
+
+        <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: spacing.sm }} />
+
+        {/* ── Update Buttons ── */}
+        <Btn
+          label={updateChecking ? 'جاري الفحص...' : 'فحص التحديث'}
+          icon="download-cloud"
+          variant="outline"
+          size="sm"
+          onPress={handleCheckUpdate}
+          disabled={updateChecking}
+          style={{ marginTop: spacing.xs }}
+        />
+
+        {updateResult?.hasUpdate && updateManifest?.apkUrlValid && (
+          <Btn
+            label="تحديث الآن"
+            icon="arrow-up-circle"
+            variant="primary"
+            size="sm"
+            onPress={handleOpenUpdate}
+            style={{ marginTop: spacing.xs }}
+          />
+        )}
+
+        <Btn
+          label="التحديثات"
+          icon="package"
+          variant="outline"
+          size="sm"
+          onPress={() => navigation.navigate('Updates')}
+          style={{ marginTop: spacing.xs }}
+        />
       </View>
     </ScrollView>
   );

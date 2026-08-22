@@ -9,6 +9,7 @@ import { useAuth } from '../services/AuthContext';
 import { useTheme } from '../theme';
 import { makeStyles } from '../styles/login.styles';
 import { useLoading } from '../services/LoadingContext';
+import { getCurrentAppVersion } from '../services/updateService';
 
 
 // Animated floating circle decoration
@@ -212,7 +213,7 @@ export default function LoginScreen() {
 
         <View style={[s.version, { marginTop: 15, marginBottom: 5, alignSelf: 'center' }]}>
           <View style={s.versionDot} />
-          <Text style={s.versionTxt}>الإصدار 1.0.0</Text>
+          <Text style={s.versionTxt}>الإصدار {getCurrentAppVersion()}</Text>
         </View>
 
         <Text style={s.footer}>Smart POS Net © 2026</Text>

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, ActivityIndicator, Text, TextInput } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, ActivityIndicator, Text, TextInput, TouchableOpacity, Linking } from 'react-native';
 import {
   IBMPlexSansArabic_400Regular,
   IBMPlexSansArabic_500Medium,
@@ -9,19 +9,15 @@ import {
 import { useFonts } from 'expo-font';
 
 // ── Patch Text.render to inject fontFamily globally into EVERY Text element.
-// defaultProps.style gets overridden when components pass their own style prop,
-// so we patch the render method instead to merge fontFamily as a base style.
 const _origTextRender = Text.render;
 Text.render = function(props, ref) {
   const incomingStyle = props.style || {};
-  // Flatten array style or keep object
   const flatStyle = Array.isArray(incomingStyle)
     ? [{ fontFamily: 'IBMPlexSansArabic-Regular' }, ...incomingStyle]
     : [{ fontFamily: 'IBMPlexSansArabic-Regular' }, incomingStyle];
   return _origTextRender.call(this, { ...props, style: flatStyle }, ref);
 };
 
-// Same for TextInput
 const _origTIRender = TextInput.render;
 TextInput.render = function(props, ref) {
   const incomingStyle = props.style || {};
@@ -37,19 +33,24 @@ import { AuthProvider } from './src/services/AuthContext';
 import { startNetworkMonitor, stopNetworkMonitor } from './src/services/SyncService';
 import { ThemeProvider } from './src/theme/ThemeContext';
 import { registerForPushNotificationsAsync } from './src/services/NotificationService';
-import { checkAndApplyUpdateSilently } from './src/services/updateService';
+import {
+  checkAndApplyOtaUpdateSilently,
+  checkForApkUpdate,
+  openUpdateUrl,
+  getCachedMandatoryUpdate,
+} from './src/services/updateService';
 import { LoadingProvider } from './src/services/LoadingContext';
 import LoadingOverlay from './src/components/LoadingOverlay';
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const [mandatoryUpdate, setMandatoryUpdate] = useState(null);
 
   const [fontsLoaded] = useFonts({
     'IBMPlexSansArabic-Regular':  IBMPlexSansArabic_400Regular,
     'IBMPlexSansArabic-Medium':   IBMPlexSansArabic_500Medium,
     'IBMPlexSansArabic-SemiBold': IBMPlexSansArabic_600SemiBold,
     'IBMPlexSansArabic-Bold':     IBMPlexSansArabic_700Bold,
-    // Map the "Black" / "ExtraBold" slots used by ThemeContext to Bold (700)
     'IBMPlexSansArabic-ExtraBold': IBMPlexSansArabic_700Bold,
     'IBMPlexSansArabic-Black':     IBMPlexSansArabic_700Bold,
   });
@@ -59,12 +60,18 @@ export default function App() {
       console.log('App Startup: Starting DB Init...');
       try {
         await initDatabase();
-        console.log("  DB INIT DONE");
-        startNetworkMonitor(); 
-        checkAndApplyUpdateSilently();
+        console.log('  DB INIT DONE');
+        startNetworkMonitor();
+
+        // OTA JS/assets update (silent, non-blocking)
+        checkAndApplyOtaUpdateSilently();
+
+        // APK native update check (non-blocking for optional, blocking for mandatory)
+        checkApkUpdateOnStartup();
+
         setReady(true);
-        
-        // Delay Push Token registration until after DB is ready
+
+        // Push token registration (delayed)
         setTimeout(async () => {
           try {
             const token = await registerForPushNotificationsAsync();
@@ -84,6 +91,7 @@ export default function App() {
         }, 1000);
       } catch (err) {
         console.log('App Startup: Critical DB Init Error:', err);
+        setReady(true); // still allow app to render
       }
     };
     init();
@@ -93,6 +101,33 @@ export default function App() {
     };
   }, []);
 
+  const checkApkUpdateOnStartup = async () => {
+    try {
+      const result = await checkForApkUpdate();
+      if (result.isMandatory) {
+        setMandatoryUpdate(result.manifest);
+      }
+    } catch (error) {
+      // Offline or error — check cached mandatory state
+      console.log('Startup APK check failed (non-blocking):', error?.message);
+      try {
+        const cached = await getCachedMandatoryUpdate();
+        if (cached?.apkUrlValid) {
+          setMandatoryUpdate(cached);
+        }
+      } catch (_) {}
+    }
+  };
+
+  const onMandatoryUpdatePress = async () => {
+    try {
+      await openUpdateUrl(mandatoryUpdate.apkUrl);
+    } catch (e) {
+      console.log('Failed to open update URL:', e?.message);
+    }
+  };
+
+  // ── Loading screen ──
   if (!ready || !fontsLoaded) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0F172A' }}>
@@ -101,6 +136,42 @@ export default function App() {
     );
   }
 
+  // ── Mandatory update blocking screen ──
+  if (mandatoryUpdate?.apkUrlValid) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#0F172A', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <View style={{ backgroundColor: '#1E293B', borderRadius: 16, borderWidth: 1, borderColor: '#EF4444', padding: 28, maxWidth: 400, width: '100%' }}>
+          <Text style={{ color: '#F87171', fontSize: 22, fontWeight: '800', textAlign: 'center', marginBottom: 12 }}>
+            تحديث إجباري
+          </Text>
+          <Text style={{ color: '#CBD5E1', fontSize: 15, textAlign: 'center', lineHeight: 24, marginBottom: 8 }}>
+            يتوفر إصدار جديد ({mandatoryUpdate.latestVersion}) يتطلب تحديثاً إجبارياً.
+          </Text>
+          <Text style={{ color: '#94A3B8', fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 20 }}>
+            يرجى تحديث التطبيق للمتابعة.
+          </Text>
+          {mandatoryUpdate.releaseNotes ? (
+            <Text style={{ color: '#64748B', fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 20 }}>
+              {mandatoryUpdate.releaseNotes}
+            </Text>
+          ) : null}
+          <TouchableOpacity
+            onPress={onMandatoryUpdatePress}
+            style={{
+              backgroundColor: '#EF4444',
+              borderRadius: 12,
+              paddingVertical: 14,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>تحديث الآن</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // ── Normal app ──
   return (
     <ThemeProvider>
       <LoadingProvider>
