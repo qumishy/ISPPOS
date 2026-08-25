@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { execSQL, uuidv4 } from './dbCore';
 import { supabase } from './supabase';
+import { isSystemAdminRole } from './systemAdminService';
 
 export const PROJECT_ACCESS_CACHE_PREFIX = 'project_access_for_user_';
 export const LAST_PROJECT_PREFIX = 'last_project_for_user_';
@@ -44,6 +45,7 @@ const buildAuthResult = (rows, password) => {
     name: first.user_name || first.name,
     username: first.username,
     phone: first.phone || '',
+    global_role: first.global_role || null,
     password_hash: password,
   };
   const seen = new Set();
@@ -59,7 +61,11 @@ const buildAuthResult = (rows, password) => {
 };
 
 const saveCredentialAndAccessCache = async ({ profile, projects }) => {
-  const cacheEntry = { ...profile, projects, cached_at: new Date().toISOString() };
+  // SYSTEM_ADMIN credentials stay in memory only: the persisted cache entry
+  // carries an empty password and cannot be used for offline admin login.
+  const persistPassword = !isSystemAdminRole(profile.global_role);
+  const safeProfile = persistPassword ? profile : { ...profile, password_hash: '' };
+  const cacheEntry = { ...safeProfile, projects, cached_at: new Date().toISOString() };
   await AsyncStorage.setItem(projectAccessStorageKey(profile.id), JSON.stringify(cacheEntry));
 
   const existingRaw = await AsyncStorage.getItem('isp_user_cache');
@@ -219,6 +225,7 @@ const authenticateFromCache = async (username, password) => {
       name: access.name,
       username: access.username,
       phone: access.phone || '',
+      global_role: access.global_role || null,
       password_hash: password,
     },
     projects,
@@ -284,7 +291,9 @@ export const saveLastProjectForUser = async (userId, project, phaseId = null) =>
   }));
 };
 
-export const cacheSelectedSessionUser = async (profile, project) => {
+export const cacheSelectedSessionUser = async (profile, project, options = {}) => {
+  const persistPassword = options.persistPassword !== false;
+  const storedPassword = persistPassword ? profile.password_hash : '';
   const now = new Date().toISOString();
   const existing = await execSQL(`SELECT id FROM users WHERE id = ? LIMIT 1`, [profile.id]);
   if (existing.rows._array?.[0]?.id) {
@@ -298,7 +307,7 @@ export const cacheSelectedSessionUser = async (profile, project) => {
         profile.username,
         project.role,
         profile.phone || '',
-        profile.password_hash,
+        storedPassword,
         profile.id,
       ]
     );
@@ -315,7 +324,7 @@ export const cacheSelectedSessionUser = async (profile, project) => {
       profile.username,
       project.role,
       profile.phone || '',
-      profile.password_hash,
+      storedPassword,
       now,
     ]
   );

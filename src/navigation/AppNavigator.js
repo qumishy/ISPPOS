@@ -29,6 +29,7 @@ import DiscountApprovalsScreen from '../screens/DiscountApprovalsScreen';
 
 import { getLocalNotificationsBox, getPendingOfflineOperationsForUser } from '../services/database';
 import { setupNotificationListeners } from '../services/NotificationService';
+import { isSystemAdminUser } from '../services/systemAdminService';
 
 import InvoicesScreen      from '../screens/InvoicesListScreen';
 import CollectionsScreen   from '../screens/CollectionsListScreen';
@@ -51,6 +52,7 @@ import NewSupplyScreen    from '../screens/NewSupplyScreen';
 import InvoiceDetailScreen from '../screens/InvoiceDetailScreen';
 import BatchStockDetailScreen from '../screens/BatchStockDetailScreen';
 import PhaseReportScreen from '../screens/PhaseReportScreen';
+import SystemAdminScreen from '../screens/SystemAdminScreen';
 
 const Drawer = createDrawerNavigator();
 const Tab    = createBottomTabNavigator();
@@ -133,16 +135,35 @@ function HeaderOptions(title, navigation, colors, fontSize, isLight) {
       borderBottomColor: colors.border,
     },
     headerTintColor: isLight ? '#FFFFFF' : colors.t1,
-    headerTitleStyle: { 
-      fontFamily: 'IBMPlexSansArabic-Bold', 
-      fontWeight: '800', 
-      fontSize: fontSize.xl, 
+    headerTitleStyle: {
+      fontFamily: 'IBMPlexSansArabic-Bold',
+      fontWeight: '800',
+      fontSize: fontSize.xl,
       letterSpacing: -0.3,
-      color: isLight ? '#FFFFFF' : colors.t1 
+      color: isLight ? '#FFFFFF' : colors.t1
     },
     headerLeft: () => <MenuButton navigation={navigation} colors={colors} />,
     headerRight: () => <HeaderRight navigation={navigation} colors={colors} />,
   };
+}
+
+function SystemAdminHeaderActions() {
+  const { logout } = useAuth();
+  const { colors } = useTheme();
+  return (
+    <TouchableOpacity
+      onPress={logout}
+      style={{
+        flexDirection: 'row-reverse', alignItems: 'center', gap: 6,
+        marginRight: 14, paddingHorizontal: 12, paddingVertical: 8,
+        borderRadius: 12, borderWidth: 1, borderColor: colors.danger + '55',
+        backgroundColor: colors.danger + '15',
+      }}
+    >
+      <Feather name="log-out" size={16} color={colors.danger} />
+      <Text style={{ color: colors.danger, fontWeight: '800', fontSize: 12 }}>خروج</Text>
+    </TouchableOpacity>
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -344,8 +365,9 @@ function CustomDrawer({ navigation, state }) {
   const { user, logout, canAccess, selectedPhase, setSelectedPhase, allPhases } = useAuth();
   const { colors, fontSize, isLight } = useTheme();
   const isAdmin = user?.role === 'admin';
+  const isSystemAdmin = isSystemAdminUser(user);
   const currentRoute = state?.routeNames[state.index];
-  
+
   const allItems = [
     { route: 'DashboardTab', label: 'الرئيسية', icon: 'grid', permission: 'Dashboard' },
     { route: 'InvoicesTab', label: 'الفواتير', icon: 'file-text', permission: 'Invoices' },
@@ -359,11 +381,13 @@ function CustomDrawer({ navigation, state }) {
     { route: 'DiscountApprovalsTab', label: 'اعتماد الخصومات', icon: 'percent', permission: 'Admin', altPermission: 'approve_card_returns', allowRoles: ['manager'] },
     { route: 'AdminTab', label: 'الإدارة', icon: 'settings', permission: 'Admin', adminOnly: true },
     { route: 'PermissionsTab', label: 'إدارة الصلاحيات', icon: 'shield', permission: 'Admin', adminOnly: true },
+    { route: 'SystemAdmin', label: 'إدارة النظام', icon: 'shield', systemAdminOnly: true },
     { route: 'About', label: 'حول و اتصل بنا', icon: 'info', permission: 'About' },
     { route: 'SettingsTab', label: 'الإعدادات العامة', icon: 'sliders', permission: 'Settings' },
   ];
 
   const items = allItems.filter(i => {
+    if (i.systemAdminOnly) return isSystemAdmin;
     if (isAdmin && i.hideForAdmin) return false;
     if (i.adminOnly) return isAdmin;
     return canAccess(i.permission) || (i.altPermission && canAccess(i.altPermission)) || (i.allowRoles || []).includes(user?.role);
@@ -406,12 +430,12 @@ function CustomDrawer({ navigation, state }) {
             <TouchableOpacity 
               key={i} 
               style={[d.item, active && { backgroundColor: colors.primary + '10' }]}
-              onPress={() => { 
-                navigation.dispatch(DrawerActions.closeDrawer()); 
-                if (item.route === 'About' || item.route === 'Notifications') {
+              onPress={() => {
+                navigation.dispatch(DrawerActions.closeDrawer());
+                if (item.route === 'About' || item.route === 'Notifications' || item.route === 'SystemAdmin') {
                   navigation.navigate(item.route);
                 } else {
-                  navigation.navigate('MainTabs', { screen: item.route }); 
+                  navigation.navigate('MainTabs', { screen: item.route });
                 }
               }}
             >
@@ -443,7 +467,7 @@ function MainDrawer() {
 }
 
 export default function AppNavigator() {
-  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync, logout, canAccess } = useAuth();
+  const { user, projectId, loading, selectedPhase, dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync, logout, canAccess, isSystemAdmin } = useAuth();
   const { message: loadingMessage, progress: loadingPercent } = useLoading();
   const { isDark, colors, fontSize } = useTheme();
   const navigationRef = useRef();
@@ -548,10 +572,28 @@ export default function AppNavigator() {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
+        ) : (isSystemAdmin && !projectId) ? (
+          <>
+            <Stack.Screen
+              name="SystemAdminHome"
+              component={SystemAdminScreen}
+              options={{
+                headerShown: true,
+                title: 'إدارة النظام',
+                headerTintColor: colors.t1,
+                headerTitleStyle: { fontFamily: 'IBMPlexSansArabic-Bold', fontWeight: '800', fontSize: fontSize.xl },
+                headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 },
+                headerLeft: () => null,
+                headerRight: () => <SystemAdminHeaderActions />,
+              }}
+            />
+            <Stack.Screen name="Operations" component={OperationsScreen} options={{ headerShown: true, title: 'العمليات', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
+          </>
         ) : (
           <>
             <Stack.Screen name="MainApp" component={MainDrawer} />
             {canAccess('About') && <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: true, title: 'حول اتصل بنا', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />}
+            {isSystemAdmin && <Stack.Screen name="SystemAdmin" component={SystemAdminScreen} options={{ headerShown: true, title: 'إدارة النظام', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />}
             <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ headerShown: true, title: 'الإشعارات الذكية', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
             <Stack.Screen name="Operations" component={OperationsScreen} options={{ headerShown: true, title: 'العمليات', headerTintColor: colors.t1, headerStyle: { backgroundColor: colors.card, borderBottomColor: colors.border, borderBottomWidth: 1 } }} />
           </>

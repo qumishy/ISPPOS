@@ -67,6 +67,19 @@ export const validateStoredLoginSession = async () => {
     };
   }
 
+  // Top-level system administration runs without a project context; the
+  // normal project-membership validation below does not apply to it.
+  const storedGlobalRole = String(storedUser.global_role || storedUser.role || '').trim().toUpperCase();
+  if (storedGlobalRole === 'SYSTEM_ADMIN' && !storedUser.project_id) {
+    return {
+      valid: true,
+      stale: false,
+      user: storedUser,
+      project: null,
+      projectId: null,
+    };
+  }
+
   const sessionProjectId = storedUser.project_id || null;
   const selectedProjectId = globalProjectId || sessionProjectId;
   const embeddedProjectId = storedUser.selected_project?.project_id || null;

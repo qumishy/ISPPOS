@@ -43,6 +43,7 @@ export default function LoginScreen() {
     login,
     selectProject,
     cancelProjectSelection,
+    activateSystemAdminSession,
     availableProjects,
     lastProjectId,
     repairLoginCache,
@@ -63,6 +64,7 @@ export default function LoginScreen() {
   const [focusPass, setFocusPass] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [recoveryNotice, setRecoveryNotice] = useState('');
+  const [systemAdminAvailable, setSystemAdminAvailable] = useState(false);
 
   useEffect(() => {
     if (!availableProjects.length) {
@@ -90,9 +92,24 @@ export default function LoginScreen() {
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) { setError('يرجى إدخال اسم المستخدم وكلمة المرور'); return; }
     setLoading(true);
+    setSystemAdminAvailable(false);
     showLoading('جاري التحقق من الحساب...'); setError('');
     try {
       const result = await login(username.trim(), password);
+      if (!result.success) setError(result.error);
+      else setSystemAdminAvailable(!!result.systemAdminAvailable);
+    } finally {
+      hideLoading();
+      setLoading(false);
+    }
+  };
+
+  const handleSystemAdminLogin = async () => {
+    setLoading(true);
+    showLoading('جاري فتح إدارة النظام...');
+    setError('');
+    try {
+      const result = await activateSystemAdminSession();
       if (!result.success) setError(result.error);
     } finally {
       hideLoading();
@@ -286,26 +303,51 @@ export default function LoginScreen() {
             </View>
           )}
 
-          <Animated.View style={{ transform: [{ scale: loginScale }] }}>
+          {!(systemAdminAvailable && !availableProjects.length) ? (
+            <Animated.View style={{ transform: [{ scale: loginScale }] }}>
+              <TouchableOpacity
+                style={[s.loginBtn, loading && { opacity: 0.7 }]}
+                onPress={availableProjects.length ? handleProjectLogin : handleLogin}
+                disabled={loading}
+                activeOpacity={0.87}
+                onPressIn={() => Animated.spring(loginScale, { toValue: 0.96, useNativeDriver: true }).start()}
+                onPressOut={() => Animated.spring(loginScale, { toValue: 1, useNativeDriver: true }).start()}
+              >
+                {loading
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <Text style={s.loginBtnText}>{availableProjects.length ? 'دخول إلى المشروع' : 'دخول آمن'}</Text>
+                }
+              </TouchableOpacity>
+            </Animated.View>
+          ) : null}
+
+          {systemAdminAvailable ? (
             <TouchableOpacity
-              style={[s.loginBtn, loading && { opacity: 0.7 }]}
-              onPress={availableProjects.length ? handleProjectLogin : handleLogin}
+              onPress={handleSystemAdminLogin}
               disabled={loading}
               activeOpacity={0.87}
-              onPressIn={() => Animated.spring(loginScale, { toValue: 0.96, useNativeDriver: true }).start()}
-              onPressOut={() => Animated.spring(loginScale, { toValue: 1, useNativeDriver: true }).start()}
+              style={{
+                marginTop: 12,
+                flexDirection: 'row-reverse',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                backgroundColor: colors.primary,
+                paddingVertical: 14,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
             >
-              {loading
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.loginBtnText}>{availableProjects.length ? 'دخول إلى المشروع' : 'دخول آمن'}</Text>
-              }
+              <Feather name="shield" size={18} color="#FFFFFF" />
+              <Text style={{ color: '#FFFFFF', fontFamily: 'IBMPlexSansArabic-Bold', fontSize: 15 }}>دخول إلى إدارة النظام</Text>
             </TouchableOpacity>
-          </Animated.View>
+          ) : null}
 
           {availableProjects.length ? (
             <TouchableOpacity
               style={s.backToLoginBtn}
-              onPress={() => { cancelProjectSelection(); setError(''); }}
+              onPress={() => { cancelProjectSelection(); setError(''); setSystemAdminAvailable(false); }}
               disabled={loading}
             >
               <Feather name="arrow-right" size={16} color={colors.t2} />

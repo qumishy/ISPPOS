@@ -13,6 +13,12 @@ import {
   saveLastProjectForUser,
 } from './projectAccessService';
 import {
+  clearSystemAdminActorCredentials,
+  isSystemAdminRole,
+  isSystemAdminUser,
+  setSystemAdminActorCredentials,
+} from './systemAdminService';
+import {
   STALE_LOGIN_CACHE_MESSAGE,
   migrateLoginCacheOnce,
   recoverStaleStoredLoginSession,
@@ -23,6 +29,11 @@ import {
 const AuthContext = createContext(null);
 
 export const ROLE_PERMISSIONS = {
+  // Top-level display-only role: grants NO project/business permissions.
+  // System administration access is gated separately by navigation and services.
+  SYSTEM_ADMIN: {
+    label:'مدير النظام العام',
+  },
   admin: {
     label:'مدير عام',
     canViewDashboard:true, canViewInvoices:true, canCreateInvoice:true,
@@ -181,6 +192,15 @@ export function AuthProvider({ children }) {
 
   const ensureStartupSync = async (isRetry = false) => {
     if (!user?.id || !user?.project_id) {
+      // System administration runs online-only with no project context:
+      // no startup sync is required or possible.
+      if (user?.id && isSystemAdminUser(user)) {
+        setInitialSyncReady(true);
+        setInitialSyncReadyState(true);
+        setOfflineMode(false);
+        setStartupError('');
+        return;
+      }
       setInitialSyncReadyState(false);
       setOfflineMode(false);
       setStartupError('');
@@ -308,7 +328,9 @@ export function AuthProvider({ children }) {
       return { success: false, error: 'لا توجد مرحلة مفعلة لهذا المشروع.' };
     }
 
-    await cacheSelectedSessionUser(authResult.profile, allowed);
+    await cacheSelectedSessionUser(authResult.profile, allowed, {
+      persistPassword: !isSystemAdminRole(authResult.profile.global_role),
+    });
     const savedLast = await getLastProjectForUser(authResult.profile.id);
     const initialPhase = phaseResult.phases.find((item) => String(item.id) === String(savedLast?.phase_id))
       || phaseResult.phases[0];
@@ -321,6 +343,7 @@ export function AuthProvider({ children }) {
       name: authResult.profile.name,
       username: authResult.profile.username,
       role: allowed.role,
+      global_role: isSystemAdminRole(authResult.profile.global_role) ? 'SYSTEM_ADMIN' : (authResult.profile.global_role || null),
       phone: authResult.profile.phone || '',
       active: true,
       selected_project: allowed,
@@ -361,8 +384,30 @@ export function AuthProvider({ children }) {
     }
     const authResult = await authenticateAndLoadProjects(username, password);
     if (!authResult.success) return authResult;
+
+    // SYSTEM_ADMIN credentials are held in memory only for online-only
+    // administration RPCs; they are never persisted anywhere.
+    const isSystemAdmin = isSystemAdminUser(authResult.profile);
+    if (isSystemAdmin) {
+      setSystemAdminActorCredentials(authResult.profile.username, password);
+    }
+
     if (!authResult.projects?.length) {
-      return { success: false, error: 'لا توجد مشاريع مفعلة لهذا المستخدم' };
+      if (!isSystemAdmin) {
+        return { success: false, error: 'لا توجد مشاريع مفعلة لهذا المستخدم' };
+      }
+      setPendingLogin({ ...authResult, lastProjectId: null });
+      setAvailableProjects([]);
+      setLastProjectId(null);
+      setCacheRecoverySuggested(false);
+      setCacheRecoveryMessage('');
+      return {
+        success: true,
+        requiresProjectSelection: true,
+        systemAdminAvailable: true,
+        projects: [],
+        lastProjectId: null,
+      };
     }
 
     const last = await getLastProjectForUser(authResult.profile.id);
@@ -374,15 +419,76 @@ export function AuthProvider({ children }) {
     setCacheRecoverySuggested(false);
     setCacheRecoveryMessage('');
 
-    if (authResult.projects.length === 1) {
+    if (authResult.projects.length === 1 && !isSystemAdmin) {
       return activateProjectSession(pending, authResult.projects[0]);
+    }
+    if (authResult.projects.length === 1 && isSystemAdmin) {
+      // System admins always get an explicit choice between the project
+      // context and system administration.
+      return {
+        success: true,
+        requiresProjectSelection: true,
+        systemAdminAvailable: true,
+        projects: authResult.projects,
+        lastProjectId: allowedLast?.project_id || null,
+      };
     }
     return {
       success: true,
       requiresProjectSelection: true,
+      systemAdminAvailable: isSystemAdmin,
       projects: authResult.projects,
       lastProjectId: allowedLast?.project_id || null,
     };
+  };
+
+  const activateSystemAdminSession = async () => {
+    if (!pendingLogin?.profile) {
+      return { success: false, error: 'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.' };
+    }
+    if (!isSystemAdminUser(pendingLogin.profile)) {
+      return { success: false, error: 'لا تملك صلاحية الوصول إلى إدارة النظام.' };
+    }
+    const pendingGuard = await hasBlockingPendingSyncForUser(pendingLogin.profile.id);
+    if (pendingGuard.blocked) {
+      return {
+        success: false,
+        error: 'توجد بيانات غير متزامنة على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل الدخول لإدارة النظام.'
+      };
+    }
+    const profile = pendingLogin.profile;
+    const userData = {
+      id: profile.id,
+      legacy_project_id: profile.legacy_project_id || null,
+      project_id: null,
+      project_name: null,
+      membership_id: null,
+      name: profile.name,
+      username: profile.username,
+      role: 'SYSTEM_ADMIN',
+      global_role: 'SYSTEM_ADMIN',
+      phone: profile.phone || '',
+      active: true,
+      selected_project: null,
+    };
+
+    setInitialSyncReady(true);
+    setInitialSyncReadyState(true);
+    setStartupError('');
+    setOfflineMode(false);
+    await AsyncStorage.removeItem('isp_project_id');
+    await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
+    setProjectId(null);
+    setProject(null);
+    setActivePhase(null);
+    setSelectedPhase(null);
+    setAllPhases([]);
+    setUser(userData);
+    setCurrentUser(userData);
+    setPendingLogin(null);
+    setAvailableProjects([]);
+    setLastProjectId(null);
+    return { success: true, user: userData };
   };
 
   const selectProject = async (selectedProjectId) => {
@@ -420,6 +526,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
+    clearSystemAdminActorCredentials();
     await AsyncStorage.removeItem('isp_user');
     await AsyncStorage.removeItem('isp_project_id');
     setUser(null);
@@ -471,8 +578,10 @@ export function AuthProvider({ children }) {
     return canAccess(permissionCode, action);
   };
 
+  const isSystemAdmin = !!user && isSystemAdminUser(user);
+
   return (
-    <AuthContext.Provider value={{ user, projectId, project, loading, login, selectProject, cancelProjectSelection, availableProjects, lastProjectId, loginWithLicense, logout, repairLoginCache, cacheRecoverySuggested, cacheRecoveryMessage, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
+    <AuthContext.Provider value={{ user, projectId, project, loading, login, selectProject, cancelProjectSelection, activateSystemAdminSession, availableProjects, lastProjectId, loginWithLicense, logout, repairLoginCache, cacheRecoverySuggested, cacheRecoveryMessage, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true), isSystemAdmin }}>
       {children}
     </AuthContext.Provider>
   );

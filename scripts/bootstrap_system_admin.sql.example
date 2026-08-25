@@ -1,0 +1,51 @@
+-- ════════════════════════════════════════════════════════════════════════
+-- BOOTSTRAP the first SYSTEM_ADMIN (مدير النظام العام)
+--
+-- MANUAL STEP — apply to the ISPPOS Supabase project (ybpzjvswutvdbjevgawt).
+--
+-- BEFORE RUNNING:
+--   1. Replace <SYSTEM_ADMIN_USERNAME> below with the username of ONE
+--      existing active application user.
+--   2. Prefer a DEDICATED account used only for system administration.
+--   3. Never commit a real password here — promotion only changes the
+--      role; the account keeps its existing credentials.
+--   4. Run inside a transaction and confirm exactly one row is updated.
+--
+-- NOTES:
+--   * Works whether users.project_id is NULL or still set. The account can
+--     always enter System Administration; project entry continues to
+--     require a normal active membership in user_project_access.
+--   * users.project_id / users.role legacy columns are NOT removed.
+--     The backfill trigger will not mirror 'SYSTEM_ADMIN' into
+--     user_project_access (see 20260826000000_system_admin_module.sql).
+--   * Existing membership rows for this account keep their original
+--     roles and remain usable as optional project-scoped roles.
+-- ════════════════════════════════════════════════════════════════════════
+
+begin;
+
+do $$
+declare
+  v_matches integer;
+begin
+  select count(*) into v_matches
+  from public.users
+  where username = trim('<SYSTEM_ADMIN_USERNAME>')
+    and coalesce(is_active, true) = true;
+
+  if v_matches <> 1 then
+    raise exception 'Bootstrap aborted: username must match exactly one active user (found %).', v_matches;
+  end if;
+end
+$$;
+
+update public.users
+set role = 'SYSTEM_ADMIN'
+where username = trim('<SYSTEM_ADMIN_USERNAME>')
+  and coalesce(is_active, true) = true;
+
+-- Verify: must output exactly one row before committing.
+select id, username, role, project_id from public.users
+where username = trim('<SYSTEM_ADMIN_USERNAME>');
+
+commit;
