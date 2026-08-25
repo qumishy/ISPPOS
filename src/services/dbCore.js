@@ -335,6 +335,7 @@ const createTables = async () => {
   await execSQL(`CREATE TABLE IF NOT EXISTS sync_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, operation_group_id TEXT, table_name TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT, record_id TEXT, attempts INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, project_id TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS operations_log (id TEXT PRIMARY KEY NOT NULL, operation_group_id TEXT, sync_queue_id INTEGER, actor_user_id TEXT, actor_name TEXT, actor_role TEXT, operation_type TEXT NOT NULL, table_name TEXT NOT NULL, entity_name TEXT, record_id TEXT, reference_text TEXT, message_ar TEXT NOT NULL, old_values TEXT, new_values TEXT, project_id TEXT, phase_id TEXT, source TEXT DEFAULT 'sqlite', sync_status TEXT DEFAULT 'pending', sync_error TEXT, sync_details TEXT, device_id TEXT, session_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, synced_at TEXT)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, name TEXT, username TEXT, role TEXT, phone TEXT, password_hash TEXT, push_token TEXT, active INTEGER DEFAULT 1, created_at TEXT, synced INTEGER DEFAULT 0)`);
+  await execSQL(`CREATE TABLE IF NOT EXISTS user_project_access (id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, project_id TEXT NOT NULL, role TEXT NOT NULL, active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT, synced INTEGER DEFAULT 1, UNIQUE(user_id, project_id))`);
   await execSQL(`CREATE TABLE IF NOT EXISTS pos_customers (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, name TEXT, owner_name TEXT, phone TEXT, city TEXT, credit_limit REAL DEFAULT 0, credit_used REAL DEFAULT 0, is_blocked INTEGER DEFAULT 0, assigned_agent_id TEXT, notes TEXT, active INTEGER DEFAULT 1, created_at TEXT, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS card_categories (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, name TEXT, price REAL DEFAULT 0, card_value REAL DEFAULT 0, cards_per_sheet INTEGER DEFAULT 1, active INTEGER DEFAULT 1, created_at TEXT, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, batch_number TEXT, category_id TEXT, serial_number TEXT, total_cards INTEGER DEFAULT 0, available_cards INTEGER DEFAULT 0, received_date TEXT, status TEXT DEFAULT 'active', active INTEGER DEFAULT 1, created_at TEXT, synced INTEGER DEFAULT 0)`);
@@ -394,7 +395,7 @@ const createTables = async () => {
   await execSQL(`CREATE INDEX IF NOT EXISTS idx_app_notifications_event_key ON app_notifications(project_id, event_key, created_at DESC)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS app_permissions (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, screen_name TEXT NOT NULL, can_view INTEGER DEFAULT 0, can_add INTEGER DEFAULT 0, can_edit INTEGER DEFAULT 0, can_delete INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS invoice_discount_approvals (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, invoice_id TEXT NOT NULL, requested_by TEXT, requested_value REAL DEFAULT 0, requested_reason TEXT, applied_value REAL DEFAULT 0, approved_by TEXT, approved_at TEXT, status TEXT NOT NULL, decision_note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, synced INTEGER DEFAULT 0)`);
-  await execSQL(`CREATE TABLE IF NOT EXISTS project (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, license_number TEXT, owner_name TEXT, owner_phone TEXT, created_at TEXT, synced INTEGER DEFAULT 0)`);
+  await execSQL(`CREATE TABLE IF NOT EXISTS project (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, license_number TEXT, owner_name TEXT, owner_phone TEXT, active INTEGER DEFAULT 1, created_at TEXT, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS phases (id TEXT PRIMARY KEY NOT NULL, project_id TEXT, name TEXT NOT NULL, description TEXT, start_date TEXT, end_date TEXT, target_new_pos INTEGER DEFAULT 0, expected_total_sales REAL DEFAULT 0, expected_total_collections REAL DEFAULT 0, status TEXT DEFAULT 'active', created_by TEXT, created_at TEXT, closed_at TEXT, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE TABLE IF NOT EXISTS phase_invoice_carryforwards (id TEXT PRIMARY KEY NOT NULL, invoice_id TEXT NOT NULL, project_id TEXT, source_phase_id TEXT, target_phase_id TEXT NOT NULL, invoice_number TEXT, net_amount REAL DEFAULT 0, paid_amount REAL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, synced INTEGER DEFAULT 0)`);
   await execSQL(`CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_carryforwards_invoice_target ON phase_invoice_carryforwards(invoice_id, target_phase_id)`);
@@ -474,6 +475,7 @@ export const initDatabase = async () => {
         { t: 'sync_queue', c: 'project_id', d: 'TEXT' },
         { t: 'users', c: 'project_id', d: 'TEXT' },
         { t: 'users', c: 'push_token', d: 'TEXT' },
+        { t: 'project', c: 'active', d: 'INTEGER DEFAULT 1' },
         { t: 'pos_customers', c: 'project_id', d: 'TEXT' },
         { t: 'card_categories', c: 'project_id', d: 'TEXT' },
         { t: 'batches', c: 'project_id', d: 'TEXT' },
@@ -612,6 +614,10 @@ export const initDatabase = async () => {
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_batches_reports_project_active ON batches(project_id, active, created_at DESC)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_agent_wallets_reports_batch_project ON agent_wallets(project_id, batch_id, created_at DESC)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_users_reports_project_role_active ON users(project_id, role, active)`);
+      await execSQL(`CREATE INDEX IF NOT EXISTS idx_user_project_access_user ON user_project_access(user_id)`);
+      await execSQL(`CREATE INDEX IF NOT EXISTS idx_user_project_access_project ON user_project_access(project_id)`);
+      await execSQL(`CREATE INDEX IF NOT EXISTS idx_user_project_access_active ON user_project_access(active)`);
+      await execSQL(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_project_access_user_project ON user_project_access(user_id, project_id)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_phases_reports_project_created ON phases(project_id, created_at DESC)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_sync_queue_project_attempts_created ON sync_queue(project_id, attempts, created_at DESC)`);
       await execSQL(`CREATE INDEX IF NOT EXISTS idx_invoices_list_project_phase_status_date ON invoices(project_id, phase_id, status, invoice_date DESC)`);

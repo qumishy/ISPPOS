@@ -17,7 +17,6 @@ import { useTheme } from '../theme';
 import { LinearGradient } from 'expo-linear-gradient';
 
 /* Screens */
-import LicenseScreen  from '../screens/LicenseScreen';
 import LoginScreen    from '../screens/LoginScreen';
 import DashboardScreen from '../screens/DashboardScreen';
 import AdminScreen    from '../screens/AdminScreen';
@@ -547,9 +546,7 @@ export default function AppNavigator() {
         </View>
       )}
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {!projectId ? (
-          <Stack.Screen name="License" component={LicenseScreen} />
-        ) : !user ? (
+        {!user ? (
           <Stack.Screen name="Login" component={LoginScreen} />
         ) : (
           <>

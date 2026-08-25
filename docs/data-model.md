@@ -8,7 +8,7 @@ SQLite and Supabase are similar, not identical. Remote payloads must be filtered
 
 ## Core Data Areas
 
-- **Tenant and access:** `project`, `phases`, `users`, `app_permissions`
+- **Tenant and access:** `project`, `phases`, `users`, `user_project_access`, `app_permissions`
 - **Customers and catalog:** `pos_customers`, `card_categories`
 - **Inventory:** `batches`, `agent_wallets`
 - **Sales:** `invoices`, `invoice_items`, `invoice_discount_approvals`
@@ -21,6 +21,9 @@ SQLite and Supabase are similar, not identical. Remote payloads must be filtered
 ## Scope And Relationships
 
 - `project_id` scopes tenant-owned records.
+- `users` holds the global login/profile identity. `user_project_access` uniquely maps `(user_id, project_id)` and owns the active role for that project.
+- `users.project_id` and `users.role` are retained legacy defaults. Existing relationships are copied into `user_project_access`; duplicate user rows are not merged.
+- `project.active` and `user_project_access.active` jointly determine whether a project can be selected at login.
 - `phase_id` scopes operational data where supported, including invoices, collections, batches, wallets, supplies, and card returns.
 - Invoices own invoice items and may have collections and card-return requests.
 - Invoice items link the sale to category, batch, and wallet.

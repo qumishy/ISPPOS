@@ -143,18 +143,20 @@ const moveInvoiceAndCollectionsToPhase = async (invoice, targetPhaseId) => {
 // ── المشروع ──
 // ═══════════════════════════════════════════════════
 
-/** إرجاع بيانات المشروع (singleton) */
-export const getProjectInfo = async () => {
-  const r = await execSQL(`SELECT * FROM project LIMIT 1`);
+/** إرجاع بيانات المشروع الحالي، مع دعم الاستدعاء القديم عند غياب النطاق. */
+export const getProjectInfo = async (projectId = null) => {
+  const r = projectId
+    ? await execSQL(`SELECT * FROM project WHERE id = ? LIMIT 1`, [projectId])
+    : await execSQL(`SELECT * FROM project LIMIT 1`);
   return r.rows._array?.[0] || null;
 };
 
 /** تحديث بيانات المشروع */
 export const updateProjectInfo = async (data) => {
-  const existing = await getProjectInfo();
+  const existing = await getProjectInfo(data?.project_id || null);
   if (!existing) {
     // إنشاء سجل المشروع إذا لم يكن موجوداً
-    const id = DEFAULT_PROJECT_ID;
+    const id = data?.project_id || DEFAULT_PROJECT_ID;
     const payload = {
       id,
       name: data.name || 'مشروع ISP',
@@ -195,8 +197,9 @@ export const updateProjectInfo = async (data) => {
 
 /** إرجاع المرحلة النشطة الحالية */
 export const getActivePhase = async (projectId) => {
-  const where = projectId ? `AND project_id = '${projectId}'` : '';
-  const r = await execSQL(`SELECT * FROM phases WHERE status = 'active' ${where} LIMIT 1`);
+  const r = projectId
+    ? await execSQL(`SELECT * FROM phases WHERE status = 'active' AND project_id = ? LIMIT 1`, [projectId])
+    : await execSQL(`SELECT * FROM phases WHERE status = 'active' LIMIT 1`);
   return r.rows._array?.[0] || null;
 };
 
@@ -209,8 +212,9 @@ export const getPhaseById = async (id) => {
 
 /** إرجاع جميع المراحل مرتبة بالتاريخ */
 export const getAllPhases = async (projectId) => {
-  const where = projectId ? `WHERE project_id = '${projectId}'` : '';
-  const r = await execSQL(`SELECT * FROM phases ${where} ORDER BY created_at DESC`);
+  const r = projectId
+    ? await execSQL(`SELECT * FROM phases WHERE project_id = ? ORDER BY created_at DESC`, [projectId])
+    : await execSQL(`SELECT * FROM phases ORDER BY created_at DESC`);
   return r.rows._array || [];
 };
 

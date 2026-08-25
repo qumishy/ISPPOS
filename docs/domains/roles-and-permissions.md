@@ -20,6 +20,12 @@ Service authorization is authoritative for sensitive actions. Navigation and scr
 
 The policy does not define `manager` or `accountant` as separate persisted IDs. Some screens and compatibility helpers accept `manager`. Treat it as noncanonical until a deliberate migration or role policy adds it.
 
+## Project Membership Roles
+
+`user_project_access.role` is authoritative for the selected project. A single global user may therefore be `admin` in one project and `agent` in another. Login copies only the chosen membership role into the active session and the local current-user cache. Permission loading remains scoped by both that user ID and selected `project_id`.
+
+The legacy `users.role` remains for backward compatibility and seeds the user's original membership. It must not be used to replace a differing role from the active membership.
+
 ## Permission Resolution
 
 Default role permissions are defined in `DEFAULT_ROLE_PERMISSIONS`. Entity/user overrides are resolved through the permissions services. System-locked permissions protect critical access such as administration and general collection approval.

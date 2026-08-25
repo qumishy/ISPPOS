@@ -323,6 +323,12 @@ export function setCurrentUser(user) {
   const nextKey = user?.project_id && user?.id ? `${user.project_id}:${user.id}` : '';
   const sameRealtimeContext = nextKey && nextKey === _realtimeSubscriptionKey;
   _currentUser = user;
+  if (!user) {
+    if (_realtimeChannel) supabase.removeChannel(_realtimeChannel);
+    _realtimeChannel = null;
+    _realtimeSubscriptionKey = '';
+    return;
+  }
   if (user && _isOnline && !sameRealtimeContext) {
     startRealtimeSubscription();
   }
@@ -481,7 +487,7 @@ export const TABLE_FIELDS = {
   agent_wallets: 'id,project_id,agent_id,batch_id,category_id,total_cards,sold_cards,issued_by,notes,phase_id,created_at',
   supplies: 'id,project_id,supply_number,user_id,agent_id,amount,notes,type,status,approved_at,approval_notes,phase_id,created_at',
   app_permissions: 'id,project_id,entity_type,entity_id,screen_name,can_view,can_add,can_edit,can_delete,created_at,updated_at',
-  project: 'id,name,license_number,owner_name,owner_phone,created_at',
+  project: 'id,name,license_number,owner_name,owner_phone,active,created_at',
   phases: 'id,project_id,name,description,start_date,end_date,target_new_pos,expected_total_sales,expected_total_collections,status,created_by,created_at,closed_at'
 };
 
@@ -1733,6 +1739,10 @@ async function pullRemoteChangesInternal(user, opts = {}) {
 
         const batchPromise = (async () => {
           for (const row of batch) {
+            if (t.name === 'users' && String(row.id) === String(user.id)) {
+              row.project_id = user.project_id;
+              row.role = user.role;
+            }
             if (t.name === 'project') {
               if (row.id !== user.project_id) continue;
             } else if (!row.project_id || row.project_id !== user.project_id) {

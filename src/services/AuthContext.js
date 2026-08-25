@@ -5,6 +5,20 @@ import { isOnline, setCurrentUser, hasBlockingPendingSyncForUser, runRequiredIni
 import { registerForPushNotificationsAsync } from './NotificationService';
 import { AGENT_SELF_COLLECTION_APPROVAL_PERMISSION, getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, resolvePermissionForRole, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting } from './database';
 import { useLoading } from './LoadingContext';
+import {
+  authenticateAndLoadProjects,
+  cacheSelectedSessionUser,
+  getLastProjectForUser,
+  loadActivePhasesForProject,
+  saveLastProjectForUser,
+} from './projectAccessService';
+import {
+  STALE_LOGIN_CACHE_MESSAGE,
+  migrateLoginCacheOnce,
+  recoverStaleStoredLoginSession,
+  repairLoginCacheManually,
+  validateStoredLoginSession,
+} from './loginCacheRecoveryService';
 
 const AuthContext = createContext(null);
 
@@ -46,6 +60,10 @@ export function AuthProvider({ children }) {
   const startupSyncRef = useRef({ blocking: false, backgroundKey: '' });
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(null);
+  const [project, setProject] = useState(null);
+  const [pendingLogin, setPendingLogin] = useState(null);
+  const [availableProjects, setAvailableProjects] = useState([]);
+  const [lastProjectId, setLastProjectId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dbReady, setDbReadyState] = useState(false);
   const [initialSyncReady, setInitialSyncReadyState] = useState(false);
@@ -56,6 +74,8 @@ export function AuthProvider({ children }) {
   const [activePhase, setActivePhase] = useState(null);
   const [selectedPhase, setSelectedPhase] = useState(null);
   const [allPhases, setAllPhases] = useState([]);
+  const [cacheRecoverySuggested, setCacheRecoverySuggested] = useState(false);
+  const [cacheRecoveryMessage, setCacheRecoveryMessage] = useState('');
   const selectedPhaseStorageKey = (scopeProjectId = projectId) => scopeProjectId ? `isp_selected_phase_id_${scopeProjectId}` : null;
 
   const reloadPermissions = async (userData) => {
@@ -75,6 +95,9 @@ export function AuthProvider({ children }) {
     try {
       if (phase?.id) await AsyncStorage.setItem(key, phase.id);
       else await AsyncStorage.removeItem(key);
+      if (user?.id && project?.project_id) {
+        await saveLastProjectForUser(user.id, project, phase?.id || null);
+      }
     } catch (e) {}
   };
 
@@ -127,21 +150,26 @@ export function AuthProvider({ children }) {
     const initApp = async () => {
       try {
         setDbReadyState(!!isDbReady());
-        const storedProjectId = await AsyncStorage.getItem('isp_project_id');
-        if (storedProjectId) {
-          setProjectId(storedProjectId);
+        const migration = await migrateLoginCacheOnce();
+        if (migration.recovered) {
+          setCacheRecoverySuggested(true);
+          setCacheRecoveryMessage(STALE_LOGIN_CACHE_MESSAGE);
         }
 
-        const storedUser = await AsyncStorage.getItem('isp_user');
-        if (storedUser) {
-          const parsed = JSON.parse(storedUser);
-          // Only auto-login if they belong to the current project
-          if (storedProjectId && parsed.project_id === storedProjectId) {
-             setUser(parsed);
-             setCurrentUser(parsed);
-          }
+        const validation = await validateStoredLoginSession();
+        if (validation.valid) {
+          setProjectId(validation.projectId);
+          setProject(validation.project);
+          setUser(validation.user);
+          setCurrentUser(validation.user);
+        } else if (validation.stale) {
+          await recoverStaleStoredLoginSession();
+          setCacheRecoverySuggested(true);
+          setCacheRecoveryMessage(STALE_LOGIN_CACHE_MESSAGE);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.log('[LoginCacheRecovery] startup_validation_failed', e?.message || e);
+      }
       setLoading(false);
     };
     initApp();
@@ -257,101 +285,152 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const saveUserSession = async (data) => {
-    try {
-      const cached = await AsyncStorage.getItem('isp_user_cache');
-      const users = cached ? JSON.parse(cached) : [];
-      const idx = users.findIndex(u => String(u.id) === String(data.id));
-      if (idx >= 0) users[idx] = data; else users.push(data);
-      await AsyncStorage.setItem('isp_user_cache', JSON.stringify(users));
-    } catch (e) {}
+  const activateProjectSession = async (authResult, selectedProject) => {
+    if (!authResult?.profile?.id || !selectedProject?.project_id) {
+      return { success: false, error: 'تعذر تحديد المشروع المطلوب.' };
+    }
+    const allowed = (authResult.projects || []).find((item) => (
+      String(item.project_id) === String(selectedProject.project_id)
+      && item.active !== false
+    ));
+    if (!allowed) return { success: false, error: 'لم يعد هذا المشروع متاحاً لهذا المستخدم.' };
 
+    const pendingGuard = await hasBlockingPendingSyncForUser(authResult.profile.id);
+    if (pendingGuard.blocked) {
+      return {
+        success: false,
+        error: 'توجد بيانات غير متزامنة تخص مستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل تبديل المستخدم.'
+      };
+    }
+
+    const phaseResult = await loadActivePhasesForProject(allowed.project_id);
+    if (!phaseResult.phases?.length) {
+      return { success: false, error: 'لا توجد مرحلة مفعلة لهذا المشروع.' };
+    }
+
+    await cacheSelectedSessionUser(authResult.profile, allowed);
+    const savedLast = await getLastProjectForUser(authResult.profile.id);
+    const initialPhase = phaseResult.phases.find((item) => String(item.id) === String(savedLast?.phase_id))
+      || phaseResult.phases[0];
     const userData = {
-      id: data.id,
-      project_id: data.project_id || projectId,
-      name: data.name,
-      username: data.username,
-      role: data.role,
-      phone: data.phone
+      id: authResult.profile.id,
+      legacy_project_id: authResult.profile.legacy_project_id || null,
+      project_id: allowed.project_id,
+      project_name: allowed.project_name,
+      membership_id: allowed.membership_id || null,
+      name: authResult.profile.name,
+      username: authResult.profile.username,
+      role: allowed.role,
+      phone: authResult.profile.phone || '',
+      active: true,
+      selected_project: allowed,
     };
 
+    setInitialSyncReady(false);
+    setInitialSyncReadyState(false);
+    setStartupError('');
+    setOfflineMode(!!authResult.offline);
+    await AsyncStorage.setItem('isp_project_id', allowed.project_id);
     await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
+    await AsyncStorage.setItem(selectedPhaseStorageKey(allowed.project_id), initialPhase.id);
+    await saveLastProjectForUser(authResult.profile.id, allowed, initialPhase.id);
+    setProjectId(allowed.project_id);
+    setProject(allowed);
+    setActivePhase(initialPhase);
+    setSelectedPhase(initialPhase);
     setUser(userData);
     setCurrentUser(userData);
-    return { success: true };
-  };
+    setPendingLogin(null);
+    setAvailableProjects([]);
+    setLastProjectId(null);
 
-  const loginFromCache = async (username, password) => {
-    try {
-      const cached = await AsyncStorage.getItem('isp_user_cache');
-      if (cached) {
-        const users = JSON.parse(cached);
-        const u = users.find(x => x.username === username && x.password_hash === password && x.project_id === projectId);
-        if (u) {
-          const pendingGuard = await hasBlockingPendingSyncForUser(u.id);
-          if (pendingGuard.blocked) {
-            return {
-              success: false,
-              error: 'توجد بيانات غير متزامنة تخص مستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل تبديل المستخدم.'
-            };
-          }
-          return await saveUserSession(u);
-        }
-      }
-    } catch (e) {}
-    return { success:false, error:'لا إنترنت — سجّل دخولك مرة واحدة بالإنترنت أولاً' };
+    if (!authResult.offline) {
+      try {
+        const token = await registerForPushNotificationsAsync();
+        if (token) await supabase.from('users').update({ push_token: token }).eq('id', userData.id);
+      } catch (e) { console.log('Error saving push token', e); }
+    }
+    return { success: true, user: userData, project: allowed };
   };
 
   const login = async (username, password) => {
-    // 1) جرّب Supabase أولًا دائمًا
-    try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('username', username)
-        .eq('is_active', true)
-        .eq('project_id', projectId)
-        .single();
-
-      if (!error && data) {
-        if (data.password_hash !== password) {
-          return { success:false, error:'كلمة المرور غير صحيحة' };
-        }
-
-        const pendingGuard = await hasBlockingPendingSyncForUser(data.id);
-        if (pendingGuard.blocked) {
-          return {
-            success: false,
-            error: 'توجد بيانات غير متزامنة تخص مستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً بنفس الحساب قبل تبديل المستخدم.'
-          };
-        }
-        
-        // جلب Expo Push Token وتحديثه في قاعدة البيانات
-        try {
-          const token = await registerForPushNotificationsAsync();
-          if (token) {
-            await supabase.from('users').update({ push_token: token }).eq('id', data.id);
-          }
-        } catch(e) { console.log('Error saving push token', e); }
-
-        return await saveUserSession(data);
-      }
-
-      // إذا رجع من Supabase بدون بيانات نكمل للكاش أو نرجع اسم المستخدم غير موجود
-      if (error && !/network|fetch|internet|offline/i.test(error.message || '')) {
-        return { success:false, error:'اسم المستخدم غير موجود' };
-      }
-    } catch (e) {
-      // نكمل إلى الكاش
+    const preLoginRecovery = await recoverStaleStoredLoginSession();
+    if (preLoginRecovery.recovered) {
+      setCacheRecoverySuggested(true);
+      setCacheRecoveryMessage(STALE_LOGIN_CACHE_MESSAGE);
+    }
+    const authResult = await authenticateAndLoadProjects(username, password);
+    if (!authResult.success) return authResult;
+    if (!authResult.projects?.length) {
+      return { success: false, error: 'لا توجد مشاريع مفعلة لهذا المستخدم' };
     }
 
-    // 2) fallback للكاش المحلي
-    return await loginFromCache(username, password);
+    const last = await getLastProjectForUser(authResult.profile.id);
+    const allowedLast = authResult.projects.find((item) => String(item.project_id) === String(last?.project_id));
+    const pending = { ...authResult, lastProjectId: allowedLast?.project_id || null };
+    setPendingLogin(pending);
+    setAvailableProjects(authResult.projects);
+    setLastProjectId(allowedLast?.project_id || null);
+    setCacheRecoverySuggested(false);
+    setCacheRecoveryMessage('');
+
+    if (authResult.projects.length === 1) {
+      return activateProjectSession(pending, authResult.projects[0]);
+    }
+    return {
+      success: true,
+      requiresProjectSelection: true,
+      projects: authResult.projects,
+      lastProjectId: allowedLast?.project_id || null,
+    };
+  };
+
+  const selectProject = async (selectedProjectId) => {
+    const selected = availableProjects.find((item) => String(item.project_id) === String(selectedProjectId));
+    if (!pendingLogin || !selected) return { success: false, error: 'تعذر تحديد المشروع المطلوب.' };
+    return activateProjectSession(pendingLogin, selected);
+  };
+
+  const cancelProjectSelection = () => {
+    setPendingLogin(null);
+    setAvailableProjects([]);
+    setLastProjectId(null);
+  };
+
+  const repairLoginCache = async () => {
+    const result = await repairLoginCacheManually();
+    setUser(null);
+    setProjectId(null);
+    setProject(null);
+    setPendingLogin(null);
+    setAvailableProjects([]);
+    setLastProjectId(null);
+    setActivePhase(null);
+    setSelectedPhase(null);
+    setAllPhases([]);
+    setCurrentUser(null);
+    setInitialSyncReady(false);
+    setInitialSyncReadyState(false);
+    setInitialSyncInProgressState(false);
+    setStartupError('');
+    setOfflineMode(false);
+    setCacheRecoverySuggested(false);
+    setCacheRecoveryMessage('');
+    return result;
   };
 
   const logout = async () => {
     await AsyncStorage.removeItem('isp_user');
+    await AsyncStorage.removeItem('isp_project_id');
     setUser(null);
+    setProjectId(null);
+    setProject(null);
+    setPendingLogin(null);
+    setAvailableProjects([]);
+    setLastProjectId(null);
+    setActivePhase(null);
+    setSelectedPhase(null);
+    setAllPhases([]);
     setCurrentUser(null);
     setInitialSyncReady(false);
     setInitialSyncReadyState(false);
@@ -393,7 +472,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, projectId, loading, login, loginWithLicense, logout, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
+    <AuthContext.Provider value={{ user, projectId, project, loading, login, selectProject, cancelProjectSelection, availableProjects, lastProjectId, loginWithLicense, logout, repairLoginCache, cacheRecoverySuggested, cacheRecoveryMessage, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true) }}>
       {children}
     </AuthContext.Provider>
   );

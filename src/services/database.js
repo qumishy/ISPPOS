@@ -14,4 +14,5 @@ export * from './dbNotificationService';
 export * from './permissionsService';
 export * from './dbBackupService';
 export * from './phaseService';
+export * from './projectAccessService';
 export * from './operationLogger';

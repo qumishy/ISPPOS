@@ -6,6 +6,10 @@ SQLite is the operational store. `SyncService.js` transports local changes to Su
 
 Every remote query or queue item must remain scoped to the current `project_id`. Foreign-project queue payloads are rejected and marked failed.
 
+The authenticated project membership is resolved before synchronization begins. `setCurrentUser` receives a session whose `project_id` and `role` come from the selected membership. Changing users/projects tears down the previous realtime subscription; pull, push, queue processing, and realtime filters then use only the new project key.
+
+Project membership discovery is not an ordinary sync-table pull. Online login calls the restricted authentication RPC, then caches its allowed project list per user. Offline login reads only that cache and never derives access from locally present business projects.
+
 ## Startup Sync
 
 Current startup readiness depends on these critical tables:
@@ -67,6 +71,7 @@ Realtime subscriptions refresh local invoice/collection state and trigger local 
 ## Explicit Non-Queue Remote Workflows
 
 - project-license lookup and online login;
+- authenticated user-project membership lookup and per-user access caching;
 - push-token update;
 - backup/restore maintenance;
 - remote-first admin batch creation and atomic admin wallet distribution.

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   KeyboardAvoidingView, Platform,
-  ScrollView, ActivityIndicator, Image, Animated, Easing,
+  ScrollView, ActivityIndicator, Image, Animated, Easing, Alert,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAuth } from '../services/AuthContext';
@@ -39,7 +39,16 @@ function FloatingOrb({ size, color, top, left, delay }) {
 }
 
 export default function LoginScreen() {
-  const { login } = useAuth();
+  const {
+    login,
+    selectProject,
+    cancelProjectSelection,
+    availableProjects,
+    lastProjectId,
+    repairLoginCache,
+    cacheRecoverySuggested,
+    cacheRecoveryMessage,
+  } = useAuth();
   const { showLoading, hideLoading } = useLoading();
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
 
@@ -52,6 +61,17 @@ export default function LoginScreen() {
   const [showPass, setShowPass] = useState(false);
   const [focusUser, setFocusUser] = useState(false);
   const [focusPass, setFocusPass] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [recoveryNotice, setRecoveryNotice] = useState('');
+
+  useEffect(() => {
+    if (!availableProjects.length) {
+      setSelectedProjectId(null);
+      return;
+    }
+    const preferred = availableProjects.find((item) => String(item.project_id) === String(lastProjectId));
+    setSelectedProjectId(preferred?.project_id || availableProjects[0].project_id);
+  }, [availableProjects, lastProjectId]);
 
   // Entrance animations
   const logoAnim = useRef(new Animated.Value(0)).current;
@@ -69,10 +89,57 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) { setError('يرجى إدخال اسم المستخدم وكلمة المرور'); return; }
+    setLoading(true);
     showLoading('جاري التحقق من الحساب...'); setError('');
-    const result = await login(username.trim(), password);
-    hideLoading();
-    if (!result.success) setError(result.error);
+    try {
+      const result = await login(username.trim(), password);
+      if (!result.success) setError(result.error);
+    } finally {
+      hideLoading();
+      setLoading(false);
+    }
+  };
+
+  const handleProjectLogin = async () => {
+    if (!selectedProjectId) { setError('اختر المشروع'); return; }
+    setLoading(true);
+    showLoading('جاري الدخول إلى المشروع...');
+    setError('');
+    try {
+      const result = await selectProject(selectedProjectId);
+      if (!result.success) setError(result.error);
+    } finally {
+      hideLoading();
+      setLoading(false);
+    }
+  };
+
+  const runLoginRepair = async () => {
+    setLoading(true);
+    showLoading('جاري إصلاح بيانات الدخول...');
+    setError('');
+    setRecoveryNotice('');
+    try {
+      await repairLoginCache();
+      setPassword('');
+      setRecoveryNotice('تم إصلاح بيانات الدخول القديمة. يمكنك تسجيل الدخول الآن.');
+    } catch (repairError) {
+      setError('تعذر إصلاح بيانات الدخول. حاول مرة أخرى.');
+    } finally {
+      hideLoading();
+      setLoading(false);
+    }
+  };
+
+  const handleLoginRepair = () => {
+    Alert.alert(
+      'إصلاح بيانات الدخول',
+      'سيتم حذف بيانات الدخول القديمة فقط دون حذف الفواتير أو التحصيلات أو البيانات غير المتزامنة.',
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'إصلاح', onPress: runLoginRepair },
+      ],
+    );
   };
 
   return (
@@ -115,8 +182,8 @@ export default function LoginScreen() {
           opacity: formAnim,
           transform: [{ translateY: formAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
         }]}>
-          <Text style={s.formTitle}>تسجيل الدخول</Text>
-          <Text style={s.formSub}>أدخل بياناتك للمتابعة</Text>
+          <Text style={s.formTitle}>{availableProjects.length ? 'اختر المشروع' : 'تسجيل الدخول'}</Text>
+          <Text style={s.formSub}>{availableProjects.length ? 'اختر المشروع الذي تريد العمل عليه' : 'أدخل بياناتك للمتابعة'}</Text>
 
           {/* Error */}
           {error ? (
@@ -126,58 +193,103 @@ export default function LoginScreen() {
             </View>
           ) : null}
 
-          {/* Username */}
-          <View style={s.inputGroup}>
-            <Text style={s.label}>اسم المستخدم</Text>
-            <View style={[s.inputWrap, focusUser && s.inputFocused]}>
-              <Feather name="user" size={18} color={focusUser ? colors.primary : colors.t3} style={{ marginLeft: spacing.sm }} />
-              <TextInput
-                style={s.input}
-                value={username}
-                onChangeText={(t) => { setUsername(t); if(error) setError(''); }}
-                placeholder="اسم المستخدم"
-                placeholderTextColor={colors.t3}
-                autoCapitalize="none"
-                autoCorrect={false}
-                onFocus={() => {
-                  setFocusUser(true);
-                  setTimeout(() => scrollRef.current?.scrollTo({ y: 150, animated: true }), 100);
-                }}
-                onBlur={() => setFocusUser(false)}
-              />
+          {!error && cacheRecoverySuggested && cacheRecoveryMessage ? (
+            <View style={s.recoveryWarningBox}>
+              <Feather name="refresh-cw" size={18} color={colors.warning} style={{ marginLeft: 6 }} />
+              <Text style={s.recoveryWarningText}>{cacheRecoveryMessage}</Text>
             </View>
-          </View>
+          ) : null}
 
-          {/* Password */}
-          <View style={s.inputGroup}>
-            <Text style={s.label}>كلمة المرور</Text>
-            <View style={[s.inputWrap, focusPass && s.inputFocused]}>
-              <Feather name="lock" size={18} color={focusPass ? colors.primary : colors.t3} style={{ marginLeft: spacing.sm }} />
-              <TextInput
-                style={s.input}
-                value={password}
-                onChangeText={(t) => { setPassword(t); if(error) setError(''); }}
-                placeholder="كلمة المرور"
-                placeholderTextColor={colors.t3}
-                secureTextEntry={!showPass}
-                autoCapitalize="none"
-                onFocus={() => {
-                  setFocusPass(true);
-                  setTimeout(() => scrollRef.current?.scrollTo({ y: 220, animated: true }), 100);
-                }}
-                onBlur={() => setFocusPass(false)}
-              />
-              <TouchableOpacity onPress={() => setShowPass(!showPass)} style={s.eyeBtn}>
-                <Feather name={showPass ? 'eye-off' : 'eye'} size={18} color={colors.t3} />
-              </TouchableOpacity>
+          {recoveryNotice ? (
+            <View style={s.recoverySuccessBox}>
+              <Feather name="check-circle" size={18} color={colors.success} style={{ marginLeft: 6 }} />
+              <Text style={s.recoverySuccessText}>{recoveryNotice}</Text>
             </View>
-          </View>
+          ) : null}
 
-          {/* Login Button */}
+          {!availableProjects.length ? (
+            <>
+              <View style={s.inputGroup}>
+                <Text style={s.label}>اسم المستخدم</Text>
+                <View style={[s.inputWrap, focusUser && s.inputFocused]}>
+                  <Feather name="user" size={18} color={focusUser ? colors.primary : colors.t3} style={{ marginLeft: spacing.sm }} />
+                  <TextInput
+                    style={s.input}
+                    value={username}
+                    onChangeText={(t) => { setUsername(t); if(error) setError(''); }}
+                    placeholder="اسم المستخدم"
+                    placeholderTextColor={colors.t3}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onFocus={() => {
+                      setFocusUser(true);
+                      setTimeout(() => scrollRef.current?.scrollTo({ y: 150, animated: true }), 100);
+                    }}
+                    onBlur={() => setFocusUser(false)}
+                  />
+                </View>
+              </View>
+
+              <View style={s.inputGroup}>
+                <Text style={s.label}>كلمة المرور</Text>
+                <View style={[s.inputWrap, focusPass && s.inputFocused]}>
+                  <Feather name="lock" size={18} color={focusPass ? colors.primary : colors.t3} style={{ marginLeft: spacing.sm }} />
+                  <TextInput
+                    style={s.input}
+                    value={password}
+                    onChangeText={(t) => { setPassword(t); if(error) setError(''); }}
+                    placeholder="كلمة المرور"
+                    placeholderTextColor={colors.t3}
+                    secureTextEntry={!showPass}
+                    autoCapitalize="none"
+                    onFocus={() => {
+                      setFocusPass(true);
+                      setTimeout(() => scrollRef.current?.scrollTo({ y: 220, animated: true }), 100);
+                    }}
+                    onBlur={() => setFocusPass(false)}
+                  />
+                  <TouchableOpacity onPress={() => setShowPass(!showPass)} style={s.eyeBtn}>
+                    <Feather name={showPass ? 'eye-off' : 'eye'} size={18} color={colors.t3} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </>
+          ) : (
+            <View style={s.projectList}>
+              {availableProjects.map((item) => {
+                const selected = String(selectedProjectId) === String(item.project_id);
+                const isLast = String(lastProjectId) === String(item.project_id);
+                return (
+                  <TouchableOpacity
+                    key={item.project_id}
+                    style={[s.projectCard, selected && s.projectCardSelected]}
+                    onPress={() => { setSelectedProjectId(item.project_id); setError(''); }}
+                    activeOpacity={0.8}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                  >
+                    <View style={[s.projectRadio, selected && s.projectRadioSelected]}>
+                      {selected ? <View style={s.projectRadioDot} /> : null}
+                    </View>
+                    <View style={s.projectDetails}>
+                      <View style={s.projectTitleRow}>
+                        <Text style={s.projectName}>{item.project_name}</Text>
+                        {isLast ? <Text style={s.lastProjectBadge}>آخر مشروع مستخدم</Text> : null}
+                      </View>
+                      {item.license_number ? (
+                        <Text style={s.projectLicense}>رقم الترخيص: {item.license_number}</Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
           <Animated.View style={{ transform: [{ scale: loginScale }] }}>
             <TouchableOpacity
               style={[s.loginBtn, loading && { opacity: 0.7 }]}
-              onPress={handleLogin}
+              onPress={availableProjects.length ? handleProjectLogin : handleLogin}
               disabled={loading}
               activeOpacity={0.87}
               onPressIn={() => Animated.spring(loginScale, { toValue: 0.96, useNativeDriver: true }).start()}
@@ -185,10 +297,32 @@ export default function LoginScreen() {
             >
               {loading
                 ? <ActivityIndicator color="#fff" size="small" />
-                : <Text style={s.loginBtnText}>دخول آمن</Text>
+                : <Text style={s.loginBtnText}>{availableProjects.length ? 'دخول إلى المشروع' : 'دخول آمن'}</Text>
               }
             </TouchableOpacity>
           </Animated.View>
+
+          {availableProjects.length ? (
+            <TouchableOpacity
+              style={s.backToLoginBtn}
+              onPress={() => { cancelProjectSelection(); setError(''); }}
+              disabled={loading}
+            >
+              <Feather name="arrow-right" size={16} color={colors.t2} />
+              <Text style={s.backToLoginText}>العودة إلى بيانات الدخول</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={s.repairLoginBtn}
+              onPress={handleLoginRepair}
+              disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="إصلاح بيانات الدخول"
+            >
+              <Feather name="tool" size={16} color={colors.primary} />
+              <Text style={s.repairLoginText}>إصلاح بيانات الدخول</Text>
+            </TouchableOpacity>
+          )}
 
         </Animated.View>
 
