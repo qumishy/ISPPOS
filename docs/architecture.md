@@ -69,6 +69,7 @@ This remote-first ordering keeps administrative inventory mutations authoritativ
 - Session creation occurs only after a project and active phase have been resolved. The selected membership role becomes `user.role`, and the selected project becomes `user.project_id`, `AuthContext.projectId`, and `AuthContext.project`.
 - Push-token persistence is remote after notification registration.
 - Backup/restore is an explicit maintenance workflow in `dbBackupService.js` and is not an ordinary screen business query.
+- Project-membership mutations are online-only RPC workflows. `SYSTEM_ADMIN` may manage every project; a project `admin` is limited to active projects where that actor has an active admin membership and may assign only `cashier` or `agent`.
 
 ## Startup Behavior
 

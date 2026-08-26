@@ -271,6 +271,51 @@ export const authenticateAndLoadProjects = async (usernameValue, password) => {
   }
 };
 
+/**
+ * Offline-safe session access for the signed-in user, read from the
+ * per-user login cache (populated on every successful online login).
+ * Returns { profile, projects } or null when nothing is cached.
+ */
+export const getCachedSessionAccessForUser = async (userId) => {
+  if (!userId) return null;
+  let access = null;
+  try {
+    const perUserRaw = await AsyncStorage.getItem(projectAccessStorageKey(userId));
+    if (perUserRaw) access = JSON.parse(perUserRaw);
+  } catch (error) {
+    access = null;
+  }
+  if (!access) {
+    try {
+      const raw = await AsyncStorage.getItem('isp_user_cache');
+      const list = raw ? JSON.parse(raw) : [];
+      access = Array.isArray(list)
+        ? list.find((item) => String(item.id) === String(userId)) || null
+        : null;
+    } catch (error) {
+      return null;
+    }
+  }
+  if (!access) return null;
+
+  const projects = (access.projects || [])
+    .map(normalizeProject)
+    .filter((project) => project.project_id && project.active && project.role);
+
+  return {
+    profile: {
+      id: access.id,
+      legacy_project_id: access.legacy_project_id || access.project_id || null,
+      name: access.name,
+      username: access.username,
+      phone: access.phone || '',
+      global_role: access.global_role || null,
+      password_hash: access.password_hash || '',
+    },
+    projects,
+  };
+};
+
 export const getLastProjectForUser = async (userId) => {
   if (!userId) return null;
   try {

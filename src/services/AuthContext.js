@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import { isOnline, setCurrentUser, hasBlockingPendingSyncForUser, runRequiredInitialSync, setInitialSyncReady, hasLocalRequiredData, syncNow } from './SyncService';
 import { registerForPushNotificationsAsync } from './NotificationService';
-import { AGENT_SELF_COLLECTION_APPROVAL_PERMISSION, getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, resolvePermissionForRole, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting } from './database';
+import { AGENT_SELF_COLLECTION_APPROVAL_PERMISSION, getEffectiveUserPermissions, DEFAULT_ROLE_PERMISSIONS, resolvePermissionForRole, getActivePhase, getAllPhases, subscribeDataChanges, isDbReady, getSetting, saveSetting, execSQL, notifyDataChanged, getCachedSessionAccessForUser } from './database';
 import { useLoading } from './LoadingContext';
 import {
   authenticateAndLoadProjects,
@@ -87,7 +87,21 @@ export function AuthProvider({ children }) {
   const [allPhases, setAllPhases] = useState([]);
   const [cacheRecoverySuggested, setCacheRecoverySuggested] = useState(false);
   const [cacheRecoveryMessage, setCacheRecoveryMessage] = useState('');
+  const [cachedAllowedProjects, setCachedAllowedProjects] = useState([]);
   const selectedPhaseStorageKey = (scopeProjectId = projectId) => scopeProjectId ? `isp_selected_phase_id_${scopeProjectId}` : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!user?.id) {
+        if (!cancelled) setCachedAllowedProjects([]);
+        return;
+      }
+      const access = await getCachedSessionAccessForUser(user.id);
+      if (!cancelled) setCachedAllowedProjects(access?.projects || []);
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id]);
 
   const reloadPermissions = async (userData) => {
     if (!userData) return;
@@ -385,12 +399,11 @@ export function AuthProvider({ children }) {
     const authResult = await authenticateAndLoadProjects(username, password);
     if (!authResult.success) return authResult;
 
-    // SYSTEM_ADMIN credentials are held in memory only for online-only
-    // administration RPCs; they are never persisted anywhere.
+    // Actor credentials are held memory-only for the current session so
+    // server-verified admin RPCs (system administration, project-scoped
+    // membership management) can authorize the caller. Never persisted.
+    setSystemAdminActorCredentials(authResult.profile.username, password);
     const isSystemAdmin = isSystemAdminUser(authResult.profile);
-    if (isSystemAdmin) {
-      setSystemAdminActorCredentials(authResult.profile.username, password);
-    }
 
     if (!authResult.projects?.length) {
       if (!isSystemAdmin) {
@@ -503,6 +516,101 @@ export function AuthProvider({ children }) {
     setLastProjectId(null);
   };
 
+  // Switch the active project without logging out. Only projects present in
+  // the per-user cached membership list are offered; role/permissions/phase
+  // are re-scoped from the selected membership.
+  const switchProject = async (selectedProjectId, options = {}) => {
+    if (!user?.id || !selectedProjectId) {
+      return { success: false, error: 'تعذر تحديد المشروع المطلوب.' };
+    }
+
+    const access = await getCachedSessionAccessForUser(user.id);
+    const projects = access?.projects || [];
+    setCachedAllowedProjects(projects);
+
+    const target = projects.find((item) => (
+      String(item.project_id) === String(selectedProjectId)
+      && item.active !== false
+      && item.role
+    ));
+    if (!access || !target) {
+      return { success: false, error: 'لا يمكن تحميل مشاريع هذا المستخدم حالياً. اتصل بالإنترنت لتحديث الصلاحيات.' };
+    }
+    if (user.project_id && String(target.project_id) === String(user.project_id)) {
+      return { success: true, alreadyActive: true };
+    }
+    if (!options.acknowledgedWarning) {
+      let pendingCount = 0;
+      try {
+        const r = await execSQL(`SELECT COUNT(*) AS c FROM sync_queue WHERE COALESCE(attempts, 0) < 5`);
+        pendingCount = Number(r.rows._array?.[0]?.c || 0);
+      } catch (e) {}
+      if (pendingCount > 0) {
+        return {
+          success: false,
+          needsConfirm: true,
+          pendingCount,
+          warning: 'يوجد بيانات غير متزامنة. سيتم تغيير المشروع دون حذف أي بيانات.',
+        };
+      }
+    }
+
+    const pendingGuard = await hasBlockingPendingSyncForUser(user.id);
+    if (pendingGuard.blocked) {
+      return {
+        success: false,
+        error: 'توجد بيانات غير متزامنة لمستخدماً آخر على هذا الجهاز. قم بالمزامنة أولاً قبل تغيير المشروع.'
+      };
+    }
+
+    const phaseResult = await loadActivePhasesForProject(target.project_id);
+    if (!phaseResult.phases?.length) {
+      return { success: false, error: 'لا توجد مرحلة مفعلة لهذا المشروع.' };
+    }
+
+    await cacheSelectedSessionUser(access.profile, target, {
+      persistPassword: !isSystemAdminRole(access.profile.global_role),
+    });
+
+    const savedLast = await getLastProjectForUser(user.id);
+    const initialPhase = phaseResult.phases.find((item) => String(item.id) === String(savedLast?.phase_id))
+      || phaseResult.phases[0];
+
+    const userData = {
+      id: user.id,
+      legacy_project_id: access.profile.legacy_project_id || null,
+      project_id: target.project_id,
+      project_name: target.project_name,
+      membership_id: target.membership_id || null,
+      name: user.name,
+      username: user.username,
+      role: target.role,
+      global_role: user.global_role || null,
+      phone: user.phone || '',
+      active: true,
+      selected_project: target,
+    };
+
+    await AsyncStorage.setItem('isp_project_id', target.project_id);
+    await AsyncStorage.setItem('isp_user', JSON.stringify(userData));
+    await AsyncStorage.setItem(selectedPhaseStorageKey(target.project_id), initialPhase.id);
+    await saveLastProjectForUser(user.id, target, initialPhase.id);
+
+    setInitialSyncReady(false);
+    setInitialSyncReadyState(false);
+    setStartupError('');
+    setOfflineMode(!isOnline());
+    setProjectId(target.project_id);
+    setProject(target);
+    setActivePhase(initialPhase);
+    setSelectedPhase(initialPhase);
+    setUser(userData);
+    setCurrentUser(userData);
+    notifyDataChanged('all');
+
+    return { success: true, user: userData };
+  };
+
   const repairLoginCache = async () => {
     const result = await repairLoginCacheManually();
     setUser(null);
@@ -581,7 +689,7 @@ export function AuthProvider({ children }) {
   const isSystemAdmin = !!user && isSystemAdminUser(user);
 
   return (
-    <AuthContext.Provider value={{ user, projectId, project, loading, login, selectProject, cancelProjectSelection, activateSystemAdminSession, availableProjects, lastProjectId, loginWithLicense, logout, repairLoginCache, cacheRecoverySuggested, cacheRecoveryMessage, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true), isSystemAdmin }}>
+    <AuthContext.Provider value={{ user, projectId, project, loading, login, selectProject, cancelProjectSelection, activateSystemAdminSession, availableProjects, lastProjectId, loginWithLicense, logout, repairLoginCache, cacheRecoverySuggested, cacheRecoveryMessage, can, canAccess, hasEffectivePermission, permissions, activePhase, selectedPhase, setSelectedPhase: selectPhase, allPhases, online: isOnline(), dbReady, initialSyncReady, initialSyncInProgress, startupError, offlineMode, retryInitialSync: () => ensureStartupSync(true), isSystemAdmin, cachedAllowedProjects, switchProject }}>
       {children}
     </AuthContext.Provider>
   );

@@ -19,22 +19,27 @@ import { formatCurrency } from '../utils/helpers';
 import { Btn, Loading, Badge, Row, Input, Avatar } from '../components/UI';
 import { Feather } from '@expo/vector-icons';
 import { makeStyles } from '../styles/admin.styles';
+import ProjectMembershipsTab from './admin/ProjectMembershipsTab';
 
 // ── Premium Picker
-function Picker({ label, options, value, onChange, placeholder, s, colors }) {
+function Picker({ label, options, value, onChange, placeholder, s, colors, disabled = false }) {
   const [open, setOpen] = useState(false);
-  const selected = options.find(o => o.value === value);
+  const safeOptions = (Array.isArray(options) ? options : [])
+    .filter(option => option && option.value !== null && option.value !== undefined)
+    .map(option => ({ value: String(option.value), label: String(option.label || 'غير محدد') }));
+  const safeValue = value === null || value === undefined ? '' : String(value);
+  const selected = safeOptions.find(option => option.value === safeValue);
   return (
     <View style={{ marginBottom: 12 }}>
       {label && <Text style={s.label}>{label}</Text>}
-      <TouchableOpacity style={[s.picker, open && s.pickerOpen]} onPress={() => setOpen(!open)} activeOpacity={0.8}>
+      <TouchableOpacity style={[s.picker, open && s.pickerOpen, disabled && { opacity: 0.55 }]} onPress={() => !disabled && setOpen(!open)} disabled={disabled} activeOpacity={0.8}>
         <Text style={[s.pickerTxt, !selected && { color: colors.t3 }]}>{selected ? selected.label : placeholder || 'اختر...'}</Text>
         <Text style={{ color: open ? colors.blue : colors.t3, fontSize: 12 }}>{open ? '▲' : '▼'}</Text>
       </TouchableOpacity>
       {open && (
         <View style={s.dropdown}>
           <ScrollView style={{ maxHeight: 210 }}>
-            {options.map(opt => (
+            {safeOptions.map(opt => (
               <TouchableOpacity
                 key={String(opt.value)}
                 style={[s.dropItem, value === opt.value && s.dropItemAct]}
@@ -53,6 +58,7 @@ function Picker({ label, options, value, onChange, placeholder, s, colors }) {
 
 const TABS = [
   { key: 'phases',     label: 'المراحل',       icon: 'layers' },
+  { key: 'memberships', label: 'إدارة مستخدمي المشروع', icon: 'users' },
   { key: 'users',      label: 'المستخدمون',    icon: 'users' },
   { key: 'categories', label: 'الفئات',        icon: 'tag' },
   { key: 'network',    label: 'بيانات الشبكة', icon: 'globe' },
@@ -62,7 +68,18 @@ const TABS = [
 export default function AdminScreen({ navigation }) {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const s = makeStyles(colors, spacing, radius, fontSize, shadow);
+  const { user } = useAuth();
   const [tab, setTab] = useState('phases');
+
+  if (user?.role !== 'admin') {
+    return (
+      <View style={[s.screen, { alignItems: 'center', justifyContent: 'center', padding: spacing.lg }]}>
+        <Text style={{ color: colors.danger, fontWeight: '800', textAlign: 'center' }}>
+          لا تملك صلاحية الوصول إلى إدارة مستخدمي المشروع.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={s.screen}>
@@ -80,6 +97,7 @@ export default function AdminScreen({ navigation }) {
       </ScrollView>
 
       {tab === 'phases'     && <PhasesTab s={s} navigation={navigation} />}
+      {tab === 'memberships' && <ProjectMembershipsTab s={s} />}
       {tab === 'users'      && <UsersTab s={s} />}
       {tab === 'categories' && <CategoriesTab s={s} />}
       {tab === 'network'    && <NetworkTab s={s} />}

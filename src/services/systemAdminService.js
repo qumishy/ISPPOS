@@ -221,6 +221,21 @@ export const fetchSystemMemberships = async (projectId) => {
   return rows || [];
 };
 
+// Projects the current actor may manage memberships for: all active
+// projects for SYSTEM_ADMIN, otherwise projects with an active admin
+// membership for the signed-in project admin.
+export const fetchManagedProjects = async () => {
+  const rows = await callSystemRpc('list_managed_projects');
+  return rows || [];
+};
+
+export const fetchProjectMemberships = async (projectId) => {
+  if (!projectId) return [];
+  const rows = await callSystemRpc('list_project_memberships', { p_project_id: projectId });
+  await mirrorMemberships(rows);
+  return rows || [];
+};
+
 // ── Mutations (each re-fetches its list so local mirrors converge) ───────
 
 export const createSystemProject = async ({ name, license_number, notes }) => {
@@ -295,19 +310,26 @@ export const updateSystemUser = async ({ id, name, phone, is_active, new_passwor
   return row;
 };
 
-export const linkUserToProject = async ({ user_id, project_id, role, active = true }) => {
+export const linkUserToProject = async ({ user_id, username, project_id, role, active = true }) => {
+  const normalizedRole = String(role || '').trim();
+  if (!['admin', 'cashier', 'agent'].includes(normalizedRole)) {
+    throw taggedError('الدور المحدد غير مدعوم.', 'MEMBERSHIP_ROLE_NOT_ALLOWED');
+  }
   const row = await callSystemRpc('upsert_user_project_access', {
-    p_user_id: user_id,
+    p_user_id: user_id || null,
+    p_username: username ? String(username).trim() : null,
     p_project_id: project_id,
-    p_role: role,
+    p_role: normalizedRole,
     p_active: active !== false,
   });
-  await fetchSystemMemberships(project_id);
+  await fetchProjectMemberships(project_id);
   return row;
 };
 
 export const deactivateUserProjectAccess = async ({ membership_id, project_id }) => {
   const row = await callSystemRpc('deactivate_user_project_access', { p_membership_id: membership_id });
-  await fetchSystemMemberships(project_id);
+  if (project_id) {
+    await fetchProjectMemberships(project_id);
+  }
   return row;
 };

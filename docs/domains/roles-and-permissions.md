@@ -14,9 +14,11 @@ Service authorization is authoritative for sensitive actions. Navigation and scr
 
 | ID | Arabic label | Core intent |
 |---|---|---|
-| `admin` | المدير العام | protected system administration and sensitive approvals |
+| `admin` | مدير المشروع | project-scoped administration and sensitive approvals |
 | `cashier` | المحاسب | collection approval and allowed financial/supply workflows |
 | `agent` | المندوب | scoped sales, collections, and agent-owned operational data |
+
+`SYSTEM_ADMIN` is a separate global role for full system administration. It is not a project-membership role and project admins cannot assign it.
 
 The policy does not define `manager` or `accountant` as separate persisted IDs. Some screens and compatibility helpers accept `manager`. Treat it as noncanonical until a deliberate migration or role policy adds it.
 
@@ -25,6 +27,8 @@ The policy does not define `manager` or `accountant` as separate persisted IDs. 
 `user_project_access.role` is authoritative for the selected project. A single global user may therefore be `admin` in one project and `agent` in another. Login copies only the chosen membership role into the active session and the local current-user cache. Permission loading remains scoped by both that user ID and selected `project_id`.
 
 The legacy `users.role` remains for backward compatibility and seeds the user's original membership. It must not be used to replace a differing role from the active membership.
+
+An active project `admin` may manage only `cashier` and `agent` memberships inside projects where that actor has an active `admin` membership. Assigning or modifying an `admin` membership is reserved for `SYSTEM_ADMIN`. Membership mutations are online-only and server-authorized; direct table access remains denied and no broad RLS write policy is used.
 
 ## Permission Resolution
 

@@ -192,7 +192,7 @@ export default function NewSupplyScreen({ navigation }) {
                     <View style={{ flex: 1 }}>
                       <Text style={{ fontWeight: 'bold', color: colors.t1 }}>سند {col.collection_number}</Text>
                       <Text style={{ fontSize: 11, color: colors.t3 }}>
-                        {selectedAgent === 'all' && `المندوب: ${col.agent_name || 'غير محدد'}  |  `}
+                        نقطة البيع: {col.pos_name || 'غير محددة'}  |  {selectedAgent === 'all' && `المندوب: ${col.agent_name || 'غير محدد'}  |  `}
                         فاتورة: {col.invoice_number}  |  {col.collection_date}
                       </Text>
                     </View>

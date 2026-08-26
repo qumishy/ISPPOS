@@ -142,7 +142,14 @@ export function Input({ label, value, onChangeText, placeholder, icon, secureTex
 export function Picker({ label, options, value, onChange, placeholder, loading: pLoading, searchable = false, wrapperStyle, dropdownZIndex = 1000 }) {
   const { colors, spacing, radius, fontSize, shadow } = useTheme();
   const [isFocused, setIsFocused] = React.useState(false);
-  const selected = options?.find(o => String(o.value) === String(value));
+  const safeOptions = (Array.isArray(options) ? options : [])
+    .filter(option => option && option.value !== null && option.value !== undefined)
+    .map(option => ({
+      value: String(option.value),
+      label: String(option.label || 'غير محدد'),
+    }));
+  const safeValue = value === null || value === undefined ? '' : String(value);
+  const selected = safeOptions.find(option => option.value === safeValue);
   const [open, setOpen] = React.useState(false);
   const [filterText, setFilterText] = React.useState('');
   const animValue = useRef(new Animated.Value(0)).current;
@@ -158,8 +165,8 @@ export function Picker({ label, options, value, onChange, placeholder, loading: 
   }, [open]);
 
   const filteredOptions = filterText
-    ? options.filter(o => o.label?.toLowerCase().includes(filterText.toLowerCase()))
-    : options;
+    ? safeOptions.filter(option => option.label.toLowerCase().includes(filterText.toLowerCase()))
+    : safeOptions;
 
   const dropdownHeight = animValue.interpolate({ inputRange: [0, 1], outputRange: [0, 260] });
   const dropdownOpacity = animValue.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] });

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   View, Text, ActivityIndicator, TouchableOpacity,
-  Image, ScrollView, Animated, StyleSheet, StatusBar, Modal,
+  Image, ScrollView, Animated, StyleSheet, StatusBar, Modal, Alert,
 } from 'react-native';
 
 import { NavigationContainer, DrawerActions, DefaultTheme, DarkTheme } from '@react-navigation/native';
@@ -27,7 +27,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 import UpdatesScreen from '../screens/UpdatesScreen';
 import DiscountApprovalsScreen from '../screens/DiscountApprovalsScreen';
 
-import { getLocalNotificationsBox, getPendingOfflineOperationsForUser } from '../services/database';
+import { getLocalNotificationsBox, getPendingOfflineOperationsForUser, getLastProjectForUser } from '../services/database';
 import { setupNotificationListeners } from '../services/NotificationService';
 import { isSystemAdminUser } from '../services/systemAdminService';
 
@@ -165,6 +165,181 @@ function SystemAdminHeaderActions() {
     </TouchableOpacity>
   );
 }
+
+// ══════════════════════════════════════════════════════════════
+//  PROJECT SWITCHER (drawer) — only for users with >1 cached project
+// ══════════════════════════════════════════════════════════════
+function DrawerProjectSwitcher() {
+  const { user, project, cachedAllowedProjects, switchProject } = useAuth();
+  const { colors, fontSize, isLight } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [selectedPid, setSelectedPid] = useState(null);
+  const [lastPid, setLastPid] = useState(null);
+
+  const projects = cachedAllowedProjects || [];
+
+  useEffect(() => {
+    let cancelled = false;
+    getLastProjectForUser(user?.id).then((value) => {
+      if (!cancelled) setLastPid(value?.project_id || null);
+    });
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  if (!user || projects.length < 2) return null;
+
+  const currentName = project?.project_name || '—';
+
+  const openSheet = () => {
+    setSelectedPid(project?.project_id || projects[0]?.project_id || null);
+    setOpen(true);
+  };
+
+  const doSwitch = async (pid, acknowledgedWarning) => {
+    if (!pid) return;
+    setSwitching(true);
+    try {
+      const result = await switchProject(pid, { acknowledgedWarning: !!acknowledgedWarning });
+      if (result.needsConfirm) {
+        Alert.alert('تغيير المشروع', result.warning, [
+          { text: 'إلغاء', style: 'cancel' },
+          { text: 'متابعة', onPress: () => { doSwitch(pid, true); } },
+        ]);
+        return;
+      }
+      if (!result.success) {
+        Alert.alert('تنبيه', result.error || 'تعذر تغيير المشروع.');
+        return;
+      }
+      setOpen(false);
+      Alert.alert('تم', result.alreadyActive ? 'أنت على هذا المشروع بالفعل.' : 'تم تغيير المشروع بنجاح.');
+    } catch (error) {
+      Alert.alert('تنبيه', error?.message || 'تعذر تغيير المشروع.');
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  return (
+    <View style={ps.wrap}>
+      <Text style={[ps.label, { color: isLight ? 'rgba(255,255,255,0.85)' : colors.t2, fontSize: fontSize.xs }]}>
+        المشروع الحالي
+      </Text>
+      <TouchableOpacity
+        activeOpacity={0.82}
+        onPress={openSheet}
+        style={[ps.button, { backgroundColor: colors.card, borderColor: colors.border }]}
+      >
+        <Feather name="refresh-cw" size={15} color={colors.primary} />
+        <Text style={[ps.buttonText, { color: colors.t1, fontSize: fontSize.sm }]} numberOfLines={1}>
+          {currentName}
+        </Text>
+        <Text style={{ color: colors.primary, fontSize: 10, fontWeight: '800' }}>تغيير المشروع</Text>
+      </TouchableOpacity>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => !switching && setOpen(false)}>
+        <View style={d.phaseModalRoot} pointerEvents="box-none">
+          <TouchableOpacity activeOpacity={1} style={d.phaseBackdrop} onPress={() => !switching && setOpen(false)} />
+          <View style={[ps.sheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={ps.sheetHeader}>
+              <Text style={{ color: colors.t1, fontWeight: '800', fontSize: fontSize.md }}>اختر المشروع</Text>
+              <TouchableOpacity onPress={() => setOpen(false)} disabled={switching}>
+                <Feather name="x" size={20} color={colors.t2} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView nestedScrollEnabled style={ps.listScroll}>
+              {projects.map((item) => {
+                const isSelected = String(selectedPid) === String(item.project_id);
+                const isCurrent = user?.project_id && String(item.project_id) === String(user.project_id);
+                const isLast = lastPid && String(item.project_id) === String(lastPid);
+                return (
+                  <TouchableOpacity
+                    key={String(item.project_id)}
+                    activeOpacity={0.82}
+                    onPress={() => setSelectedPid(item.project_id)}
+                    style={[
+                      ps.row,
+                      { backgroundColor: isSelected ? colors.primary + '14' : colors.card, borderColor: colors.border },
+                    ]}
+                  >
+                    <View style={ps.rowMain}>
+                      <View style={ps.rowTitleWrap}>
+                        <Text style={{ color: isSelected ? colors.primary : colors.t1, fontWeight: '800', fontSize: fontSize.sm, flex: 1, textAlign: 'right' }} numberOfLines={1}>
+                          {item.project_name}
+                        </Text>
+                        {isCurrent ? (
+                          <View style={[ps.badge, { backgroundColor: colors.success + '18' }]}>
+                            <Text style={{ color: colors.success, fontSize: 10, fontWeight: '800' }}>الحالية</Text>
+                          </View>
+                        ) : null}
+                        {isLast ? (
+                          <View style={[ps.badge, { backgroundColor: colors.primary + '14' }]}>
+                            <Text style={{ color: colors.primary, fontSize: 10, fontWeight: '800' }}>آخر مشروع مستخدم</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      {item.license_number ? (
+                        <Text style={{ color: colors.t3, fontSize: 11, textAlign: 'right' }}>رقم الترخيص: {item.license_number}</Text>
+                      ) : null}
+                    </View>
+                    <View style={[ps.radio, isSelected && { borderColor: colors.primary }]}>
+                      {isSelected ? <View style={[ps.radioDot, { backgroundColor: colors.primary }]} /> : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              style={[ps.enterBtn, { backgroundColor: colors.primary }, switching && { opacity: 0.6 }]}
+              onPress={() => doSwitch(selectedPid)}
+              disabled={switching || !selectedPid}
+            >
+              {switching
+                ? <ActivityIndicator color="#FFFFFF" size="small" />
+                : <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: fontSize.sm }}>الدخول إلى المشروع</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const ps = {
+  wrap: { marginTop: 10, alignSelf: 'center', width: '92%', zIndex: 4999 },
+  label: { fontFamily: 'IBMPlexSansArabic-SemiBold', marginBottom: 7, textAlign: 'right' },
+  button: {
+    height: 42, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12,
+    flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+    elevation: 3,
+  },
+  buttonText: { flex: 1, textAlign: 'right', fontFamily: 'IBMPlexSansArabic-Bold' },
+  sheet: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    maxHeight: '75%', borderWidth: 1,
+    borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    paddingBottom: 24,
+  },
+  sheetHeader: {
+    flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between',
+    padding: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(128,128,128,0.25)',
+  },
+  listScroll: { maxHeight: 380 },
+  row: {
+    marginHorizontal: 14, marginTop: 10, padding: 12, borderRadius: 12, borderWidth: 1,
+    flexDirection: 'row-reverse', alignItems: 'center', gap: 10,
+  },
+  rowMain: { flex: 1, gap: 3 },
+  rowTitleWrap: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6 },
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  radio: {
+    width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: 'rgba(128,128,128,0.5)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  radioDot: { width: 10, height: 10, borderRadius: 5 },
+  enterBtn: { marginHorizontal: 14, marginTop: 14, paddingVertical: 13, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+};
 
 // ══════════════════════════════════════════════════════════════
 //  STACKS
@@ -422,6 +597,9 @@ function CustomDrawer({ navigation, state }) {
             isLight={isLight}
           />
         )}
+
+        {/* Project Switcher (multi-project users only) */}
+        <DrawerProjectSwitcher />
       </View>
       <ScrollView contentContainerStyle={{ paddingVertical: 16 }}>
         {items.map((item, i) => {
