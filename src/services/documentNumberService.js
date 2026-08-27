@@ -10,8 +10,13 @@ const normalizeCode = (value) => {
   return cleaned.slice(0, 8);
 };
 
+const resolveFallbackAgentCode = (agentId) => {
+  const idTail = String(agentId || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-6);
+  return `A${idTail || '000000'}`;
+};
+
 export const resolveAgentCode = async (agentId, projectId = null) => {
-  const fallback = `A${normalizeCode(agentId).slice(-6) || '000000'}`;
+  const fallback = resolveFallbackAgentCode(agentId);
   if (!agentId) return fallback;
 
   try {

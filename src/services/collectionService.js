@@ -361,7 +361,9 @@ export const createLocalCollection = async (data) => {
         });
       }
       payload.collection_number = collection_number;
-      await execSQL(`INSERT OR REPLACE INTO collections (id, project_id, collection_number, agent_id, pos_id, invoice_id, amount, method, reference_number, status, approved_at, rejection_reason, collection_date, active, created_at, phase_id, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      // A strict INSERT is required here: OR REPLACE can delete the collection
+      // that won a concurrent unique-number race instead of letting us retry.
+      await execSQL(`INSERT INTO collections (id, project_id, collection_number, agent_id, pos_id, invoice_id, amount, method, reference_number, status, approved_at, rejection_reason, collection_date, active, created_at, phase_id, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [payload.id, payload.project_id, payload.collection_number, payload.agent_id, payload.pos_id, payload.invoice_id, payload.amount, payload.method, payload.reference_number, payload.status, payload.approved_at, payload.rejection_reason, payload.collection_date, payload.active, payload.created_at, payload.phase_id, payload.synced]);
       break;
     } catch (e) {
