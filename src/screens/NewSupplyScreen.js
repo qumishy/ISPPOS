@@ -53,9 +53,8 @@ export default function NewSupplyScreen({ navigation }) {
   }
 
   useEffect(() => {
-    if (selectedAgent) {
-      const approverOwnerId = (user?.role === 'cashier' || user?.role === 'admin') ? user.id : null;
-      getCollectionsForSupply(selectedAgent, dateFilter || null, approverOwnerId, selectedPhase?.id || null, projectId).then(c => {
+    if (selectedAgent && user?.id && projectId && selectedPhase?.id) {
+      getCollectionsForSupply(selectedAgent, dateFilter || null, user.id, selectedPhase.id, projectId).then(c => {
          setCollections(c);
          const initialSel = {};
          c.forEach(x => initialSel[x.id] = true);
@@ -81,7 +80,7 @@ export default function NewSupplyScreen({ navigation }) {
        return prev;
     });
 
-  }, [selectedAgent, dateFilter, agents]);
+  }, [selectedAgent, dateFilter, agents, user?.id, projectId, selectedPhase?.id]);
 
   const toggleCol = (id) => setSelectedCols(p => ({ ...p, [id]: !p[id] }));
   const totalAmount = collections.filter(c => selectedCols[c.id]).reduce((sum, c) => sum + (Number(c.amount) || 0), 0);

@@ -754,22 +754,21 @@ export const deleteLocalCollection = async (id, actorId = null) => {
   return true;
 };
 
-export const getCollectionsForSupply = async (agentId, dateFilter = null, cashierId = null, phaseId = null, projectId = null) => {
-  if (!projectId) {
-    console.log('[CollectionsForSupply] blocked load without project_id');
+export const getCollectionsForSupply = async (agentId, dateFilter = null, approverId = null, phaseId = null, projectId = null) => {
+  if (!projectId || !phaseId || !approverId) {
+    console.log('[CollectionsForSupply] blocked load without project_id, phase_id, or approver_id');
     return [];
   }
   console.log(`[CollectionsForSupply] load project_id=${projectId} phase_id=${phaseId || 'all'} agent_id=${agentId || 'all'}`);
-  const cacheKey = `collections:supply:${agentId}:${dateFilter}:${cashierId}:${phaseId}:${projectId}`;
+  const cacheKey = `collections:supply:${agentId}:${dateFilter}:${approverId}:${phaseId}:${projectId}`;
   return getCached(cacheKey, async () => {
-    let sql = `SELECT c.*, p.name as pos_name, i.invoice_number, u.name as agent_name FROM collections c LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${ACTIVE_INVOICE_CLAUSE} LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id WHERE c.status = 'approved' AND c.supply_id IS NULL AND (c.active = 1 OR c.active = 'true')`;
+    let sql = `SELECT c.*, p.name as pos_name, i.invoice_number, u.name as agent_name FROM collections c LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${ACTIVE_INVOICE_CLAUSE} LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id WHERE LOWER(TRIM(COALESCE(c.status, 'pending'))) = 'approved' AND c.supply_id IS NULL AND (c.active = 1 OR c.active = 'true')`;
     const params = [];
     sql += ` AND c.project_id = ?`;
     params.push(projectId);
+    sql += ` AND c.phase_id = ? AND c.approved_by = ?`; params.push(phaseId, approverId);
     if (agentId && agentId !== 'all') { sql += ` AND c.agent_id = ?`; params.push(agentId); }
     if (dateFilter) { sql += ` AND date(c.collection_date) = date(?)`; params.push(dateFilter); }
-    if (cashierId) { sql += ` AND c.approved_by = ?`; params.push(cashierId); }
-    if (phaseId) { sql += ` AND c.phase_id = ?`; params.push(phaseId); }
     sql += ` ORDER BY c.collection_date ASC`;
     const r = await execSQL(sql, params);
     return r.rows._array || [];

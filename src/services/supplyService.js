@@ -21,15 +21,17 @@ const getSupplyContext = async (supplyId) => {
 export const createLocalSupply = async (data, collectionIds = []) => {
   if (!data?.user_id) throw new Error('تعذر تحديد المستخدم المنفذ للتوريد.');
   if (!data?.project_id) throw new Error('رقم المشروع مطلوب لإنشاء التوريد.');
+  if (!data?.phase_id) throw new Error('المرحلة الحالية مطلوبة لإنشاء التوريد.');
 
   if (collectionIds?.length > 0) {
     for (const cId of collectionIds) {
-      const cR = await execSQL(`SELECT id, status, supply_id, approved_by FROM collections WHERE id = ? AND project_id = ? LIMIT 1`, [cId, data.project_id]);
+      const cR = await execSQL(`SELECT id, project_id, phase_id, status, active, supply_id, approved_by FROM collections WHERE id = ? AND project_id = ? AND phase_id = ? LIMIT 1`, [cId, data.project_id, data.phase_id]);
       const col = cR.rows._array?.[0];
-      if (!col) throw new Error('أحد سندات التحصيل غير موجود.');
-      if (col.status !== 'approved') throw new Error('لا يمكن توريد سند غير معتمد.');
+      if (!col) throw new Error('أحد سندات التحصيل غير موجود في المشروع والمرحلة الحاليين.');
+      if (String(col.status || '').trim().toLowerCase() !== 'approved') throw new Error('لا يمكن توريد سند غير معتمد.');
+      if (!(col.active === 1 || col.active === true || col.active === 'true')) throw new Error('لا يمكن توريد سند تحصيل غير نشط.');
       if (col.supply_id) throw new Error('أحد السندات مرتبط بتوريد آخر بالفعل.');
-      if (col.approved_by && String(col.approved_by) !== String(data.user_id)) {
+      if (!col.approved_by || String(col.approved_by) !== String(data.user_id)) {
         throw new Error('لا يمكنك توريد هذا السند لأنه معتمد بواسطة مستخدم آخر.');
       }
     }
