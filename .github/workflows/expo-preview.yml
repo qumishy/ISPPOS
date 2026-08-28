@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Start Expo Tunnel and extract preview URL
+      - name: Start Expo Tunnel and diagnose preview URL
         env:
           EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -49,13 +49,11 @@ jobs:
               READY=1
               break
             fi
-
             if ! kill -0 "$EXPO_PID" 2>/dev/null; then
               echo "Expo exited before the tunnel became ready."
               tail -n 100 expo-preview.log || true
               exit 1
             fi
-
             sleep 2
           done
 
@@ -67,89 +65,127 @@ jobs:
 
           echo "Tunnel ready detected."
 
-          NGROK_OK=0
           for attempt in $(seq 1 12); do
             if curl --fail --silent --show-error --max-time 5 \
               http://127.0.0.1:4040/api/tunnels \
               -o ngrok-tunnels.json; then
-              NGROK_OK=1
               break
             fi
             sleep 2
           done
 
-          PUBLIC_URL=""
-          if [ "$NGROK_OK" -eq 1 ]; then
-            echo "ngrok local API response:"
-            cat ngrok-tunnels.json
+          if [ ! -s ngrok-tunnels.json ]; then
+            echo "Could not read ngrok local API."
+            exit 1
+          fi
 
-            PUBLIC_URL="$(node - <<'NODE'
+          PUBLIC_URL="$(node - <<'NODE'
           const fs = require('fs');
           const data = JSON.parse(fs.readFileSync('ngrok-tunnels.json', 'utf8'));
           const tunnels = Array.isArray(data.tunnels) ? data.tunnels : [];
           const preferred = tunnels.find((t) => {
-            const cfg = t.config || {};
-            const addr = String(cfg.addr || '');
-            return /(^|:|\/)8081$/.test(addr) || addr.includes('localhost:8081') || addr.includes('127.0.0.1:8081');
-          }) || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url);
+            const addr = String(t?.config?.addr || '');
+            return addr.includes('8081');
+          }) || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url.startsWith('https://'));
           if (preferred?.public_url) process.stdout.write(preferred.public_url);
           NODE
-            )"
-          else
-            echo "ngrok API was not available on 127.0.0.1:4040."
-          fi
+          )"
 
-          METADATA_URL=""
           if [ -z "$PUBLIC_URL" ]; then
-            echo "Searching Expo/Metro files and metadata for an actual tunnel URL..."
-            METADATA_URL="$(
-              grep -RhoE '(exp|exps)://[^[:space:]\"'"'"'<>]+' \
-                .expo /tmp "$HOME/.expo" "$HOME/.cache" 2>/dev/null \
-                | head -n 1 || true
-            )"
-          fi
-
-          if [ -n "$METADATA_URL" ]; then
-            EXPO_PREVIEW_URL="$METADATA_URL"
-          elif [ -n "$PUBLIC_URL" ]; then
-            case "$PUBLIC_URL" in
-              https://*) EXPO_PREVIEW_URL="exp://${PUBLIC_URL#https://}" ;;
-              http://*) EXPO_PREVIEW_URL="exp://${PUBLIC_URL#http://}" ;;
-              exp://*|exps://*) EXPO_PREVIEW_URL="$PUBLIC_URL" ;;
-              *) EXPO_PREVIEW_URL="$PUBLIC_URL" ;;
-            esac
-          else
-            echo "Failed to determine an actual Expo/ngrok preview URL."
-            echo "---- ngrok API ----"
-            curl --silent --show-error --max-time 5 http://127.0.0.1:4040/api/tunnels || true
-            echo
-            echo "---- relevant processes ----"
-            ps aux | grep -E "expo|ngrok|metro" || true
-            echo "---- listening ports ----"
-            ss -lntp || netstat -lntp || true
-            echo "---- Expo log tail ----"
-            tail -n 100 expo-preview.log || true
+            echo "No HTTPS ngrok public_url found."
+            cat ngrok-tunnels.json
             exit 1
           fi
 
-          printf '%s\n' "$EXPO_PREVIEW_URL" > expo-preview-url.txt
-          echo "EXPO_PREVIEW_URL=$EXPO_PREVIEW_URL"
+          echo "PUBLIC_URL=$PUBLIC_URL"
+
+          mkdir -p diagnostics
+          cp expo-preview.log diagnostics/
+          cp ngrok-tunnels.json diagnostics/
+
+          curl_capture() {
+            local name="$1"
+            shift
+            set +e
+            curl -sS -D "diagnostics/${name}.headers.txt" -o "diagnostics/${name}.body.txt" "$@"
+            local code=$?
+            echo "$code" > "diagnostics/${name}.curl-exit.txt"
+            set -e
+          }
+
+          curl_capture localhost-root http://127.0.0.1:8081
+          curl_capture localhost-expo-json -H "Accept: application/expo+json,application/json" http://127.0.0.1:8081
+          curl_capture tunnel-root "$PUBLIC_URL"
+          curl_capture tunnel-expo-json -H "Accept: application/expo+json,application/json" "$PUBLIC_URL"
+
+          for endpoint in "/manifest" "/index.exp" "/?platform=android" "/?platform=android&dev=true&minify=false"; do
+            safe="$(printf '%s' "$endpoint" | tr '/?&=' '_____')"
+            curl_capture "localhost${safe}" -H "Accept: application/expo+json,application/json" "http://127.0.0.1:8081${endpoint}"
+            curl_capture "tunnel${safe}" -H "Accept: application/expo+json,application/json" "${PUBLIC_URL}${endpoint}"
+          done
 
           {
-            echo "## Expo Cloud Preview"
+            echo "=== process tree ==="
+            ps -eo pid,ppid,args --forest | grep -E "expo|ngrok|metro|node" | grep -v grep || true
             echo
-            echo "**EXPO_PREVIEW_URL:** \`$EXPO_PREVIEW_URL\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "=== listening ports ==="
+            ss -lntp || netstat -lntp || true
+            echo
+            echo "=== Expo process command ==="
+            ps -p "$EXPO_PID" -o pid=,ppid=,args= || true
+          } > diagnostics/processes-and-ports.txt
 
-      - name: Upload Expo preview info
+          {
+            echo "=== metadata matches ==="
+            grep -RniE --binary-files=without-match \
+              'exp://|exps://|hostUri|debuggerHost|packagerOpts|manifest|exp\.direct' \
+              .expo "$HOME/.expo" /tmp 2>/dev/null \
+              | grep -v -E 'EXPO_PUBLIC_SUPABASE|SUPABASE_ANON_KEY|eyJ[A-Za-z0-9_-]+' \
+              | head -n 500 || true
+          } > diagnostics/metadata-matches.txt
+
+          ACTUAL_URL="$(
+            grep -RhoE --binary-files=without-match '(exp|exps)://[^[:space:]\"'"'"'<>]+' \
+              diagnostics .expo "$HOME/.expo" /tmp 2>/dev/null \
+              | head -n 1 || true
+          )"
+
+          if [ -n "$ACTUAL_URL" ]; then
+            printf '%s\n' "$ACTUAL_URL" > diagnostics/expo-preview-url.txt
+            echo "EXPO_PREVIEW_URL=$ACTUAL_URL"
+            {
+              echo "## Expo Cloud Preview diagnostics"
+              echo
+              echo "**EXPO_PREVIEW_URL:** \`$ACTUAL_URL\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "EXPO_PREVIEW_URL_NOT_DETERMINED"
+            {
+              echo "## Expo Cloud Preview diagnostics"
+              echo
+              echo "EXPO_PREVIEW_URL_NOT_DETERMINED"
+              echo
+              echo "Tunnel public URL observed: \`$PUBLIC_URL\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "---- localhost:8081 headers ----"
+          cat diagnostics/localhost-root.headers.txt || true
+          echo "---- localhost:8081 body ----"
+          cat diagnostics/localhost-root.body.txt || true
+          echo "---- tunnel headers ----"
+          cat diagnostics/tunnel-root.headers.txt || true
+          echo "---- tunnel body ----"
+          cat diagnostics/tunnel-root.body.txt || true
+          echo "---- metadata matches ----"
+          cat diagnostics/metadata-matches.txt || true
+
+      - name: Upload Expo preview diagnostics
         uses: actions/upload-artifact@v4
         with:
-          name: expo-preview-info
-          path: |
-            expo-preview-url.txt
-            expo-preview.log
-            ngrok-tunnels.json
-          if-no-files-found: warn
+          name: expo-preview-diagnostics
+          path: diagnostics/
+          if-no-files-found: error
 
       - name: Keep Expo Tunnel alive
         shell: bash
@@ -157,7 +193,6 @@ jobs:
           set -euo pipefail
           EXPO_PID="$(cat expo-preview.pid)"
           echo "Keeping Expo Tunnel alive with PID ${EXPO_PID}."
-
           while true; do
             if ! kill -0 "$EXPO_PID" 2>/dev/null; then
               echo "Expo process exited unexpectedly."
