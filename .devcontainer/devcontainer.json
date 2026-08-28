@@ -5,7 +5,8 @@
   "portsAttributes": {
     "8081": {
       "label": "Expo / Metro",
-      "onAutoForward": "notify"
+      "onAutoForward": "openPreview",
+      "visibility": "public"
     }
   },
   "postCreateCommand": "npm ci",
