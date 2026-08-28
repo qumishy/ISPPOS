@@ -21,7 +21,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm install
+          npx expo install --check
 
       - name: Setup EAS CLI
         run: npm install --global eas-cli
