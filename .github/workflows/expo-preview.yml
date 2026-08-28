@@ -34,7 +34,7 @@ jobs:
           CI: "1"
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           npm run preview > expo-preview.log 2>&1 &
           echo $! > expo-preview.pid
@@ -64,65 +64,73 @@ jobs:
           fi
 
           echo "Tunnel ready detected."
+          mkdir -p diagnostics
+          cp expo-preview.log diagnostics/ || true
 
-          for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error --max-time 5 \
-              http://127.0.0.1:4040/api/tunnels \
-              -o ngrok-tunnels.json; then
+          cat > diagnostics/run-diagnostics.sh <<'DIAG'
+          #!/usr/bin/env bash
+          set -u
+
+          curl_safe() {
+            local outfile="$1"
+            shift
+            set +e
+            curl -i --connect-timeout 5 --max-time 10 "$@" > "$outfile" 2>&1
+            local rc=$?
+            echo "CURL_EXIT_CODE=$rc" >> "$outfile"
+            set -e
+          }
+
+          for attempt in $(seq 1 6); do
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+              http://127.0.0.1:4040/api/tunnels -o ngrok-tunnels.json; then
               break
             fi
             sleep 2
           done
 
-          if [ ! -s ngrok-tunnels.json ]; then
-            echo "Could not read ngrok local API."
-            exit 1
+          if [ -s ngrok-tunnels.json ]; then
+            cp ngrok-tunnels.json diagnostics/
           fi
 
-          PUBLIC_URL="$(node - <<'NODE'
+          PUBLIC_URL=""
+          if [ -s ngrok-tunnels.json ]; then
+            PUBLIC_URL="$(node - <<'NODE'
           const fs = require('fs');
           const data = JSON.parse(fs.readFileSync('ngrok-tunnels.json', 'utf8'));
           const tunnels = Array.isArray(data.tunnels) ? data.tunnels : [];
-          const preferred = tunnels.find((t) => {
-            const addr = String(t?.config?.addr || '');
-            return addr.includes('8081');
-          }) || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url.startsWith('https://'));
+          const preferred = tunnels.find((t) => String(t?.config?.addr || '').includes('8081'))
+            || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url.startsWith('https://'));
           if (preferred?.public_url) process.stdout.write(preferred.public_url);
           NODE
-          )"
-
-          if [ -z "$PUBLIC_URL" ]; then
-            echo "No HTTPS ngrok public_url found."
-            cat ngrok-tunnels.json
-            exit 1
+            )"
           fi
 
           echo "PUBLIC_URL=$PUBLIC_URL"
 
-          mkdir -p diagnostics
-          cp expo-preview.log diagnostics/
-          cp ngrok-tunnels.json diagnostics/
+          curl_safe diagnostics/localhost-default.txt http://127.0.0.1:8081
+          curl_safe diagnostics/localhost-expo-json.txt \
+            -H "Accept: application/expo+json,application/json" \
+            http://127.0.0.1:8081
 
-          curl_capture() {
-            local name="$1"
-            shift
-            set +e
-            curl -sS -D "diagnostics/${name}.headers.txt" -o "diagnostics/${name}.body.txt" "$@"
-            local code=$?
-            echo "$code" > "diagnostics/${name}.curl-exit.txt"
-            set -e
-          }
+          if [ -n "$PUBLIC_URL" ]; then
+            curl_safe diagnostics/tunnel-default.txt "$PUBLIC_URL"
+            curl_safe diagnostics/tunnel-expo-json.txt \
+              -H "Accept: application/expo+json,application/json" \
+              "$PUBLIC_URL"
+          else
+            echo "PUBLIC_URL_NOT_FOUND" > diagnostics/tunnel-default.txt
+            echo "PUBLIC_URL_NOT_FOUND" > diagnostics/tunnel-expo-json.txt
+          fi
 
-          curl_capture localhost-root http://127.0.0.1:8081
-          curl_capture localhost-expo-json -H "Accept: application/expo+json,application/json" http://127.0.0.1:8081
-          curl_capture tunnel-root "$PUBLIC_URL"
-          curl_capture tunnel-expo-json -H "Accept: application/expo+json,application/json" "$PUBLIC_URL"
-
-          for endpoint in "/manifest" "/index.exp" "/?platform=android" "/?platform=android&dev=true&minify=false"; do
-            safe="$(printf '%s' "$endpoint" | tr '/?&=' '_____')"
-            curl_capture "localhost${safe}" -H "Accept: application/expo+json,application/json" "http://127.0.0.1:8081${endpoint}"
-            curl_capture "tunnel${safe}" -H "Accept: application/expo+json,application/json" "${PUBLIC_URL}${endpoint}"
-          done
+          echo "=== LOCALHOST DEFAULT ==="
+          cat diagnostics/localhost-default.txt || true
+          echo "=== LOCALHOST EXPO JSON ==="
+          cat diagnostics/localhost-expo-json.txt || true
+          echo "=== TUNNEL DEFAULT ==="
+          cat diagnostics/tunnel-default.txt || true
+          echo "=== TUNNEL EXPO JSON ==="
+          cat diagnostics/tunnel-expo-json.txt || true
 
           {
             echo "=== process tree ==="
@@ -132,62 +140,71 @@ jobs:
             ss -lntp || netstat -lntp || true
             echo
             echo "=== Expo process command ==="
-            ps -p "$EXPO_PID" -o pid=,ppid=,args= || true
+            ps -p "$(cat expo-preview.pid)" -o pid=,ppid=,args= || true
           } > diagnostics/processes-and-ports.txt
 
-          {
-            echo "=== metadata matches ==="
-            grep -RniE --binary-files=without-match \
-              'exp://|exps://|hostUri|debuggerHost|packagerOpts|manifest|exp\.direct' \
-              .expo "$HOME/.expo" /tmp 2>/dev/null \
-              | grep -v -E 'EXPO_PUBLIC_SUPABASE|SUPABASE_ANON_KEY|eyJ[A-Za-z0-9_-]+' \
-              | head -n 500 || true
-          } > diagnostics/metadata-matches.txt
+          : > diagnostics/metadata-matches.txt
+          scan_path() {
+            local p="$1"
+            if compgen -G "$p" > /dev/null; then
+              timeout 10s grep -RniE --binary-files=without-match \
+                'exp://|exps://|hostUri|debuggerHost|manifest|exp\.direct' \
+                $p 2>/dev/null \
+                | grep -v -E 'EXPO_PUBLIC_SUPABASE|SUPABASE_ANON_KEY|eyJ[A-Za-z0-9_-]+' \
+                | head -n 200 >> diagnostics/metadata-matches.txt || true
+            fi
+          }
 
-          ACTUAL_URL="$(
-            grep -RhoE --binary-files=without-match '(exp|exps)://[^[:space:]\"'"'"'<>]+' \
-              diagnostics .expo "$HOME/.expo" /tmp 2>/dev/null \
-              | head -n 1 || true
-          )"
+          scan_path ".expo"
+          scan_path "$HOME/.expo"
+          scan_path "$HOME/.cache"
+          scan_path "/tmp/metro*"
+          scan_path "/tmp/expo*"
+          scan_path "/tmp/ngrok*"
+
+          ACTUAL_URL="$(timeout 10s grep -RhoE --binary-files=without-match '(exp|exps)://[^[:space:]\"'"'"'<>]+' diagnostics .expo "$HOME/.expo" 2>/dev/null | head -n 1 || true)"
 
           if [ -n "$ACTUAL_URL" ]; then
             printf '%s\n' "$ACTUAL_URL" > diagnostics/expo-preview-url.txt
             echo "EXPO_PREVIEW_URL=$ACTUAL_URL"
-            {
-              echo "## Expo Cloud Preview diagnostics"
-              echo
-              echo "**EXPO_PREVIEW_URL:** \`$ACTUAL_URL\`"
-            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "EXPO_PREVIEW_URL_NOT_DETERMINED"
-            {
-              echo "## Expo Cloud Preview diagnostics"
-              echo
-              echo "EXPO_PREVIEW_URL_NOT_DETERMINED"
-              echo
-              echo "Tunnel public URL observed: \`$PUBLIC_URL\`"
-            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          DIAG
+
+          chmod +x diagnostics/run-diagnostics.sh
+
+          set +e
+          timeout --signal=TERM --kill-after=10s 180s bash diagnostics/run-diagnostics.sh
+          DIAG_RC=$?
+          set -e
+
+          cp expo-preview.log diagnostics/ || true
+          [ -f ngrok-tunnels.json ] && cp ngrok-tunnels.json diagnostics/ || true
+
+          if [ "$DIAG_RC" -eq 124 ] || [ "$DIAG_RC" -eq 137 ]; then
+            echo "Diagnostics reached the 3-minute limit; continuing to artifact upload."
+            echo "=== PARTIAL DIAGNOSTICS ==="
+            for f in diagnostics/localhost-default.txt diagnostics/localhost-expo-json.txt diagnostics/tunnel-default.txt diagnostics/tunnel-expo-json.txt diagnostics/metadata-matches.txt; do
+              [ -f "$f" ] && { echo "--- $f ---"; tail -n 100 "$f"; }
+            done
+          elif [ "$DIAG_RC" -ne 0 ]; then
+            echo "Diagnostics exited with code $DIAG_RC; continuing to artifact upload."
           fi
 
-          echo "---- localhost:8081 headers ----"
-          cat diagnostics/localhost-root.headers.txt || true
-          echo "---- localhost:8081 body ----"
-          cat diagnostics/localhost-root.body.txt || true
-          echo "---- tunnel headers ----"
-          cat diagnostics/tunnel-root.headers.txt || true
-          echo "---- tunnel body ----"
-          cat diagnostics/tunnel-root.body.txt || true
-          echo "---- metadata matches ----"
-          cat diagnostics/metadata-matches.txt || true
-
       - name: Upload Expo preview diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: expo-preview-diagnostics
-          path: diagnostics/
-          if-no-files-found: error
+          path: |
+            diagnostics/
+            expo-preview.log
+            ngrok-tunnels.json
+          if-no-files-found: warn
 
       - name: Keep Expo Tunnel alive
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
