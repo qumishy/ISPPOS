@@ -6,10 +6,21 @@ on:
     branches:
       - chore/codespaces-preview
 
+permissions:
+  contents: read
+
 jobs:
   build-dev-client:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    env:
+      CI: true
+      EXPO_NO_TELEMETRY: 1
+      NODE_OPTIONS: --max_old_space_size=4096
+      GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4096m -Dorg.gradle.daemon=false
+      EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout chore/codespaces-preview
@@ -20,25 +31,33 @@ jobs:
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
           cache: npm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
 
       - name: Install dependencies
         run: |
           npm install
           npx expo install --check
 
-      - name: Setup EAS CLI
-        run: npm install --global eas-cli
+      - name: Generate Android Development Client project
+        run: npx expo prebuild --platform android --clean --non-interactive
 
-      - name: Build Android Development Client
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
-          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      - name: Build Development Client APK
         run: |
-          eas build \
-            --platform android \
-            --profile development \
-            --non-interactive \
-            --wait
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload Development Client APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-development-client-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+          if-no-files-found: error
