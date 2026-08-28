@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Start Expo Tunnel and diagnose preview URL
+      - name: Start Expo Development Client Tunnel
         env:
           EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -36,7 +36,7 @@ jobs:
         run: |
           set -u
 
-          npm run preview > expo-preview.log 2>&1 &
+          npx expo start --dev-client --tunnel > expo-preview.log 2>&1 &
           echo $! > expo-preview.pid
           EXPO_PID="$(cat expo-preview.pid)"
 
@@ -132,23 +132,12 @@ jobs:
           echo "=== TUNNEL EXPO JSON ==="
           cat diagnostics/tunnel-expo-json.txt || true
 
-          {
-            echo "=== process tree ==="
-            ps -eo pid,ppid,args --forest | grep -E "expo|ngrok|metro|node" | grep -v grep || true
-            echo
-            echo "=== listening ports ==="
-            ss -lntp || netstat -lntp || true
-            echo
-            echo "=== Expo process command ==="
-            ps -p "$(cat expo-preview.pid)" -o pid=,ppid=,args= || true
-          } > diagnostics/processes-and-ports.txt
-
           : > diagnostics/metadata-matches.txt
           scan_path() {
             local p="$1"
             if compgen -G "$p" > /dev/null; then
               timeout 10s grep -RniE --binary-files=without-match \
-                'exp://|exps://|hostUri|debuggerHost|manifest|exp\.direct' \
+                'exp://|exps://|hostUri|debuggerHost|manifest|exp\.direct|expo-development-client' \
                 $p 2>/dev/null \
                 | grep -v -E 'EXPO_PUBLIC_SUPABASE|SUPABASE_ANON_KEY|eyJ[A-Za-z0-9_-]+' \
                 | head -n 200 >> diagnostics/metadata-matches.txt || true
@@ -162,7 +151,7 @@ jobs:
           scan_path "/tmp/expo*"
           scan_path "/tmp/ngrok*"
 
-          ACTUAL_URL="$(timeout 10s grep -RhoE --binary-files=without-match '(exp|exps)://[^[:space:]\"'"'"'<>]+' diagnostics .expo "$HOME/.expo" 2>/dev/null | head -n 1 || true)"
+          ACTUAL_URL="$(timeout 10s grep -RhoE --binary-files=without-match '[A-Za-z0-9._-]+://expo-development-client/[^[:space:]\"'"'"'<>]*|exp(s)?://[^[:space:]\"'"'"'<>]+' diagnostics .expo "$HOME/.expo" 2>/dev/null | head -n 1 || true)"
 
           if [ -n "$ACTUAL_URL" ]; then
             printf '%s\n' "$ACTUAL_URL" > diagnostics/expo-preview-url.txt
@@ -184,10 +173,6 @@ jobs:
 
           if [ "$DIAG_RC" -eq 124 ] || [ "$DIAG_RC" -eq 137 ]; then
             echo "Diagnostics reached the 3-minute limit; continuing to artifact upload."
-            echo "=== PARTIAL DIAGNOSTICS ==="
-            for f in diagnostics/localhost-default.txt diagnostics/localhost-expo-json.txt diagnostics/tunnel-default.txt diagnostics/tunnel-expo-json.txt diagnostics/metadata-matches.txt; do
-              [ -f "$f" ] && { echo "--- $f ---"; tail -n 100 "$f"; }
-            done
           elif [ "$DIAG_RC" -ne 0 ]; then
             echo "Diagnostics exited with code $DIAG_RC; continuing to artifact upload."
           fi
@@ -203,13 +188,13 @@ jobs:
             ngrok-tunnels.json
           if-no-files-found: warn
 
-      - name: Keep Expo Tunnel alive
+      - name: Keep Expo Development Client Tunnel alive
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           EXPO_PID="$(cat expo-preview.pid)"
-          echo "Keeping Expo Tunnel alive with PID ${EXPO_PID}."
+          echo "Keeping Expo Development Client Tunnel alive with PID ${EXPO_PID}."
           while true; do
             if ! kill -0 "$EXPO_PID" 2>/dev/null; then
               echo "Expo process exited unexpectedly."
