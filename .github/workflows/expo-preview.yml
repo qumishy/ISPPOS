@@ -26,13 +26,143 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Start Expo Tunnel
+      - name: Start Expo Tunnel and extract preview URL
         env:
           EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           EXPO_NO_TELEMETRY: "1"
           CI: "1"
+        shell: bash
         run: |
-          echo "Starting Expo Tunnel in foreground."
-          echo "Expo/Metro tunnel output, including the tunnel URL and QR information when emitted by Expo, will remain visible in this step's logs."
-          npm run preview
+          set -euo pipefail
+
+          npm run preview > expo-preview.log 2>&1 &
+          echo $! > expo-preview.pid
+          EXPO_PID="$(cat expo-preview.pid)"
+
+          echo "Expo PID: ${EXPO_PID}"
+          echo "Waiting up to 120 seconds for 'Tunnel ready.'..."
+
+          READY=0
+          for attempt in $(seq 1 60); do
+            if grep -q "Tunnel ready\." expo-preview.log; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$EXPO_PID" 2>/dev/null; then
+              echo "Expo exited before the tunnel became ready."
+              tail -n 100 expo-preview.log || true
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "Timed out waiting for 'Tunnel ready.'."
+            tail -n 100 expo-preview.log || true
+            exit 1
+          fi
+
+          echo "Tunnel ready detected."
+
+          NGROK_OK=0
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 5 \
+              http://127.0.0.1:4040/api/tunnels \
+              -o ngrok-tunnels.json; then
+              NGROK_OK=1
+              break
+            fi
+            sleep 2
+          done
+
+          PUBLIC_URL=""
+          if [ "$NGROK_OK" -eq 1 ]; then
+            echo "ngrok local API response:"
+            cat ngrok-tunnels.json
+
+            PUBLIC_URL="$(node - <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('ngrok-tunnels.json', 'utf8'));
+          const tunnels = Array.isArray(data.tunnels) ? data.tunnels : [];
+          const preferred = tunnels.find((t) => {
+            const cfg = t.config || {};
+            const addr = String(cfg.addr || '');
+            return /(^|:|\/)8081$/.test(addr) || addr.includes('localhost:8081') || addr.includes('127.0.0.1:8081');
+          }) || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url);
+          if (preferred?.public_url) process.stdout.write(preferred.public_url);
+          NODE
+            )"
+          else
+            echo "ngrok API was not available on 127.0.0.1:4040."
+          fi
+
+          METADATA_URL=""
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "Searching Expo/Metro files and metadata for an actual tunnel URL..."
+            METADATA_URL="$(
+              grep -RhoE '(exp|exps)://[^[:space:]\"'"'"'<>]+' \
+                .expo /tmp "$HOME/.expo" "$HOME/.cache" 2>/dev/null \
+                | head -n 1 || true
+            )"
+          fi
+
+          if [ -n "$METADATA_URL" ]; then
+            EXPO_PREVIEW_URL="$METADATA_URL"
+          elif [ -n "$PUBLIC_URL" ]; then
+            case "$PUBLIC_URL" in
+              https://*) EXPO_PREVIEW_URL="exp://${PUBLIC_URL#https://}" ;;
+              http://*) EXPO_PREVIEW_URL="exp://${PUBLIC_URL#http://}" ;;
+              exp://*|exps://*) EXPO_PREVIEW_URL="$PUBLIC_URL" ;;
+              *) EXPO_PREVIEW_URL="$PUBLIC_URL" ;;
+            esac
+          else
+            echo "Failed to determine an actual Expo/ngrok preview URL."
+            echo "---- ngrok API ----"
+            curl --silent --show-error --max-time 5 http://127.0.0.1:4040/api/tunnels || true
+            echo
+            echo "---- relevant processes ----"
+            ps aux | grep -E "expo|ngrok|metro" || true
+            echo "---- listening ports ----"
+            ss -lntp || netstat -lntp || true
+            echo "---- Expo log tail ----"
+            tail -n 100 expo-preview.log || true
+            exit 1
+          fi
+
+          printf '%s\n' "$EXPO_PREVIEW_URL" > expo-preview-url.txt
+          echo "EXPO_PREVIEW_URL=$EXPO_PREVIEW_URL"
+
+          {
+            echo "## Expo Cloud Preview"
+            echo
+            echo "**EXPO_PREVIEW_URL:** \`$EXPO_PREVIEW_URL\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Expo preview info
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo-preview-info
+          path: |
+            expo-preview-url.txt
+            expo-preview.log
+            ngrok-tunnels.json
+          if-no-files-found: warn
+
+      - name: Keep Expo Tunnel alive
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPO_PID="$(cat expo-preview.pid)"
+          echo "Keeping Expo Tunnel alive with PID ${EXPO_PID}."
+
+          while true; do
+            if ! kill -0 "$EXPO_PID" 2>/dev/null; then
+              echo "Expo process exited unexpectedly."
+              tail -n 100 expo-preview.log || true
+              exit 1
+            fi
+            sleep 15
+          done
