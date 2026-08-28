@@ -2,6 +2,9 @@ name: Android Development Client APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - chore/codespaces-preview
 
 jobs:
   build-dev-client:
