@@ -24,7 +24,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm install
+          npx expo install --check
 
       - name: Start Expo Development Client Tunnel
         env:
