@@ -1,0 +1,179 @@
+name: Repair Collections UI
+
+on:
+  push:
+    branches:
+      - chore/codespaces-preview
+    paths:
+      - .github/workflows/repair-collections-ui.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/codespaces-preview
+
+      - name: Restore and align Collections UI
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('src/screens/CollectionsListScreen.js')
+          text = path.read_text()
+
+          # Keep the full existing collection feature set, but make the card shell
+          # follow the same interaction/layout pattern as InvoicesListScreen.
+          old_open = """            <TouchableOpacity \n              style={s.colCard} \n              activeOpacity={0.85} \n              onPress={() => setExpandedColId(expanded ? null : col.id)}\n              onLongPress={() => {"""
+          new_open = """            <TouchableOpacity \n              style={[s.invCard, { flexDirection: 'column', alignItems: 'stretch' }]} \n              activeOpacity={0.85} \n              onLongPress={() => {"""
+          if old_open not in text:
+              raise SystemExit('Expected collection card opening was not found')
+          text = text.replace(old_open, new_open, 1)
+
+          old_header = """              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[s.colNum, { marginBottom: 0, textAlign: 'right', alignSelf: 'stretch' }]}>
+                    {col.collection_number || col.invoice_number || '—'}
+                  </Text>
+                  <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
+                    {col.pos_name || '—'}
+                  </Text>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                  <Text style={[s.colAmt, { fontSize: fontSize.xl, color: colors.primary }]}>
+                    {formatCurrency(collectionAmount)}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
+                    {formatDateShort(col.collection_date)}
+                  </Text>
+                </View>
+                <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.t3} />
+              </View>"""
+          new_header = """              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
+                    {col.pos_name || '—'}
+                  </Text>
+                  <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                    <Text style={[s.colNum, { marginBottom: 0, fontSize: 11, color: colors.t3 }]}>
+                      {col.collection_number || col.invoice_number || '—'}
+                    </Text>
+                    {Number(col.synced) === 0 && <Text style={{ fontSize: 10, color: colors.orange, fontWeight: '900' }}>●</Text>}
+                  </View>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                  <Text style={[s.colAmt, { fontSize: fontSize.xxl || (fontSize.xl + 4), color: colors.primary, fontWeight: '900' }]}>
+                    {formatCurrency(collectionAmount)}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
+                    {formatDateShort(col.collection_date || col.created_at)}
+                  </Text>
+                </View>
+              </View>"""
+          if old_header not in text:
+              raise SystemExit('Expected collection card header was not found')
+          text = text.replace(old_header, new_header, 1)
+
+          marker = """              {/* ── EXPANDED: Secondary details + actions ── */}
+              {expanded && ("""
+          expand_control = """              <TouchableOpacity
+                style={{
+                  marginTop: 8,
+                  flexDirection: 'row-reverse',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  backgroundColor: colors.bg2,
+                  borderWidth: 1,
+                  borderColor: colors.border + '80',
+                  borderRadius: radius.md,
+                  paddingHorizontal: spacing.sm,
+                  paddingVertical: 8,
+                }}
+                onPress={() => setExpandedColId(expanded ? null : col.id)}
+                activeOpacity={0.85}
+              >
+                <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                  <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.primary} />
+                  <Text style={{ fontSize: 12, color: colors.primary, fontWeight: '800' }}>
+                    {expanded ? 'إخفاء التفاصيل' : 'عرض مزيد من التفاصيل'}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
+                  تفاصيل التحصيل والإجراءات
+                </Text>
+              </TouchableOpacity>
+
+              {/* ── EXPANDED: Secondary details + actions ── */}
+              {expanded && ("""
+          if marker not in text:
+              raise SystemExit('Expanded details marker was not found')
+          text = text.replace(marker, expand_control, 1)
+
+          # Match the invoice expanded-section divider tone.
+          text = text.replace(
+              "borderTopColor: colors.border + '30'",
+              "borderTopColor: colors.border + '70'",
+              1,
+          )
+
+          required = [
+              'تم الاعتماد بواسطة: {col.approver_name}',
+              'مبلغ التحصيل',
+              'مرتجع الكروت',
+              'الإجمالي المغطي',
+              'حالة سداد الفاتورة',
+              'المزامنة',
+              'ملاحظات',
+              'طباعة',
+              'واتساب',
+              'الرسائل',
+              'handlePrint',
+              'handleWhatsApp',
+              'handleSMS',
+              'approveLocalCollection',
+              'cancelLocalCollectionApproval',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'Required collection UI/behavior was lost: {missing}')
+
+          path.write_text(text)
+          PY
+
+      - name: Show focused diff
+        run: |
+          git diff --check
+          git diff --stat
+          git diff -- src/screens/CollectionsListScreen.js
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Validate Expo JavaScript bundle
+        env:
+          CI: true
+          EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+        run: npx expo export --platform android --output-dir /tmp/isppos-export
+
+      - name: Commit repaired Collections screen
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/screens/CollectionsListScreen.js
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: restore and align collections screen UI"
+          git push origin HEAD:chore/codespaces-preview
