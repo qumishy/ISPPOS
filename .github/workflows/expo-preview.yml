@@ -2,6 +2,11 @@ name: Expo Cloud Preview
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - chore/codespaces-preview
+    paths:
+      - .github/workflows/expo-preview.yml
 
 permissions:
   contents: read
