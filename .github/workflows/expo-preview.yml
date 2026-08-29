@@ -36,14 +36,14 @@ jobs:
           CI: "1"
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
 
           npx expo start --dev-client --tunnel > expo-preview.log 2>&1 &
           echo $! > expo-preview.pid
           EXPO_PID="$(cat expo-preview.pid)"
 
           echo "Expo PID: ${EXPO_PID}"
-          echo "Waiting up to 120 seconds for 'Tunnel ready.'..."
+          echo "Waiting up to 120 seconds for Tunnel ready..."
 
           READY=0
           for attempt in $(seq 1 60); do
@@ -60,123 +60,93 @@ jobs:
           done
 
           if [ "$READY" -ne 1 ]; then
-            echo "Timed out waiting for 'Tunnel ready.'."
+            echo "Timed out waiting for Tunnel ready."
             tail -n 100 expo-preview.log || true
             exit 1
           fi
 
-          echo "Tunnel ready detected."
           mkdir -p diagnostics
-          cp expo-preview.log diagnostics/ || true
+          cp expo-preview.log diagnostics/expo-preview.log
 
-          cat > diagnostics/run-diagnostics.sh <<'DIAG'
-          #!/usr/bin/env bash
-          set -u
-
-          curl_safe() {
-            local outfile="$1"
-            shift
-            set +e
-            curl -i --connect-timeout 5 --max-time 10 "$@" > "$outfile" 2>&1
-            local rc=$?
-            echo "CURL_EXIT_CODE=$rc" >> "$outfile"
-            set -e
-          }
-
-          for attempt in $(seq 1 6); do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
-              http://127.0.0.1:4040/api/tunnels -o ngrok-tunnels.json; then
+          # Ask Expo CLI itself for the URL that Android Development Client must open.
+          # This avoids treating the raw ngrok https://...exp.direct transport URL as
+          # the app launch URL.
+          DEV_CLIENT_JSON=""
+          for attempt in $(seq 1 12); do
+            DEV_CLIENT_JSON="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+              'http://127.0.0.1:8081/_expo/open?platform=android&runtime=custom' 2>/dev/null || true)"
+            if [ -n "$DEV_CLIENT_JSON" ]; then
               break
             fi
             sleep 2
           done
 
-          if [ -s ngrok-tunnels.json ]; then
-            cp ngrok-tunnels.json diagnostics/
-          fi
+          printf '%s\n' "$DEV_CLIENT_JSON" > diagnostics/expo-open-android.json
 
-          PUBLIC_URL=""
-          if [ -s ngrok-tunnels.json ]; then
-            PUBLIC_URL="$(node - <<'NODE'
-          const fs = require('fs');
-          const data = JSON.parse(fs.readFileSync('ngrok-tunnels.json', 'utf8'));
-          const tunnels = Array.isArray(data.tunnels) ? data.tunnels : [];
-          const preferred = tunnels.find((t) => String(t?.config?.addr || '').includes('8081'))
-            || tunnels.find((t) => typeof t.public_url === 'string' && t.public_url.startsWith('https://'));
-          if (preferred?.public_url) process.stdout.write(preferred.public_url);
+          DEV_CLIENT_URL="$(DEV_CLIENT_JSON="$DEV_CLIENT_JSON" node - <<'NODE'
+          const raw = process.env.DEV_CLIENT_JSON || '';
+          let value = '';
+          try {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed === 'string') value = parsed;
+            else value = parsed.url || parsed.href || parsed.launchUrl || parsed.launchURL || '';
+          } catch (_) {
+            const match = raw.match(/[a-z][a-z0-9+.-]*:\/\/expo-development-client\/\?url=[^\s"'<>]+/i);
+            value = match ? match[0] : '';
+          }
+          if (value) process.stdout.write(value);
+          NODE
+          )"
+
+          # Backward-compatible fallback for older Expo CLI versions: derive only
+          # the generated dev-client wrapper, while keeping the manifest transport
+          # URL from Expo's own manifest response.
+          if [ -z "$DEV_CLIENT_URL" ]; then
+            MANIFEST_JSON="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
+              -H 'Accept: application/expo+json,application/json' \
+              http://127.0.0.1:8081 2>/dev/null || true)"
+            printf '%s\n' "$MANIFEST_JSON" > diagnostics/localhost-manifest.json
+            DEV_CLIENT_URL="$(MANIFEST_JSON="$MANIFEST_JSON" node - <<'NODE'
+          const raw = process.env.MANIFEST_JSON || '';
+          try {
+            const m = JSON.parse(raw);
+            const host = m?.extra?.expoClient?.hostUri || m?.extra?.expoGo?.debuggerHost || '';
+            const slug = m?.extra?.expoClient?.slug || 'isp-cards-system';
+            if (!host) process.exit(0);
+            const manifestUrl = `https://${host}`;
+            process.stdout.write(`exp+${slug}://expo-development-client/?url=${encodeURIComponent(manifestUrl)}`);
+          } catch (_) {}
           NODE
             )"
           fi
 
-          echo "PUBLIC_URL=$PUBLIC_URL"
-
-          curl_safe diagnostics/localhost-default.txt http://127.0.0.1:8081
-          curl_safe diagnostics/localhost-expo-json.txt \
-            -H "Accept: application/expo+json,application/json" \
-            http://127.0.0.1:8081
-
-          if [ -n "$PUBLIC_URL" ]; then
-            curl_safe diagnostics/tunnel-default.txt "$PUBLIC_URL"
-            curl_safe diagnostics/tunnel-expo-json.txt \
-              -H "Accept: application/expo+json,application/json" \
-              "$PUBLIC_URL"
-          else
-            echo "PUBLIC_URL_NOT_FOUND" > diagnostics/tunnel-default.txt
-            echo "PUBLIC_URL_NOT_FOUND" > diagnostics/tunnel-expo-json.txt
+          if [ -z "$DEV_CLIENT_URL" ]; then
+            echo "Could not determine the Development Client launch URL."
+            cat diagnostics/expo-open-android.json || true
+            tail -n 100 expo-preview.log || true
+            exit 1
           fi
 
-          echo "=== LOCALHOST DEFAULT ==="
-          cat diagnostics/localhost-default.txt || true
-          echo "=== LOCALHOST EXPO JSON ==="
-          cat diagnostics/localhost-expo-json.txt || true
-          echo "=== TUNNEL DEFAULT ==="
-          cat diagnostics/tunnel-default.txt || true
-          echo "=== TUNNEL EXPO JSON ==="
-          cat diagnostics/tunnel-expo-json.txt || true
+          printf '%s\n' "$DEV_CLIENT_URL" > diagnostics/expo-preview-url.txt
+          echo "============================================================"
+          echo "ANDROID DEVELOPMENT CLIENT URL"
+          echo "$DEV_CLIENT_URL"
+          echo "============================================================"
+          echo "Open this URL with the installed ISPPOS Development Client."
 
-          : > diagnostics/metadata-matches.txt
-          scan_path() {
-            local p="$1"
-            if compgen -G "$p" > /dev/null; then
-              timeout 10s grep -RniE --binary-files=without-match \
-                'exp://|exps://|hostUri|debuggerHost|manifest|exp\.direct|expo-development-client' \
-                $p 2>/dev/null \
-                | grep -v -E 'EXPO_PUBLIC_SUPABASE|SUPABASE_ANON_KEY|eyJ[A-Za-z0-9_-]+' \
-                | head -n 200 >> diagnostics/metadata-matches.txt || true
-            fi
-          }
-
-          scan_path ".expo"
-          scan_path "$HOME/.expo"
-          scan_path "$HOME/.cache"
-          scan_path "/tmp/metro*"
-          scan_path "/tmp/expo*"
-          scan_path "/tmp/ngrok*"
-
-          ACTUAL_URL="$(timeout 10s grep -RhoE --binary-files=without-match '[A-Za-z0-9._-]+://expo-development-client/[^[:space:]\"'"'"'<>]*|exp(s)?://[^[:space:]\"'"'"'<>]+' diagnostics .expo "$HOME/.expo" 2>/dev/null | head -n 1 || true)"
-
-          if [ -n "$ACTUAL_URL" ]; then
-            printf '%s\n' "$ACTUAL_URL" > diagnostics/expo-preview-url.txt
-            echo "EXPO_PREVIEW_URL=$ACTUAL_URL"
-          else
-            echo "EXPO_PREVIEW_URL_NOT_DETERMINED"
-          fi
-          DIAG
-
-          chmod +x diagnostics/run-diagnostics.sh
-
-          set +e
-          timeout --signal=TERM --kill-after=10s 180s bash diagnostics/run-diagnostics.sh
-          DIAG_RC=$?
-          set -e
-
-          cp expo-preview.log diagnostics/ || true
-          [ -f ngrok-tunnels.json ] && cp ngrok-tunnels.json diagnostics/ || true
-
-          if [ "$DIAG_RC" -eq 124 ] || [ "$DIAG_RC" -eq 137 ]; then
-            echo "Diagnostics reached the 3-minute limit; continuing to artifact upload."
-          elif [ "$DIAG_RC" -ne 0 ]; then
-            echo "Diagnostics exited with code $DIAG_RC; continuing to artifact upload."
+          # Confirm the tunnel manifest itself is reachable before keeping the job alive.
+          MANIFEST_URL="$(DEV_CLIENT_URL="$DEV_CLIENT_URL" node - <<'NODE'
+          const u = process.env.DEV_CLIENT_URL || '';
+          try {
+            const outer = new URL(u);
+            process.stdout.write(outer.searchParams.get('url') || '');
+          } catch (_) {}
+          NODE
+          )"
+          if [ -n "$MANIFEST_URL" ]; then
+            curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+              -H 'Accept: application/expo+json,application/json' \
+              "$MANIFEST_URL" > diagnostics/tunnel-manifest.json
           fi
 
       - name: Upload Expo preview diagnostics
@@ -187,16 +157,16 @@ jobs:
           path: |
             diagnostics/
             expo-preview.log
-            ngrok-tunnels.json
           if-no-files-found: warn
 
       - name: Keep Expo Development Client Tunnel alive
-        if: always()
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
           EXPO_PID="$(cat expo-preview.pid)"
           echo "Keeping Expo Development Client Tunnel alive with PID ${EXPO_PID}."
+          echo "The tunnel remains available while this workflow job is running (maximum 30 minutes)."
           while true; do
             if ! kill -0 "$EXPO_PID" 2>/dev/null; then
               echo "Expo process exited unexpectedly."
