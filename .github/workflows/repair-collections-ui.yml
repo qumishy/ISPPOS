@@ -29,7 +29,6 @@ jobs:
           path = Path('src/screens/CollectionsListScreen.js')
           text = path.read_text()
 
-          # Match InvoicesListScreen card interaction: card itself is not the expand trigger.
           open_pattern = re.compile(
               r"(?P<indent>\s*)<TouchableOpacity\s*\n\s*style=\{s\.colCard\}\s*\n\s*activeOpacity=\{0\.85\}\s*\n\s*onPress=\{\(\) => setExpandedColId\(expanded \? null : col\.id\)\}\s*\n\s*onLongPress=\{\(\) => \{",
               re.M,
@@ -42,7 +41,6 @@ jobs:
               count=1,
           )
 
-          # Replace only the first card header block, stopping immediately before the admin approver line.
           header_pattern = re.compile(
               r"\n\s*<View style=\{\{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 \}\}>.*?\n\s*</View>\n\n\s*\{isAdminUser && isApprovedCollectionRow\(col\)",
               re.S,
@@ -75,9 +73,13 @@ jobs:
           if header_count != 1:
               raise SystemExit(f'Expected one collection header replacement, got {header_count}')
 
-          marker = """              {/* ── EXPANDED: Secondary details + actions ── */}
-              {expanded && ("""
-          expand_control = """              <TouchableOpacity
+          details_pattern = re.compile(
+              r"\s*\{/\* ── EXPANDED: Secondary details \+ actions ── \*/\}\s*\n\s*\{expanded && \(",
+              re.M,
+          )
+          expand_control = """
+
+              <TouchableOpacity
                 style={{
                   marginTop: 8,
                   flexDirection: 'row-reverse',
@@ -106,9 +108,10 @@ jobs:
 
               {/* ── EXPANDED: Secondary details + actions ── */}
               {expanded && ("""
-          if marker not in text:
-              raise SystemExit('Expanded details marker was not found')
-          text = text.replace(marker, expand_control, 1)
+          text, details_count = details_pattern.subn(expand_control, text, count=1)
+          if details_count != 1:
+              raise SystemExit(f'Expected one expanded details marker, got {details_count}')
+
           text = text.replace("borderTopColor: colors.border + '30'", "borderTopColor: colors.border + '70'", 1)
 
           required = [
@@ -117,7 +120,7 @@ jobs:
               'المزامنة', 'ملاحظات', 'طباعة', 'واتساب', 'الرسائل',
               'handlePrint', 'handleWhatsApp', 'handleSMS',
               'approveLocalCollection', 'cancelLocalCollectionApproval',
-              "عرض مزيد من التفاصيل",
+              'عرض مزيد من التفاصيل',
           ]
           missing = [item for item in required if item not in text]
           if missing:
