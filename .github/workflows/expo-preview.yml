@@ -2,20 +2,24 @@ name: Expo Cloud Preview
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - chore/codespaces-preview
+
+permissions:
+  contents: read
 
 jobs:
   expo-preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 360
+
+    env:
+      PREVIEW_BRANCH: chore/codespaces-preview
 
     steps:
-      - name: Checkout chore/codespaces-preview
+      - name: Checkout development branch
         uses: actions/checkout@v4
         with:
           ref: chore/codespaces-preview
+          fetch-depth: 0
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -28,7 +32,7 @@ jobs:
           npm install
           npx expo install --check
 
-      - name: Start Expo Development Client Tunnel
+      - name: Start long-lived Expo Development Client Tunnel
         env:
           EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -68,9 +72,6 @@ jobs:
           mkdir -p diagnostics
           cp expo-preview.log diagnostics/expo-preview.log
 
-          # Ask Expo CLI itself for the URL that Android Development Client must open.
-          # This avoids treating the raw ngrok https://...exp.direct transport URL as
-          # the app launch URL.
           DEV_CLIENT_JSON=""
           for attempt in $(seq 1 12); do
             DEV_CLIENT_JSON="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
@@ -98,9 +99,6 @@ jobs:
           NODE
           )"
 
-          # Backward-compatible fallback for older Expo CLI versions: derive only
-          # the generated dev-client wrapper, while keeping the manifest transport
-          # URL from Expo's own manifest response.
           if [ -z "$DEV_CLIENT_URL" ]; then
             MANIFEST_JSON="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 5 \
               -H 'Accept: application/expo+json,application/json' \
@@ -113,8 +111,7 @@ jobs:
             const host = m?.extra?.expoClient?.hostUri || m?.extra?.expoGo?.debuggerHost || '';
             const slug = m?.extra?.expoClient?.slug || 'isp-cards-system';
             if (!host) process.exit(0);
-            const manifestUrl = `https://${host}`;
-            process.stdout.write(`exp+${slug}://expo-development-client/?url=${encodeURIComponent(manifestUrl)}`);
+            process.stdout.write(`exp+${slug}://expo-development-client/?url=${encodeURIComponent(`https://${host}`)}`);
           } catch (_) {}
           NODE
             )"
@@ -122,19 +119,16 @@ jobs:
 
           if [ -z "$DEV_CLIENT_URL" ]; then
             echo "Could not determine the Development Client launch URL."
-            cat diagnostics/expo-open-android.json || true
-            tail -n 100 expo-preview.log || true
             exit 1
           fi
 
           printf '%s\n' "$DEV_CLIENT_URL" > diagnostics/expo-preview-url.txt
           echo "============================================================"
-          echo "ANDROID DEVELOPMENT CLIENT URL"
+          echo "LONG-LIVED ANDROID DEVELOPMENT CLIENT URL"
           echo "$DEV_CLIENT_URL"
           echo "============================================================"
-          echo "Open this URL with the installed ISPPOS Development Client."
+          echo "Keep using this same URL while this workflow run is alive."
 
-          # Confirm the tunnel manifest itself is reachable before keeping the job alive.
           MANIFEST_URL="$(DEV_CLIENT_URL="$DEV_CLIENT_URL" node - <<'NODE'
           const u = process.env.DEV_CLIENT_URL || '';
           try {
@@ -149,29 +143,44 @@ jobs:
               "$MANIFEST_URL" > diagnostics/tunnel-manifest.json
           fi
 
-      - name: Upload Expo preview diagnostics
-        if: always()
+      - name: Upload preview URL
         uses: actions/upload-artifact@v4
         with:
           name: expo-preview-diagnostics
           path: |
             diagnostics/
             expo-preview.log
-          if-no-files-found: warn
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Keep Expo Development Client Tunnel alive
-        if: success()
+      - name: Keep tunnel alive and sync latest branch code
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: https://ybpzjvswutvdbjevgawt.supabase.co
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
         shell: bash
         run: |
           set -euo pipefail
           EXPO_PID="$(cat expo-preview.pid)"
-          echo "Keeping Expo Development Client Tunnel alive with PID ${EXPO_PID}."
-          echo "The tunnel remains available while this workflow job is running (maximum 30 minutes)."
+          LAST_SHA="$(git rev-parse HEAD)"
+          echo "Long-lived preview started at ${LAST_SHA}."
+          echo "This job will keep the SAME tunnel and pull ${PREVIEW_BRANCH} changes automatically."
+
           while true; do
             if ! kill -0 "$EXPO_PID" 2>/dev/null; then
               echo "Expo process exited unexpectedly."
               tail -n 100 expo-preview.log || true
               exit 1
             fi
-            sleep 15
+
+            git fetch --quiet origin "$PREVIEW_BRANCH"
+            REMOTE_SHA="$(git rev-parse "origin/${PREVIEW_BRANCH}")"
+
+            if [ "$REMOTE_SHA" != "$LAST_SHA" ]; then
+              echo "Detected new commit: ${REMOTE_SHA}"
+              git reset --hard "$REMOTE_SHA"
+              LAST_SHA="$REMOTE_SHA"
+              echo "Updated working tree without restarting Metro/Tunnel."
+            fi
+
+            sleep 20
           done
