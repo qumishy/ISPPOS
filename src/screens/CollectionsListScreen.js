@@ -382,10 +382,9 @@ export default function CollectionsScreen({ navigation }) {
             const pendingCoverageComplete = combinedCoverageComplete && String(col.inv_approval_status || '').toLowerCase() !== 'approved';
             const canApproveCollectionRow = canCurrentUserApproveCollection(col);
             return (
-            <TouchableOpacity 
-              style={s.colCard} 
-              activeOpacity={0.85} 
-              onPress={() => setExpandedColId(expanded ? null : col.id)}
+            <TouchableOpacity
+              style={[s.invCard, { flexDirection: 'column', alignItems: 'stretch' }]}
+              activeOpacity={0.85}
               onLongPress={() => {
                 const opts = [{ text: 'إلغاء', style: 'cancel' }];
                 if (selectedPhase?.status !== 'closed') {
@@ -398,27 +397,29 @@ export default function CollectionsScreen({ navigation }) {
                 Alert.alert('إجراءات السند', `سند قبض رقم ${col.collection_number}`, opts);
               }}
             >
-              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[s.colNum, { marginBottom: 0, textAlign: 'right', alignSelf: 'stretch' }]}>
-                    {col.collection_number || col.invoice_number || '—'}
-                  </Text>
-                  <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
-                    {col.pos_name || '—'}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <Text style={[s.colAmt, { fontSize: fontSize.xl, color: colors.primary }]}>
-                    {formatCurrency(collectionAmount)}
-                  </Text>
-                  <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
-                    {formatDateShort(col.collection_date)}
-                  </Text>
-                </View>
-                <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.t3} />
-              </View>
+    <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+      <View style={{ flex: 1, gap: 6 }}>
+        <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
+          {col.pos_name || '—'}
+        </Text>
+        <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+          <Text style={[s.colNum, { marginBottom: 0, fontSize: 11, color: colors.t3 }]}>
+            {col.collection_number || col.invoice_number || '—'}
+          </Text>
+          {Number(col.synced) === 0 && <Text style={{ fontSize: 10, color: colors.orange, fontWeight: '900' }}>●</Text>}
+        </View>
+      </View>
+      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+        <Text style={[s.colAmt, { fontSize: fontSize.xxl || (fontSize.xl + 4), color: colors.primary, fontWeight: '900' }]}>
+          {formatCurrency(collectionAmount)}
+        </Text>
+        <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
+          {formatDateShort(col.collection_date || col.created_at)}
+        </Text>
+      </View>
+    </View>
 
-              {isAdminUser && isApprovedCollectionRow(col) && !!col.approver_name && (
+    {isAdminUser && isApprovedCollectionRow(col) && !!col.approver_name && (
                 <View style={{ marginTop: 8, backgroundColor: colors.success + '10', borderWidth: 1, borderColor: colors.success + '35', borderRadius: radius.md, paddingHorizontal: spacing.sm, paddingVertical: 7 }}>
                   <Text style={{ color: colors.success, fontSize: 12, fontWeight: '900', textAlign: 'right' }}>
                     تم الاعتماد بواسطة: {col.approver_name}
@@ -526,10 +527,37 @@ export default function CollectionsScreen({ navigation }) {
                 </View>
               </View>
 
-              {/* ── EXPANDED: Secondary details + actions ── */}
-              {expanded && (
+    <TouchableOpacity
+      style={{
+        marginTop: 8,
+        flexDirection: 'row-reverse',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: colors.bg2,
+        borderWidth: 1,
+        borderColor: colors.border + '80',
+        borderRadius: radius.md,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 8,
+      }}
+      onPress={() => setExpandedColId(expanded ? null : col.id)}
+      activeOpacity={0.85}
+    >
+      <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+        <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={colors.primary} />
+        <Text style={{ fontSize: 12, color: colors.primary, fontWeight: '800' }}>
+          {expanded ? 'إخفاء التفاصيل' : 'عرض مزيد من التفاصيل'}
+        </Text>
+      </View>
+      <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
+        تفاصيل التحصيل والإجراءات
+      </Text>
+    </TouchableOpacity>
+
+    {/* ── EXPANDED: Secondary details + actions ── */}
+    {expanded && (
                 <>
-                  <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border + '30' }}>
+                  <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border + '70' }}>
                     <View style={s.colGrid}>
                       {[
                         col.agent_name && { label: 'المندوب', value: col.agent_name },
