@@ -29,34 +29,26 @@ jobs:
           path = Path('src/screens/CollectionsListScreen.js')
           text = path.read_text()
 
-          # Keep the full existing collection feature set, but make the card shell
-          # follow the same interaction/layout pattern as InvoicesListScreen.
-          old_open = """            <TouchableOpacity \n              style={s.colCard} \n              activeOpacity={0.85} \n              onPress={() => setExpandedColId(expanded ? null : col.id)}\n              onLongPress={() => {"""
-          new_open = """            <TouchableOpacity \n              style={[s.invCard, { flexDirection: 'column', alignItems: 'stretch' }]} \n              activeOpacity={0.85} \n              onLongPress={() => {"""
-          if old_open not in text:
+          # Match InvoicesListScreen card interaction: card itself is not the expand trigger.
+          open_pattern = re.compile(
+              r"(?P<indent>\s*)<TouchableOpacity\s*\n\s*style=\{s\.colCard\}\s*\n\s*activeOpacity=\{0\.85\}\s*\n\s*onPress=\{\(\) => setExpandedColId\(expanded \? null : col\.id\)\}\s*\n\s*onLongPress=\{\(\) => \{",
+              re.M,
+          )
+          if not open_pattern.search(text):
               raise SystemExit('Expected collection card opening was not found')
-          text = text.replace(old_open, new_open, 1)
+          text = open_pattern.sub(
+              "\n            <TouchableOpacity\n              style={[s.invCard, { flexDirection: 'column', alignItems: 'stretch' }]}\n              activeOpacity={0.85}\n              onLongPress={() => {",
+              text,
+              count=1,
+          )
 
-          old_header = """              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={[s.colNum, { marginBottom: 0, textAlign: 'right', alignSelf: 'stretch' }]}>
-                    {col.collection_number || col.invoice_number || '—'}
-                  </Text>
-                  <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
-                    {col.pos_name || '—'}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                  <Text style={[s.colAmt, { fontSize: fontSize.xl, color: colors.primary }]}>
-                    {formatCurrency(collectionAmount)}
-                  </Text>
-                  <Text style={{ fontSize: 10, color: colors.t3, fontWeight: '700' }}>
-                    {formatDateShort(col.collection_date)}
-                  </Text>
-                </View>
-                <Feather name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.t3} />
-              </View>"""
-          new_header = """              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+          # Replace only the first card header block, stopping immediately before the admin approver line.
+          header_pattern = re.compile(
+              r"\n\s*<View style=\{\{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 \}\}>.*?\n\s*</View>\n\n\s*\{isAdminUser && isApprovedCollectionRow\(col\)",
+              re.S,
+          )
+          header_replacement = """
+              <View style={{ flexDirection: 'row-reverse', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
                 <View style={{ flex: 1, gap: 6 }}>
                   <Text style={[s.invPos, { fontSize: fontSize.lg, lineHeight: fontSize.lg + 2 }]} numberOfLines={1}>
                     {col.pos_name || '—'}
@@ -76,10 +68,12 @@ jobs:
                     {formatDateShort(col.collection_date || col.created_at)}
                   </Text>
                 </View>
-              </View>"""
-          if old_header not in text:
-              raise SystemExit('Expected collection card header was not found')
-          text = text.replace(old_header, new_header, 1)
+              </View>
+
+              {isAdminUser && isApprovedCollectionRow(col)"""
+          text, header_count = header_pattern.subn(header_replacement, text, count=1)
+          if header_count != 1:
+              raise SystemExit(f'Expected one collection header replacement, got {header_count}')
 
           marker = """              {/* ── EXPANDED: Secondary details + actions ── */}
               {expanded && ("""
@@ -115,30 +109,15 @@ jobs:
           if marker not in text:
               raise SystemExit('Expanded details marker was not found')
           text = text.replace(marker, expand_control, 1)
-
-          # Match the invoice expanded-section divider tone.
-          text = text.replace(
-              "borderTopColor: colors.border + '30'",
-              "borderTopColor: colors.border + '70'",
-              1,
-          )
+          text = text.replace("borderTopColor: colors.border + '30'", "borderTopColor: colors.border + '70'", 1)
 
           required = [
               'تم الاعتماد بواسطة: {col.approver_name}',
-              'مبلغ التحصيل',
-              'مرتجع الكروت',
-              'الإجمالي المغطي',
-              'حالة سداد الفاتورة',
-              'المزامنة',
-              'ملاحظات',
-              'طباعة',
-              'واتساب',
-              'الرسائل',
-              'handlePrint',
-              'handleWhatsApp',
-              'handleSMS',
-              'approveLocalCollection',
-              'cancelLocalCollectionApproval',
+              'مبلغ التحصيل', 'مرتجع الكروت', 'الإجمالي المغطي', 'حالة سداد الفاتورة',
+              'المزامنة', 'ملاحظات', 'طباعة', 'واتساب', 'الرسائل',
+              'handlePrint', 'handleWhatsApp', 'handleSMS',
+              'approveLocalCollection', 'cancelLocalCollectionApproval',
+              "عرض مزيد من التفاصيل",
           ]
           missing = [item for item in required if item not in text]
           if missing:
