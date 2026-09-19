@@ -21,20 +21,13 @@ export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) 
   return getCached(`agent_wallets:detailed:${projectId}:${phaseId}`, async () => {
     let sql = `SELECT
       aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
-      COALESCE(ws.sold_qty, 0) as sold_cards,
-      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0)) as remaining_cards,
+      COALESCE(aw.sold_cards, 0) as sold_cards,
+      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0)) as remaining_cards,
       u.name as agent_name, c.name as category_name, c.price as category_price, b.batch_number, b.serial_number as batch_serial, b.received_date as batch_date, COALESCE(b.available_cards, 0) as batch_available, COALESCE(b.total_cards, 0) as batch_total
       FROM agent_wallets aw
       JOIN users u ON u.id = aw.agent_id
       LEFT JOIN card_categories c ON c.id = aw.category_id
       LEFT JOIN batches b ON b.id = aw.batch_id
-      LEFT JOIN (
-        SELECT ii.wallet_id, SUM(ii.quantity) as sold_qty
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
-        GROUP BY ii.wallet_id
-      ) ws ON ws.wallet_id = aw.id
       WHERE 1=1`;
     
     const params = [];
@@ -150,18 +143,11 @@ export const getWalletsSummaryByAgent = async (projectId = null, phaseId = null)
         u.id as agent_id,
         u.name as agent_name,
         SUM(COALESCE(aw.total_cards, 0)) as total_cards,
-        SUM(COALESCE(ws.sold_qty, 0)) as sold_cards,
-        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0))) as remaining_cards,
+        SUM(COALESCE(aw.sold_cards, 0)) as sold_cards,
+        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0))) as remaining_cards,
         COUNT(aw.id) as wallet_count
       FROM agent_wallets aw
       JOIN users u ON u.id = aw.agent_id
-      LEFT JOIN (
-        SELECT ii.wallet_id, SUM(ii.quantity) as sold_qty
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
-        GROUP BY ii.wallet_id
-      ) ws ON ws.wallet_id = aw.id
       WHERE 1=1`;
     
     const params = [];

@@ -20,6 +20,8 @@ import {
   updateSystemUser,
   linkUserToProject,
   deactivateUserProjectAccess,
+  fetchSystemAdminEligibleUsers,
+  grantSystemAdmin,
 } from '../services/systemAdminService';
 
 const ROLE_LABELS = {
@@ -33,6 +35,7 @@ const SECTIONS = [
   { id: 'phases', label: 'المراحل', icon: 'layers' },
   { id: 'users', label: 'المستخدمون', icon: 'users' },
   { id: 'memberships', label: 'ربط المستخدمين بالمشاريع', icon: 'link' },
+  { id: 'grant_admin', label: 'منح صلاحية مدير النظام', icon: 'shield' },
 ];
 
 const isActiveValue = (value) => !(value === false || value === 0 || value === '0' || value === 'false');
@@ -242,6 +245,9 @@ export default function SystemAdminScreen() {
   const [userForm, setUserForm] = useState(null);
   const [memberForm, setMemberForm] = useState(null);
 
+  const [eligibleUsers, setEligibleUsers] = useState([]);
+  const [grantSearch, setGrantSearch] = useState('');
+
   const handleError = useCallback((err) => {
     setError(err?.message || 'حدث خطأ غير متوقع.');
   }, []);
@@ -275,6 +281,13 @@ export default function SystemAdminScreen() {
     } catch (err) { handleError(err); } finally { setLoading(false); }
   }, [handleError]);
 
+  const loadEligibleUsers = useCallback(async () => {
+    try {
+      const rows = await fetchSystemAdminEligibleUsers();
+      setEligibleUsers(rows || []);
+    } catch (err) { handleError(err); }
+  }, [handleError]);
+
   useEffect(() => {
     if (!isSystemAdminUser(user)) return;
     let cancelled = false;
@@ -295,6 +308,11 @@ export default function SystemAdminScreen() {
     setError('');
     if ((next === 'phases' || next === 'memberships') && scopeProjectId) {
       await loadScopedData(scopeProjectId);
+    }
+    if (next === 'grant_admin') {
+      setLoading(true);
+      await loadEligibleUsers();
+      setLoading(false);
     }
   };
 
@@ -522,6 +540,32 @@ export default function SystemAdminScreen() {
             try {
               await deactivateUserProjectAccess({ membership_id: membership.id, project_id: membership.project_id });
               setMemberships(await fetchSystemMemberships(membership.project_id));
+            } catch (err) { handleError(err); } finally { setSaving(false); }
+          },
+        },
+      ]
+    );
+  };
+
+  // ── Grant SYSTEM_ADMIN ──────────────────────────────────────────────
+  const confirmGrantSystemAdmin = (targetUser) => {
+    const projectNames = (targetUser.admin_projects || [])
+      .map((p) => p.project_name)
+      .join('، ');
+    Alert.alert(
+      'منح صلاحية مدير النظام',
+      `هل أنت متأكد من منح "${targetUser.name}" صلاحية مدير النظام العام؟\n\nالمشاريع:${projectNames ? '\n' + projectNames : ' —'}\n\nسيتمكن من إدارة كل المشاريع والمستخدمين.`,
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        {
+          text: 'منح الصلاحية',
+          style: 'destructive',
+          onPress: async () => {
+            setSaving(true); setError('');
+            try {
+              await grantSystemAdmin({ target_user_id: targetUser.id });
+              Alert.alert('تم', 'تم منح صلاحية مدير النظام بنجاح.');
+              await loadEligibleUsers();
             } catch (err) { handleError(err); } finally { setSaving(false); }
           },
         },
@@ -834,6 +878,80 @@ export default function SystemAdminScreen() {
                     ) : null}
                   </View>
                 ))}
+          </>
+        ) : null}
+
+        {/* ── منح صلاحية مدير النظام ── */}
+        {section === 'grant_admin' && !loading ? (
+          <>
+            <View style={{ backgroundColor: colors.warning + '14', borderColor: colors.warning + '55', borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+              <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                <Feather name="info" size={16} color={colors.warning} />
+                <Text style={{ color: colors.t1, fontWeight: '700', fontSize: 13, flex: 1, textAlign: 'right' }}>فقط مدراء المشاريع النشطون مؤهلون للترقية</Text>
+              </View>
+              <Text style={{ color: colors.t3, fontSize: 12, marginTop: 6, textAlign: 'right' }}>
+                يمكن منح صلاحية مدير النظام العام للمستخدمين الذين يحملون دور "مدير عام" في مشروع واحد على الأقل.
+              </Text>
+            </View>
+
+            <TextInput
+              style={[s.input, { marginBottom: 14 }]}
+              value={grantSearch}
+              onChangeText={setGrantSearch}
+              placeholder="بحث بالاسم أو اسم المستخدم..."
+              placeholderTextColor={colors.t3}
+            />
+
+            {(eligibleUsers || []).length === 0
+              ? renderEmpty('لا يوجد مستخدمون مؤهلون للترقية.')
+              : (eligibleUsers || [])
+                  .filter((item) => {
+                    if (!grantSearch.trim()) return true;
+                    const q = grantSearch.trim().toLowerCase();
+                    return (
+                      (item.name || '').toLowerCase().includes(q) ||
+                      (item.username || '').toLowerCase().includes(q)
+                    );
+                  })
+                  .length === 0
+                ? renderEmpty('لا توجد نتائج مطابقة للبحث.')
+                : (eligibleUsers || [])
+                    .filter((item) => {
+                      if (!grantSearch.trim()) return true;
+                      const q = grantSearch.trim().toLowerCase();
+                      return (
+                        (item.name || '').toLowerCase().includes(q) ||
+                        (item.username || '').toLowerCase().includes(q)
+                      );
+                    })
+                    .map((item) => {
+                      const projects = item.admin_projects || [];
+                      return (
+                        <View key={String(item.id)} style={s.card}>
+                          <View style={{ flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <Text style={[s.cardTitle, { flex: 1 }]}>{item.name}</Text>
+                            <StatusBadge active={item.is_active} activeText="مفعل" inactiveText="معطل" colors={colors} />
+                          </View>
+                          <Text style={s.cardSub}>اسم المستخدم: {item.username}</Text>
+                          {item.global_role ? (
+                            <Text style={s.cardSub}>الدور الحالي: {ROLE_LABELS[item.global_role] || item.global_role}</Text>
+                          ) : null}
+                          {projects.length > 0 ? (
+                            <Text style={s.cardSub}>مدير في: {projects.map((p) => p.project_name).join('، ')}</Text>
+                          ) : null}
+                          <View style={s.row}>
+                            <TouchableOpacity
+                              style={[s.miniBtn, { borderColor: colors.primary + '55', backgroundColor: colors.primary + '10' }]}
+                              onPress={() => confirmGrantSystemAdmin(item)}
+                              disabled={saving}
+                            >
+                              <Feather name="shield" size={13} color={colors.primary} />
+                              <Text style={[s.miniBtnText, { color: colors.primary }]}>منح صلاحية مدير النظام</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
           </>
         ) : null}
       </ScrollView>

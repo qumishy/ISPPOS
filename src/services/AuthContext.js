@@ -259,7 +259,7 @@ export function AuthProvider({ children }) {
       // First setup path: block with one short message only.
       startupSyncRef.current.blocking = true;
       setInitialSyncInProgressState(true);
-      setLoadingProgress('جاري جلب البيانات...', null);
+      setLoadingProgress('جاري مزامنة البيانات...', null);
 
       if (!isOnline() && !localDataReady) {
         console.log(`[InitialSync] blocked offline project_id=${projectId} reason=no_local_data`);
@@ -270,7 +270,7 @@ export function AuthProvider({ children }) {
       const result = await runRequiredInitialSync(user, {
         timeoutMs: 180000,
         forceRetry: isRetry,
-        onProgress: (p) => setLoadingProgress(p.message || 'جاري جلب البيانات...', p.percent),
+        onProgress: (p) => setLoadingProgress('جاري مزامنة البيانات...', p.percent),
       });
       setInitialSyncReady(!!result?.ready);
       setInitialSyncReadyState(!!result?.ready);

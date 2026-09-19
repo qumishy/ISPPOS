@@ -333,3 +333,18 @@ export const deactivateUserProjectAccess = async ({ membership_id, project_id })
   }
   return row;
 };
+
+// ── SYSTEM_ADMIN grant ──────────────────────────────────────────────
+
+export const fetchSystemAdminEligibleUsers = async () => {
+  const rows = await callSystemRpc('list_system_admin_eligible_users');
+  return rows || [];
+};
+
+export const grantSystemAdmin = async ({ target_user_id }) => {
+  const result = await callSystemRpc('system_admin_grant_system_admin', {
+    p_target_user_id: target_user_id,
+  });
+  await fetchSystemUsers();
+  return result;
+};

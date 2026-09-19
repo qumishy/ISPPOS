@@ -684,11 +684,14 @@ export default function AppNavigator() {
           <>
             <ActivityIndicator size="large" color={colors.primary} />
             <Text style={{ marginTop: 14, color: colors.t1, fontSize: 16, fontFamily: 'IBMPlexSansArabic-Bold', textAlign: 'center' }}>
-              {loadingMessage || 'جاري جلب البيانات...'}
+              {loadingMessage || 'جاري مزامنة البيانات...'}
             </Text>
             {loadingPercent !== null && (
-              <View style={{ width: '80%', height: 6, backgroundColor: colors.border, borderRadius: 3, marginTop: 16, overflow: 'hidden' }}>
-                <View style={{ height: '100%', width: `${loadingPercent}%`, backgroundColor: colors.primary, borderRadius: 3 }} />
+              <View style={{ alignItems: 'center', marginTop: 16, width: '80%' }}>
+                <View style={{ width: '100%', height: 6, backgroundColor: colors.border, borderRadius: 3, overflow: 'hidden' }}>
+                  <View style={{ height: '100%', width: `${loadingPercent}%`, backgroundColor: colors.primary, borderRadius: 3 }} />
+                </View>
+                <Text style={{ marginTop: 8, color: colors.t2, fontSize: 13, fontWeight: '700' }}>{loadingPercent}%</Text>
               </View>
             )}
           </>
