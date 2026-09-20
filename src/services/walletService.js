@@ -43,18 +43,11 @@ export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) 
 export const transferAgentWalletToStorage = async (walletId, qtyToReturn = null, actorId = null) => {
   // ── All DB operations inside ONE atomic transaction ──
   const result = await withTransaction(function* () {
-    // 1) Read wallet with derived sold_cards
+    // 1) Read wallet with current sold_cards
     const wR = yield {
-      sql: `SELECT aw.*, COALESCE(ws.sold_qty, 0) as sold_cards_derived
-       FROM agent_wallets aw
-       LEFT JOIN (
-         SELECT ii.wallet_id, SUM(ii.quantity) as sold_qty
-         FROM invoice_items ii
-         JOIN invoices i ON i.id = ii.invoice_id
-         WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
-         GROUP BY ii.wallet_id
-       ) ws ON ws.wallet_id = aw.id
-       WHERE aw.id = ?`,
+      sql: `SELECT aw.*, COALESCE(aw.sold_cards, 0) as sold_cards_derived
+        FROM agent_wallets aw
+        WHERE aw.id = ?`,
       params: [walletId]
     };
     const wallet = wR.rows._array[0];
@@ -183,21 +176,13 @@ export const getLocalWallets = async (agentId, projectId = null, phaseId = null)
     const walletColumnsR = await execSQL(`PRAGMA table_info(agent_wallets)`);
     const walletColumns = new Set((walletColumnsR.rows._array || []).map(c => c.name));
     let sql = `SELECT
-      aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
-      COALESCE(ws.sold_qty, 0) as sold_cards,
-      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0)) as remaining_cards,
+      aw.id, aw.agent_id, aw.batch_id, aw.category_id, COALESCE(aw.total_cards, 0) as total_cards, aw.sold_cards, aw.issued_by, aw.notes, aw.created_at, aw.synced,
+      MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0)) as remaining_cards,
       u.name as user_name, c.name as category_name, b.batch_number as batch_number, b.serial_number as batch_serial
       FROM agent_wallets aw
       LEFT JOIN users u ON u.id = aw.agent_id
       LEFT JOIN card_categories c ON c.id = aw.category_id
       LEFT JOIN batches b ON b.id = aw.batch_id
-      LEFT JOIN (
-        SELECT ii.wallet_id, SUM(ii.quantity) as sold_qty
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
-        GROUP BY ii.wallet_id
-      ) ws ON ws.wallet_id = aw.id
       WHERE 1=1`;
     const params = [];
     if (agentId) { sql += ` AND aw.agent_id = ?`; params.push(agentId); }
@@ -232,62 +217,23 @@ export const getAgentWalletCategoryBalances = async (agentId, projectId = null, 
       walletParams.push(phaseId);
     }
 
-    let walletSoldWhere = `aw.agent_id = ? AND ${ACTIVE_INVOICE_CLAUSE('i')}`;
-    const soldParams = [agentId];
-    if (projectId) {
-      walletSoldWhere += ` AND i.project_id = ? AND aw.project_id = ?`;
-      soldParams.push(projectId);
-      soldParams.push(projectId);
-    }
-    if (phaseId) {
-      walletSoldWhere += ` AND i.phase_id = ? AND aw.phase_id = ?`;
-      soldParams.push(phaseId);
-      soldParams.push(phaseId);
-    }
-
-    const sql = `
+    let sql = `
       SELECT
         c.id as category_id,
         c.name as category_name,
         c.price as category_price,
-        COALESCE(w.assigned_cards, 0) as assigned_cards,
-        COALESCE(w.sold_cards, 0) as sold_cards,
-        COALESCE(w.remaining_cards, 0) as remaining_cards,
-        COALESCE(w.wallet_rows, 0) as wallet_rows
+        SUM(COALESCE(aw.total_cards, 0)) as assigned_cards,
+        SUM(COALESCE(aw.sold_cards, 0)) as sold_cards,
+        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0))) as remaining_cards,
+        COUNT(aw.id) as wallet_rows
       FROM card_categories c
-      LEFT JOIN (
-        SELECT
-          x.category_id,
-          SUM(x.total_cards) as assigned_cards,
-          SUM(x.sold_cards) as sold_cards,
-          SUM(MAX(0, x.total_cards - x.sold_cards)) as remaining_cards,
-          COUNT(x.wallet_id) as wallet_rows
-        FROM (
-          SELECT
-            aw.id as wallet_id,
-            aw.category_id,
-            COALESCE(aw.total_cards, 0) as total_cards,
-            COALESCE(ws.sold_qty, 0) as sold_cards
-          FROM agent_wallets aw
-          LEFT JOIN (
-            SELECT
-              ii.wallet_id,
-              SUM(COALESCE(ii.quantity, 0)) as sold_qty
-            FROM invoice_items ii
-            JOIN invoices i ON i.id = ii.invoice_id
-            JOIN agent_wallets aw ON aw.id = ii.wallet_id
-            WHERE ${walletSoldWhere}
-            GROUP BY ii.wallet_id
-          ) ws ON ws.wallet_id = aw.id
-          WHERE ${walletWhere}
-        ) x
-        GROUP BY x.category_id
-      ) w ON w.category_id = c.id
+      LEFT JOIN agent_wallets aw ON aw.category_id = c.id AND ${walletWhere}
       WHERE ${categoryWhere}
+      GROUP BY c.id
       ORDER BY c.price ASC, c.name ASC
     `;
 
-    const r = await execSQL(sql, [...soldParams, ...walletParams, ...params]);
+    const r = await execSQL(sql, [...walletParams, ...params]);
     const rows = r.rows._array || [];
 
     rows.forEach((row) => {
@@ -485,18 +431,11 @@ export const getBatchesByAgent = async (agentId, projectId = null, phaseId = nul
     const sql = `
       SELECT
         b.id, b.batch_number, b.serial_number, c.name as category_name,
-        MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0)) as available
+        MAX(0, aw.total_cards - COALESCE(aw.sold_cards, 0)) as available
       FROM agent_wallets aw
       JOIN batches b ON b.id = aw.batch_id
       LEFT JOIN card_categories c ON c.id = b.category_id
-      LEFT JOIN (
-        SELECT ii.wallet_id, SUM(ii.quantity) as sold_qty
-        FROM invoice_items ii
-        JOIN invoices i ON i.id = ii.invoice_id
-        WHERE ${ACTIVE_INVOICE_CLAUSE('i')}
-        GROUP BY ii.wallet_id
-      ) ws ON ws.wallet_id = aw.id
-      WHERE aw.agent_id = ? AND MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0)) > 0
+      WHERE aw.agent_id = ? AND MAX(0, aw.total_cards - COALESCE(aw.sold_cards, 0)) > 0
       ${projectId ? 'AND aw.project_id = ?' : ''}
       ${phaseId ? 'AND aw.phase_id = ?' : ''}
       ORDER BY b.created_at DESC

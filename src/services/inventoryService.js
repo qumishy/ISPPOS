@@ -45,26 +45,18 @@ const buildActiveCollectionClause = (alias, columns) => {
 const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
   const filters = normalizeInventoryFilters(rawFilters);
 
-  const soldInvoiceWhere = [ACTIVE_INVOICE_CLAUSE('i')];
-  const soldInvoiceParams = [];
-  if (filters.project_id) {
-    soldInvoiceWhere.push('i.project_id = ?');
-    soldInvoiceParams.push(filters.project_id);
-  }
-  if (filters.phase_id) {
-    soldInvoiceWhere.push('i.phase_id = ?');
-    soldInvoiceParams.push(filters.phase_id);
-  }
-
   const batchSalesWhere = [
     'ii.batch_id IS NOT NULL',
     ACTIVE_BATCH_CLAUSE('b2'),
-    ...soldInvoiceWhere,
   ];
-  const batchSalesParams = [...soldInvoiceParams];
+  const batchSalesParams = [];
   if (filters.project_id) {
     batchSalesWhere.push('b2.project_id = ?');
     batchSalesParams.push(filters.project_id);
+  }
+  if (filters.phase_id) {
+    batchSalesWhere.push('b2.phase_id = ?');
+    batchSalesParams.push(filters.phase_id);
   }
 
   const walletWhere = [ACTIVE_BATCH_CLAUSE('b3')];
@@ -74,7 +66,7 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
     walletParams.push(filters.project_id);
   }
   if (filters.phase_id) {
-    walletWhere.push(LEGACY_PHASE_CLAUSE('aw'));
+    walletWhere.push('LEGACY_PHASE_CLAUSE(\'aw\')');
     walletParams.push(filters.phase_id);
   }
 
@@ -85,39 +77,33 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
     batchParams.push(filters.project_id);
   }
   if (filters.phase_id) {
-    batchWhere.push(LEGACY_PHASE_CLAUSE('b'));
+    batchWhere.push('LEGACY_PHASE_CLAUSE(\'b\')');
     batchParams.push(filters.phase_id);
   }
 
   const sql = `
-    WITH wallet_sales AS (
-      SELECT
-        ii.wallet_id,
-        SUM(COALESCE(ii.quantity, 0)) AS sold_qty
-      FROM invoice_items ii
-      JOIN invoices i ON i.id = ii.invoice_id
-      WHERE ii.wallet_id IS NOT NULL
-        AND ${soldInvoiceWhere.join(' AND ')}
-      GROUP BY ii.wallet_id
-    ),
-    batch_sales AS (
+    WITH batch_sales AS (
       SELECT
         ii.batch_id,
         SUM(COALESCE(ii.quantity, 0)) AS sold_qty
       FROM invoice_items ii
       JOIN invoices i ON i.id = ii.invoice_id
-      JOIN batches b2 ON b2.id = ii.batch_id
       WHERE ${batchSalesWhere.join(' AND ')}
+        ${filters.project_id ? 'AND i.project_id = ?' : ''}
+        ${filters.phase_id ? 'AND i.phase_id = ?' : ''}
       GROUP BY ii.batch_id
     ),
     wallet_remaining AS (
       SELECT
         aw.batch_id,
-        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0))) AS wallet_remaining
+        SUM(COALESCE(aw.total_cards, 0)) AS wallet_total,
+        SUM(COALESCE(aw.sold_cards, 0)) AS wallet_sold,
+        SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0))) AS wallet_remaining
       FROM agent_wallets aw
       JOIN batches b3 ON b3.id = aw.batch_id
-      LEFT JOIN wallet_sales ws ON ws.wallet_id = aw.id
       WHERE ${walletWhere.join(' AND ')}
+        ${filters.project_id ? 'AND aw.project_id = ?' : ''}
+        ${filters.phase_id ? 'AND (aw.phase_id = ? OR aw.phase_id IS NULL OR aw.phase_id = \'\')' : ''}
       GROUP BY aw.batch_id
     )
     SELECT
@@ -134,6 +120,8 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
     LEFT JOIN batch_sales bs ON bs.batch_id = b.id
     LEFT JOIN wallet_remaining wr ON wr.batch_id = b.id
     WHERE ${batchWhere.join(' AND ')}
+    ${filters.project_id ? 'AND b.project_id = ?' : ''}
+    ${filters.phase_id ? 'AND (b.phase_id = ? OR b.phase_id IS NULL OR b.phase_id = \'\')' : ''}
     ORDER BY LOWER(COALESCE(c.name, 'غير معروف')) ASC, COALESCE(b.created_at, b.received_date) DESC
   `;
 
@@ -190,27 +178,13 @@ export const getInventoryTracking = async (projectId, phaseId = null) => {
         WHERE aw1.batch_id = b.id AND aw1.project_id = '${projectId}'${walletPhaseClause}
       ), 0)                                             AS wallet_assigned_total,
       COALESCE((
-        SELECT SUM(COALESCE(ws3.sold_qty, 0))
+        SELECT SUM(COALESCE(aw2.sold_cards, 0))
         FROM agent_wallets aw2
-        LEFT JOIN (
-          SELECT ii.wallet_id, SUM(COALESCE(ii.quantity, 0)) as sold_qty
-          FROM invoice_items ii
-          JOIN invoices i ON i.id = ii.invoice_id
-          WHERE ${ACTIVE_INVOICE_CLAUSE('i')} AND i.project_id = '${projectId}'
-          GROUP BY ii.wallet_id
-        ) ws3 ON ws3.wallet_id = aw2.id
         WHERE aw2.batch_id = b.id AND aw2.project_id = '${projectId}'${walletPhaseClause2}
       ), 0)                                             AS wallet_sold_total,
       COALESCE((
-        SELECT SUM(MAX(0, COALESCE(aw3.total_cards, 0) - COALESCE(ws4.sold_qty, 0)))
+        SELECT SUM(MAX(0, COALESCE(aw3.total_cards, 0) - COALESCE(aw3.sold_cards, 0)))
         FROM agent_wallets aw3
-        LEFT JOIN (
-          SELECT ii.wallet_id, SUM(COALESCE(ii.quantity, 0)) as sold_qty
-          FROM invoice_items ii
-          JOIN invoices i ON i.id = ii.invoice_id
-          WHERE ${ACTIVE_INVOICE_CLAUSE('i')} AND i.project_id = '${projectId}'
-          GROUP BY ii.wallet_id
-        ) ws4 ON ws4.wallet_id = aw3.id
         WHERE aw3.batch_id = b.id AND aw3.project_id = '${projectId}'${walletPhaseClause3}
       ), 0)                                             AS wallet_remaining_total,
       COALESCE((
@@ -600,23 +574,16 @@ export const softDeleteBatch = async (id, { deletedBy = null, deleteReason = nul
          AND ${invoiceWhere.join(' AND ')}
        GROUP BY ii.batch_id
      ),
-     wallet_usage AS (
-       SELECT
-         aw.batch_id,
-         SUM(COALESCE(aw.total_cards, 0)) AS distributed_qty,
-         SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(ws.sold_qty, 0))) AS wallet_remaining_qty
-       FROM agent_wallets aw
-       JOIN batches b ON b.id = aw.batch_id
-       LEFT JOIN (
-         SELECT ii.wallet_id, SUM(COALESCE(ii.quantity, 0)) AS sold_qty
-         FROM invoice_items ii
-         JOIN invoices i ON i.id = ii.invoice_id
-         WHERE ${invoiceWhere.join(' AND ')}
-         GROUP BY ii.wallet_id
-       ) ws ON ws.wallet_id = aw.id
-       WHERE ${walletWhere.join(' AND ')}
-       GROUP BY aw.batch_id
-     ),
+      wallet_usage AS (
+        SELECT
+          aw.batch_id,
+          SUM(COALESCE(aw.total_cards, 0)) AS distributed_qty,
+          SUM(MAX(0, COALESCE(aw.total_cards, 0) - COALESCE(aw.sold_cards, 0))) AS wallet_remaining_qty
+        FROM agent_wallets aw
+        JOIN batches b ON b.id = aw.batch_id
+        WHERE ${walletWhere.join(' AND ')}
+        GROUP BY aw.batch_id
+      ),
      wallet_counts AS (
        SELECT
          aw.batch_id,
@@ -925,19 +892,12 @@ export const getBatchFinancialSummary = async (batchId, rawFilters = {}) => {
     const totalValue = totalCards * unitPrice;
 
     // Calculate wallet remaining
-    const walletRemainingR = await execSQL(
+const walletRemainingR = await execSQL(
       `SELECT
-           SUM(COALESCE(aw.total_cards, 0)) AS wallet_distributed_total,
-           SUM(MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0))) AS wallet_remaining_total
-         FROM agent_wallets aw
-         LEFT JOIN (
-           SELECT ii2.wallet_id, SUM(${walletQuantityExpr}) as sold_qty
-           FROM invoice_items ii2
-           JOIN invoices i2 ON i2.id = ii2.invoice_id
-           WHERE ${walletSaleFilters.join(' AND ')}
-           GROUP BY ii2.wallet_id
-         ) ws ON ws.wallet_id = aw.id
-         WHERE ${walletFilters.join(' AND ')}`,
+            SUM(COALESCE(aw.total_cards, 0)) AS wallet_distributed_total,
+            SUM(MAX(0, aw.total_cards - COALESCE(aw.sold_cards, 0))) AS wallet_remaining_total
+          FROM agent_wallets aw
+          WHERE ${walletFilters.join(' AND ')}`,
       [...walletSaleParams, ...walletParams]
     );
 

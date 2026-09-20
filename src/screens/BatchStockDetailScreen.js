@@ -46,48 +46,46 @@ export default function BatchStockDetailScreen({ route, navigation }) {
         }
         const invoiceScopeSql = invoiceScope.length ? `AND ${invoiceScope.join(' AND ')}` : '';
 
-        // 2. Get Distribution Details (Summarized by Agent)
-        const res = await execSQL(`
-          SELECT 
-            u.name AS agent_name,
-            SUM(aw.total_cards) AS assigned_qty,
-            SUM(COALESCE(ws.sold_qty, 0)) AS sold_qty,
-            SUM(MAX(0, aw.total_cards - COALESCE(ws.sold_qty, 0))) AS remaining_qty,
-            COALESCE(SUM(ws.collection_total), 0) AS collected_amount
-          FROM agent_wallets aw
-          JOIN users u ON u.id = aw.agent_id
-          LEFT JOIN (
-            SELECT
-              ii.wallet_id,
-              SUM(ii.quantity) as sold_qty,
-              SUM(COALESCE(cc.price, ii.unit_price, 0) * COALESCE(ii.quantity, 0)) as collection_total
-            FROM invoice_items ii
-            JOIN invoices i ON i.id = ii.invoice_id
-            LEFT JOIN card_categories cc ON cc.id = ii.category_id
-            WHERE ii.batch_id = ? AND ${ACTIVE_INVOICE_CLAUSE}
-              ${invoiceScopeSql}
-            GROUP BY ii.wallet_id
-          ) ws ON ws.wallet_id = aw.id
-          WHERE aw.batch_id = ?
-          GROUP BY u.id
-          ORDER BY u.name ASC
-        `, [
-          batchId,
-          ...invoiceScopeParams,
-          batchId,
-        ]);
+// 2. Get Distribution Details (Summarized by Agent)
+      const res = await execSQL(`
+        SELECT 
+          u.name AS agent_name,
+          SUM(aw.total_cards) AS assigned_qty,
+          SUM(aw.sold_cards) AS sold_cards,
+          SUM(MAX(0, aw.total_cards - aw.sold_cards)) AS remaining_qty,
+          COALESCE(SUM(ws.collection_total), 0) AS collected_amount
+        FROM agent_wallets aw
+        JOIN users u ON u.id = aw.agent_id
+        LEFT JOIN (
+          SELECT
+            ii.wallet_id,
+            SUM(COALESCE(cc.price, ii.unit_price, 0) * COALESCE(ii.quantity, 0)) as collection_total
+          FROM invoice_items ii
+          JOIN invoices i ON i.id = ii.invoice_id
+          LEFT JOIN card_categories cc ON cc.id = ii.category_id
+          WHERE ii.batch_id = ? AND ${ACTIVE_INVOICE_CLAUSE}
+            ${invoiceScopeSql}
+          GROUP BY ii.wallet_id
+        ) ws ON ws.wallet_id = aw.id
+        WHERE aw.batch_id = ?
+        GROUP BY u.id
+        ORDER BY u.name ASC
+      `, [
+        batchId,
+        batchId,
+      ]);
 
-        const rows = res.rows._array || [];
-        const distributionCollectionsTotal = rows.reduce((acc, r) => acc + Number(r.collected_amount || 0), 0);
-        console.log('[DistributionReportCollectionValidation]', {
-          batch_id: batchId,
-          calculation: 'category_price * sold_quantity',
-          row_collection_total_sum: distributionCollectionsTotal,
-        });
-        if (!isMounted) return;
-        setData(rows);
+      const rows = res.rows._array || [];
+      const distributionCollectionsTotal = rows.reduce((acc, r) => acc + Number(r.collected_amount || 0), 0);
+      console.log('[DistributionReportCollectionValidation]', {
+        batch_id: batchId,
+        calculation: 'collection_total',
+        row_collection_total_sum: distributionCollectionsTotal,
+      });
+      if (!isMounted) return;
+      setData(rows);
 
-        const totalSold = rows.reduce((acc, r) => acc + (r.sold_qty || 0), 0);
+      const totalSold = rows.reduce((acc, r) => acc + (r.sold_cards || 0), 0);
         const totalCollected = distributionCollectionsTotal;
         setSummary({ totalSold, totalCollected });
 
@@ -153,7 +151,7 @@ export default function BatchStockDetailScreen({ route, navigation }) {
             <View key={idx} style={[s.tableRow, idx % 2 === 1 && { backgroundColor: 'rgba(255,255,255,0.03)' }]}>
               <View style={{ flex: 1.2 }}><Text style={s.tdMain}>{item.agent_name}</Text></View>
               <View style={{ flex: 0.8, alignItems: 'center' }}><Text style={[s.tdMain, { fontWeight: '700' }]}>{item.assigned_qty}</Text></View>
-              <View style={{ flex: 0.8, alignItems: 'center' }}><Text style={[s.tdMain, { color: colors.orange, fontWeight: '700' }]}>{item.sold_qty}</Text></View>
+              <View style={{ flex: 0.8, alignItems: 'center' }}><Text style={[s.tdMain, { color: colors.orange, fontWeight: '700' }]}>{item.sold_cards}</Text></View>
               <View style={{ flex: 0.8, alignItems: 'center' }}><Text style={[s.tdMain, { color: colors.primary, fontWeight: '700' }]}>{item.remaining_qty}</Text></View>
               <View style={{ flex: 1, alignItems: 'flex-start' }}><Text style={[s.tdMain, { color: colors.green, fontWeight: '800' }]}>{formatCurrency(item.collected_amount)}</Text></View>
             </View>
