@@ -75,7 +75,9 @@ export default function InventoryScreen({ navigation }) {
         finMap[batchId] = summary;
       }
       setBatchFinancials(finMap);
-    } catch (e) { }
+    } catch (e) {
+      console.error('[Inventory] load error:', e?.message || e);
+    }
     setLoading(false); setRefreshing(false);
   }, [batches.length, projectId, selectedPhase?.id, runWithConcurrency]);
 

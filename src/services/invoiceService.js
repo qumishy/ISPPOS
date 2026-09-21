@@ -1002,7 +1002,7 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
       if (!batchR.rows._array?.[0]?.id) throw new Error('الدفعة غير موجودة أو لا تخص المرحلة الحالية.');
 
       const walletR = yield {
-        sql: `SELECT id, total_cards, agent_id, batch_id, category_id, project_id, phase_id
+        sql: `SELECT id, total_cards, sold_cards, agent_id, batch_id, category_id, project_id, phase_id
               FROM agent_wallets
               WHERE id = ? AND project_id = ? AND (phase_id = ? OR phase_id IS NULL) LIMIT 1`,
         params: [item.wallet_id, projectId, phaseId],
@@ -1018,23 +1018,17 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
       requestedByWallet.set(item.wallet_id, alreadyRequested + item.quantity);
 
       if (!walletUpdates.has(item.wallet_id)) {
-        const soldR = yield {
-          sql: `SELECT COALESCE(SUM(ii.quantity), 0) as sold_qty
-                FROM invoice_items ii
-                JOIN invoices i ON i.id = ii.invoice_id
-                WHERE ii.wallet_id = ? AND ${ACTIVE_INVOICE_WHERE_CLAUSE}`,
-          params: [item.wallet_id],
-        };
         walletUpdates.set(item.wallet_id, {
           wallet,
-          soldDerived: Number(soldR.rows._array?.[0]?.sold_qty || 0),
           requested: 0,
         });
       }
 
       const update = walletUpdates.get(item.wallet_id);
       update.requested += item.quantity;
-      const remaining = Number(update.wallet.total_cards || 0) - update.soldDerived - update.requested;
+      const currentSold = Number(update.wallet.sold_cards || 0);
+      const currentTotal = Number(update.wallet.total_cards || 0);
+      const remaining = currentTotal - currentSold - update.requested;
       if (remaining < 0) {
         throw new Error(`الكمية المطلوبة أكبر من المتاح في المحفظة. المتاح: ${Math.max(0, remaining + item.quantity)}`);
       }
@@ -1112,7 +1106,7 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
 
     const walletPayloads = [];
     for (const [walletId, update] of walletUpdates.entries()) {
-      const nextSoldAbsolute = update.soldDerived + update.requested;
+      const nextSoldAbsolute = Number(update.wallet.sold_cards || 0) + update.requested;
       if (nextSoldAbsolute > Number(update.wallet.total_cards || 0)) {
         throw new Error('لا يمكن أن يصبح رصيد المحفظة سالباً.');
       }
@@ -1197,10 +1191,10 @@ export const addInvoiceItem = async (data) => {
     if (!invoice?.project_id) throw new Error('تعذر تحديد مشروع الفاتورة.');
     if (!invoice?.phase_id) throw new Error('تعذر تحديد مرحلة الفاتورة.');
 
-    if (walletId) {
-      // 1) Read wallet total and derive sold strictly from invoice_items (active invoices)
+if (walletId) {
+      // 1) Read wallet total and authoritative sold_cards
       const wR = yield {
-        sql: `SELECT total_cards, agent_id, batch_id, category_id, project_id, phase_id FROM agent_wallets WHERE id = ?`,
+        sql: `SELECT total_cards, sold_cards, agent_id, batch_id, category_id, project_id, phase_id FROM agent_wallets WHERE id = ?`,
         params: [walletId]
       };
       const wallet = wR.rows._array?.[0];
@@ -1213,23 +1207,15 @@ export const addInvoiceItem = async (data) => {
         throw new Error('المحفظة لا تطابق الدفعة أو الفئة المحددة.');
       }
 
-      const soldR = yield {
-        sql: `SELECT COALESCE(SUM(ii.quantity), 0) as sold_qty
-              FROM invoice_items ii
-              JOIN invoices i ON i.id = ii.invoice_id
-              WHERE ii.wallet_id = ? AND ${ACTIVE_INVOICE_WHERE_CLAUSE}`,
-        params: [walletId]
-      };
-      const soldDerived = Number(soldR.rows._array?.[0]?.sold_qty || 0);
-
-      // 2) Validate sufficient stock
-      const remaining = (wallet.total_cards || 0) - soldDerived;
-      if (qty > remaining) {
-        throw new Error(`الكمية المطلوبة (${qty}) أكبر من المتاح في المحفظة (${remaining})`);
+      // 2) Validate sufficient stock using authoritative sold_cards
+      const currentSold = Number(wallet.sold_cards || 0);
+      const currentTotal = Number(wallet.total_cards || 0);
+      if (qty > currentTotal - currentSold) {
+        throw new Error(`الكمية المطلوبة (${qty}) أكبر من المتاح في المحفظة (${currentTotal - currentSold})`);
       }
 
-      // 3) Set absolute sold_cards snapshot (DO NOT do incremental sync deltas)
-      const nextSoldAbsolute = soldDerived + qty;
+      // 3) Incrementally update sold_cards from its current authoritative value
+      const nextSoldAbsolute = currentSold + qty;
       yield {
         sql: `UPDATE agent_wallets SET sold_cards = ?, synced = 0 WHERE id = ?`,
         params: [nextSoldAbsolute, walletId]
@@ -1448,7 +1434,7 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
 };
 
 export const softDeleteInvoice = async (id, { deletedBy = null, deleteReason = null } = {}) => {
-  const qItems = await execSQL(`SELECT DISTINCT wallet_id FROM invoice_items WHERE invoice_id=? AND wallet_id IS NOT NULL`, [id]);
+  const qItems = await execSQL(`SELECT wallet_id, quantity FROM invoice_items WHERE invoice_id=? AND wallet_id IS NOT NULL`, [id]);
   const collections = await execSQL(`SELECT id, project_id, phase_id FROM collections WHERE invoice_id=?`, [id]);
   const invRBefore = await execSQL(`SELECT id, project_id, phase_id, pos_id, status, active FROM invoices WHERE id=? LIMIT 1`, [id]);
   const invoiceBefore = invRBefore.rows._array?.[0];
@@ -1469,8 +1455,45 @@ export const softDeleteInvoice = async (id, { deletedBy = null, deleteReason = n
               AND (active = 1 OR active = 'true' OR active IS NULL OR LOWER(COALESCE(status, 'pending')) NOT IN ('cancelled', 'canceled'))`,
       params: [deletedBy, deleteReason, id]
     };
-    if (!invoiceBefore || !['cancelled', 'canceled'].includes(String(invoiceBefore.status || '').toLowerCase()) || Number(invoiceBefore.active) !== 0) {
+if (!invoiceBefore || !['cancelled', 'canceled'].includes(String(invoiceBefore.status || '').toLowerCase()) || Number(invoiceBefore.active) !== 0) {
       ensureSingleRowAffected(result, `cancel invoice ${id}`);
+    }
+
+    // Aggregate cancellation quantities by wallet_id for THIS invoice
+    const walletCancelMap = new Map(); // wallet_id -> cancelQty
+    for (const item of qItems.rows._array) {
+      const walletId = item.wallet_id;
+      const qty = Number(item.quantity || 0);
+      if (qty <= 0) continue;
+      const existing = walletCancelMap.get(walletId) || 0;
+      walletCancelMap.set(walletId, existing + qty);
+    }
+
+    // Only perform wallet decrements if we are actually cancelling (not idempotent re-run)
+    const isAlreadyCancelled = invoiceBefore.status !== null && 
+      ['cancelled', 'canceled'].includes(String(invoiceBefore.status || '').toLowerCase()) &&
+      Number(invoiceBefore.active) === 0;
+
+    if (!isAlreadyCancelled && walletCancelMap.size > 0) {
+      for (const [walletId, cancelQty] of walletCancelMap.entries()) {
+        const currentSoldR = yield {
+          sql: `SELECT sold_cards FROM agent_wallets WHERE id = ?`,
+          params: [walletId]
+        };
+        const currentSold = Number(currentSoldR.rows._array?.[0]?.sold_cards || 0);
+        if (cancelQty > currentSold) {
+          throw new Error(`Cancel quantity (${cancelQty}) exceeds current sold_cards (${currentSold}) for wallet ${walletId}. Transaction rolled back.`);
+        }
+        const nextSold = currentSold - cancelQty;
+        yield {
+          sql: `UPDATE agent_wallets SET sold_cards = ?, synced = 0 WHERE id = ?`,
+          params: [nextSold, walletId]
+        };
+        yield {
+          sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`,
+          params: [operationGroupId, 'agent_wallets', 'UPDATE', JSON.stringify({ sold_cards: nextSold }), walletId, invoiceBefore.project_id || null]
+        };
+      }
     }
 
     yield {
@@ -1478,10 +1501,28 @@ export const softDeleteInvoice = async (id, { deletedBy = null, deleteReason = n
             SET active = 0,
                 status = 'cancelled',
                 synced = 0
-            WHERE invoice_id = ?
-              AND (active = 1 OR active = 'true' OR active IS NULL OR LOWER(COALESCE(status, 'pending')) NOT IN ('cancelled', 'canceled'))`,
+          WHERE invoice_id = ?
+            AND (active = 1 OR active = 'true' OR active IS NULL OR LOWER(COALESCE(status, 'pending')) NOT IN ('cancelled', 'canceled'))`,
       params: [id]
     };
+    for (const col of collections.rows._array) {
+      yield {
+        sql: `INSERT INTO sync_queue (operation_group_id, table_name, operation, payload, record_id, project_id, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`,
+        params: [
+          operationGroupId,
+          'collections',
+          'UPDATE',
+          JSON.stringify({
+            active: 0,
+            status: 'cancelled',
+            project_id: col.project_id || invoiceBefore.project_id || null,
+            phase_id: col.phase_id || invoiceBefore.phase_id || null,
+          }),
+          col.id,
+          col.project_id || invoiceBefore.project_id || null
+        ]
+      };
+    }
   });
 
   await addToSyncQueue('invoices', 'UPDATE', {
@@ -1495,35 +1536,11 @@ export const softDeleteInvoice = async (id, { deletedBy = null, deleteReason = n
     phase_id: invoiceBefore.phase_id || null,
   }, id, operationGroupId);
 
-  for (const col of collections.rows._array) {
-    await addToSyncQueue('collections', 'UPDATE', {
-      active: 0,
-      status: 'cancelled',
-      project_id: col.project_id || invoiceBefore.project_id || null,
-      phase_id: col.phase_id || invoiceBefore.phase_id || null,
-    }, col.id, operationGroupId);
-  }
-
   await cancelInvoiceCardReturns({
     invoiceId: id,
     reason: deleteReason || 'إلغاء الفاتورة',
     operationGroupId,
   });
-
-  for (const item of qItems.rows._array) {
-    const walletId = item.wallet_id;
-    if (!walletId) continue;
-    const soldR = await execSQL(
-      `SELECT COALESCE(SUM(ii.quantity), 0) as sold_qty
-       FROM invoice_items ii
-       JOIN invoices i ON i.id = ii.invoice_id
-       WHERE ii.wallet_id = ? AND ${ACTIVE_INVOICE_WHERE_CLAUSE}`,
-      [walletId]
-    );
-    const soldAbsolute = Number(soldR.rows._array?.[0]?.sold_qty || 0);
-    await execSQL(`UPDATE agent_wallets SET sold_cards = ?, synced = 0 WHERE id = ?`, [soldAbsolute, walletId]);
-    await addToSyncQueue('agent_wallets', 'UPDATE', { sold_cards: soldAbsolute }, walletId);
-  }
 
   const pos_id = invoiceBefore.pos_id;
   const { recalculatePOSCreditBalance } = require('./posService');

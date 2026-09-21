@@ -66,7 +66,7 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
     walletParams.push(filters.project_id);
   }
   if (filters.phase_id) {
-    walletWhere.push('LEGACY_PHASE_CLAUSE(\'aw\')');
+    walletWhere.push(LEGACY_PHASE_CLAUSE('aw'));
     walletParams.push(filters.phase_id);
   }
 
@@ -77,7 +77,7 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
     batchParams.push(filters.project_id);
   }
   if (filters.phase_id) {
-    batchWhere.push('LEGACY_PHASE_CLAUSE(\'b\')');
+    batchWhere.push(LEGACY_PHASE_CLAUSE('b'));
     batchParams.push(filters.phase_id);
   }
 
@@ -88,6 +88,7 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
         SUM(COALESCE(ii.quantity, 0)) AS sold_qty
       FROM invoice_items ii
       JOIN invoices i ON i.id = ii.invoice_id
+      JOIN batches b2 ON b2.id = ii.batch_id
       WHERE ${batchSalesWhere.join(' AND ')}
         ${filters.project_id ? 'AND i.project_id = ?' : ''}
         ${filters.phase_id ? 'AND i.phase_id = ?' : ''}
@@ -126,10 +127,15 @@ const getInventoryBatchAvailabilityRows = async (rawFilters = {}) => {
   `;
 
   const r = await execSQL(sql, [
-    ...soldInvoiceParams,
     ...batchSalesParams,
+    ...(filters.project_id ? [filters.project_id] : []),
+    ...(filters.phase_id ? [filters.phase_id] : []),
     ...walletParams,
+    ...(filters.project_id ? [filters.project_id] : []),
+    ...(filters.phase_id ? [filters.phase_id] : []),
     ...batchParams,
+    ...(filters.project_id ? [filters.project_id] : []),
+    ...(filters.phase_id ? [filters.phase_id] : []),
   ]);
 
   return r.rows._array || [];
