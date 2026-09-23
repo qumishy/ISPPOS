@@ -292,7 +292,12 @@ async function getUserName(userId, fallback = 'مستخدم') {
   if (!userId) return fallback;
   if (!_currentUser?.project_id) return fallback;
   try {
-    const r = await execSQL(`SELECT name FROM users WHERE id = ? AND project_id = ? LIMIT 1`, [userId, _currentUser.project_id]);
+    // NOTE: no project_id predicate here on purpose. users.project_id is a
+    // single legacy fallback column; multi-project members carry their real
+    // project eligibility in user_project_access. Filtering the name lookup by
+    // the current project would return the fallback for valid cross-project
+    // agents (e.g. an agent whose legacy project differs from the current one).
+    const r = await execSQL(`SELECT name FROM users WHERE id = ? LIMIT 1`, [userId]);
     return r.rows._array?.[0]?.name || fallback;
   } catch (e) {
     return fallback;
@@ -1577,6 +1582,97 @@ async function tryRecoverMissingInvoice(invoiceId) {
   }
 }
 
+// ── Cross-project agent reconciliation ──────────────────────────────────────
+// The users pull is scoped by the single legacy users.project_id column, so
+// agents whose legacy project differs from the current one (multi-project
+// members, e.g. Saleh_ whose legacy project is NAS while working in KOD)
+// never arrive locally. user_project_access additionally has no public Data
+// API read path (only the per-user login RPC), so it cannot be bulk-pulled.
+// A remote agent_wallets row, however, is proof of an active agent membership:
+// create_admin_wallet_distribution_atomic refuses wallets unless
+// active_project_role_for_user(agent, project) = 'agent'. This step therefore
+// reconciles wallet-referenced agents into the local users + membership
+// tables. It never overwrites: user rows come from the authoritative remote
+// users table (active users are readable via the legacy compatibility SELECT
+// policy), membership rows are INSERT OR IGNORE so login-time membership data
+// (including deactivations) always wins, and a membership is only derived when
+// an ACTIVE user row is evidenced. Failures are swallowed: sync must proceed.
+async function ensureProjectWalletAgentsSynced(projectId) {
+  if (!projectId) return;
+  try {
+    const wR = await execSQL(
+      `SELECT DISTINCT agent_id FROM agent_wallets WHERE project_id = ? AND agent_id IS NOT NULL AND agent_id != ''`,
+      [projectId]
+    );
+    const agentIds = Array.from(new Set((wR.rows._array || []).map(r => String(r.agent_id)).filter(Boolean)));
+    if (!agentIds.length) return;
+
+    const uR = await execSQL(
+      `SELECT user_id AS id FROM user_project_access WHERE project_id = ?`,
+      [projectId]
+    );
+    const knownMemberships = new Set((uR.rows._array || []).map(r => String(r.id)));
+
+    const placeholders = agentIds.map(() => '?').join(',');
+    const existingUsersR = await execSQL(`SELECT id, active FROM users WHERE id IN (${placeholders})`, agentIds);
+    const localUsers = new Map((existingUsersR.rows._array || []).map(r => [String(r.id), r]));
+
+    const missingIds = agentIds.filter(id => !localUsers.has(id));
+    for (let i = 0; i < missingIds.length; i += 100) {
+      const chunk = missingIds.slice(i, i + 100);
+      const { data, error } = await withRemoteTimeout(
+        supabase.from('users').select(TABLE_FIELDS.users).in('id', chunk),
+        'pull_wallet_agent_users',
+        15000
+      ).catch(e => ({ error: e }));
+      if (error) {
+        console.log(`[Sync] wallet-agent users fetch skipped: ${error.message || error}`);
+        break;
+      }
+      for (const row of data || []) {
+        if (!row?.id) continue;
+        const clean = sanitizePayload('users', row);
+        if ('is_active' in clean) {
+          clean.active = clean.is_active;
+          delete clean.is_active;
+        }
+        if (Object.keys(clean).length === 0) continue;
+        try {
+          await applyLocalRow('users', clean);
+          localUsers.set(String(clean.id), clean);
+        } catch (e) {
+          console.log(`[Sync] wallet-agent user apply skipped id=${clean.id}: ${e.message}`);
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    let membershipsAdded = 0;
+    for (const agentId of agentIds) {
+      if (knownMemberships.has(agentId)) continue;
+      const localUser = localUsers.get(agentId);
+      // Only derive membership with evidence of an ACTIVE user row: remotely
+      // deactivated users are hidden by RLS (no row fetched) and locally
+      // deactivated rows keep active = 0. This never resurrects anyone.
+      if (!localUser || Number(localUser.active) !== 1) continue;
+      try {
+        await execSQL(
+          `INSERT OR IGNORE INTO user_project_access
+           (id, user_id, project_id, role, active, created_at, updated_at, synced)
+           VALUES (?, ?, ?, 'agent', 1, ?, ?, 1)`,
+          [localUuid(), agentId, projectId, now, now]
+        );
+        membershipsAdded += 1;
+      } catch (e) {
+        console.log(`[Sync] wallet-agent membership reconcile skipped agent=${agentId}: ${e.message}`);
+      }
+    }
+    if (membershipsAdded > 0) notifyDataChanged('users');
+  } catch (e) {
+    console.log(`[Sync] ensureProjectWalletAgentsSynced skipped: ${e?.message || e}`);
+  }
+}
+
 async function pullRemoteChangesInternal(user, opts = {}) {
   const onTableProgress = typeof opts.onTableProgress === 'function' ? opts.onTableProgress : () => {};
   const includeTables = Array.isArray(opts.includeTables) && opts.includeTables.length
@@ -1821,6 +1917,12 @@ async function pullRemoteChangesInternal(user, opts = {}) {
       lastSuccessful = INITIAL_TABLE_PROGRESS_LABELS_AR[t.name] || t.name;
     }
   }
+
+  // Reconcile cross-project wallet agents (e.g. Saleh_ in KOD) whose user rows
+  // are invisible to the legacy project_id-scoped users pull. Runs on every
+  // pull shape (bootstrap, active-phase, background) and is a local-only no-op
+  // once memberships exist, so it also covers historical-phase syncs.
+  await ensureProjectWalletAgentsSynced(user?.project_id);
 
   await execSQL(
     "INSERT OR REPLACE INTO sync_meta (key,value) VALUES ('last_pull',?)",

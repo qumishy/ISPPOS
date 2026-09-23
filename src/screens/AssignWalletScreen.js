@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ScrollView, View, Text, Alert } from 'react-native';
 import { useTheme } from '../theme';
 import { useAuth } from '../services/AuthContext';
 import {
-  getLocalUsers, getLocalBatches, getLocalCategories, createOnlineAdminAgentWallet
+  getLocalUsers, getLocalBatches, getLocalCategories, createOnlineAdminAgentWallet,
+  subscribeDataChanges,
 } from '../services/database';
 import { ADMIN_WALLET_ONLINE_NOTE, isAdminManagerRole } from '../services/supabase';
 import { formatCurrency } from '../utils/helpers';
@@ -25,13 +26,30 @@ export default function AssignWalletScreen({ navigation }) {
   const [batchInfo, setBatchInfo] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    async function load() {
+  const load = useCallback(async () => {
+    if (!projectId) { setDataLoading(false); return; }
+    setDataLoading(true);
+    try {
       const [a, b, c] = await Promise.all([getLocalUsers(projectId), getLocalBatches(projectId), getLocalCategories(projectId)]);
-      setAgents(a.filter(u => u.role === 'agent' && u.active)); setBatches(b.filter(x => x.available_cards > 0)); setCats(c); setDataLoading(false);
+      // Agent eligibility is project-scoped by immutable user id: active agent
+      // membership of the CURRENT project. Membership in another project, sold
+      // cards, or remaining stock must not exclude anyone here.
+      setAgents(a.filter(u => u.role === 'agent' && u.active)); setBatches(b.filter(x => x.available_cards > 0)); setCats(c);
+    } catch (e) {
+      console.log('[AssignWallet] load skipped:', e?.message || e);
     }
-    load();
-  }, []);
+    setDataLoading(false);
+  }, [projectId]);
+
+  // Reload on mount, project switch, focus-adjacent sync updates, and any
+  // users/wallets/batches change (e.g. background pull reconciling a
+  // cross-project agent). The previous empty dependency array kept showing
+  // the first-loaded project's agents after NAS <-> KOD switches.
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => subscribeDataChanges((event) => {
+    const type = event?.type;
+    if (!type || ['users', 'agent_wallets', 'batches', 'all', 'db_ready'].includes(type)) load();
+  }), [load]);
 
   const save = async () => {
     if (saving) return;

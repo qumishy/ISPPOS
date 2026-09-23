@@ -342,15 +342,20 @@ export const cacheSelectedSessionUser = async (profile, project, options = {}) =
   const now = new Date().toISOString();
   const existing = await execSQL(`SELECT id FROM users WHERE id = ? LIMIT 1`, [profile.id]);
   if (existing.rows._array?.[0]?.id) {
+    // Preserve the legacy users.project_id/role fallback on existing rows.
+    // Those columns hold a SINGLE project each, so last-login-wins overwrites
+    // would flip-flop for multi-project members and hide them from the other
+    // project's SQLite-first selectors when no other row proves membership.
+    // Per-project truth lives in user_project_access (written by
+    // cacheAccessLocally at online login); the session itself carries the
+    // selected membership role, so nothing here needs the legacy columns.
     await execSQL(
       `UPDATE users
-       SET project_id = ?, name = ?, username = ?, role = ?, phone = ?, password_hash = ?, active = 1, synced = 1
+       SET name = ?, username = ?, phone = ?, password_hash = ?, active = 1, synced = 1
        WHERE id = ?`,
       [
-        project.project_id,
         profile.name,
         profile.username,
-        project.role,
         profile.phone || '',
         storedPassword,
         profile.id,
