@@ -104,12 +104,40 @@ export const getLocalPermissions = async (entityType = null, entityId = null, pr
   return Array.from(merged.values()).map((row) => resolvePermissionForRole(role, row.screen_name, row));
 };
 
+const isActiveMembership = (value) => !(
+  value === 0
+  || value === false
+  || String(value).trim().toLowerCase() === 'false'
+);
+
+const getProjectMembership = async (userId, projectId) => {
+  const result = await execSQL(
+    `SELECT id, role, active
+     FROM user_project_access
+     WHERE user_id = ? AND project_id = ?
+     LIMIT 1`,
+    [userId, projectId]
+  );
+  return result.rows._array?.[0] || null;
+};
+
 const assertPermissionAdministrator = async (currentUser, projectId) => {
   if (!projectId || !currentUser?.id || !canManagePermissions(currentUser)) {
     throw new Error('إدارة الصلاحيات متاحة للمدير العام فقط.');
   }
   if (currentUser.project_id && String(currentUser.project_id) !== String(projectId)) {
     throw new Error('لا يمكن تعديل صلاحيات مشروع آخر.');
+  }
+
+  // Per-project authorization truth lives in user_project_access. The legacy
+  // users.project_id/role columns hold a single project each and must never
+  // authorize (or reject) a multi-project admin in the current project.
+  const membership = await getProjectMembership(currentUser.id, projectId);
+  if (membership) {
+    if (!isActiveMembership(membership.active) || normalizePermissionRole(membership.role) !== 'admin') {
+      throw new Error('تعذر التحقق من صلاحية المدير العام لتنفيذ هذا التغيير.');
+    }
+    return;
   }
 
   const result = await execSQL(
@@ -120,7 +148,7 @@ const assertPermissionAdministrator = async (currentUser, projectId) => {
     [currentUser.id, projectId]
   );
   const storedUser = result.rows._array?.[0];
-  const isActive = storedUser && storedUser.active !== 0 && storedUser.active !== false && storedUser.active !== 'false';
+  const isActive = storedUser && isActiveMembership(storedUser.active);
   if (!storedUser || !isActive || normalizePermissionRole(storedUser.role) !== 'admin') {
     throw new Error('تعذر التحقق من صلاحية المدير العام لتنفيذ هذا التغيير.');
   }
@@ -133,18 +161,25 @@ const getTargetRole = async ({ entityType, entityId, projectId }) => {
     return role;
   }
 
-  const result = await execSQL(
-    `SELECT role, active
-     FROM users
-     WHERE id = ? AND project_id = ?
-     LIMIT 1`,
-    [entityId, projectId]
-  );
-  const targetUser = result.rows._array?.[0];
-  const isActive = targetUser && targetUser.active !== 0 && targetUser.active !== false && targetUser.active !== 'false';
-  if (!targetUser || !isActive) throw new Error('المستخدم المحدد غير موجود أو غير نشط.');
-
-  const role = normalizePermissionRole(targetUser.role);
+  // Per-project membership truth lives in user_project_access; fall back to the
+  // legacy single-project users row only when no membership row exists.
+  const membership = await getProjectMembership(entityId, projectId);
+  let role;
+  if (membership) {
+    if (!isActiveMembership(membership.active)) throw new Error('المستخدم المحدد غير موجود أو غير نشط.');
+    role = normalizePermissionRole(membership.role);
+  } else {
+    const result = await execSQL(
+      `SELECT role, active
+       FROM users
+       WHERE id = ? AND project_id = ?
+       LIMIT 1`,
+      [entityId, projectId]
+    );
+    const targetUser = result.rows._array?.[0];
+    if (!targetUser || !isActiveMembership(targetUser.active)) throw new Error('المستخدم المحدد غير موجود أو غير نشط.');
+    role = normalizePermissionRole(targetUser.role);
+  }
   if (!getRoleDefinition(role)) throw new Error('دور المستخدم غير معروف أو غير مدعوم.');
   return role;
 };

@@ -540,13 +540,23 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
            LIMIT 1
          ), 0) IN (1, '1', 'true')
        )
-       AND EXISTS (
-         SELECT 1
-         FROM users current_actor
-         WHERE current_actor.id = ?
-           AND current_actor.project_id = collections.project_id
-           AND (current_actor.active = 1 OR current_actor.active = 'true')
-           AND LOWER(TRIM(current_actor.role)) = ?
+       AND (
+         EXISTS (
+           SELECT 1
+           FROM users current_actor
+           WHERE current_actor.id = ?
+             AND current_actor.project_id = collections.project_id
+             AND (current_actor.active = 1 OR current_actor.active = 'true')
+             AND LOWER(TRIM(current_actor.role)) = ?
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM user_project_access current_actor_access
+           WHERE current_actor_access.user_id = ?
+             AND current_actor_access.project_id = collections.project_id
+             AND (current_actor_access.active = 1 OR current_actor_access.active = 'true')
+             AND LOWER(TRIM(current_actor_access.role)) = ?
+         )
        )
        AND NOT EXISTS (
          SELECT 1
@@ -575,6 +585,8 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
       actorRole,
       actor.id,
       AGENT_SELF_COLLECTION_APPROVAL_PERMISSION,
+      actor.id,
+      String(actor.role || '').trim().toLowerCase(),
       actor.id,
       String(actor.role || '').trim().toLowerCase(),
     ]
