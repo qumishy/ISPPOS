@@ -61,16 +61,78 @@ export const createLocalUser = async (data) => {
   return payload;
 };
 
-export const updateUser = async (id, data) => {
-  await execSQL(`UPDATE users SET name=?, username=?, role=?, phone=?, active=?, password_hash=?, synced=0 WHERE id=?`, [data.name, data.username, data.role, data.phone, data.active ?? 1, data.password_hash, id]);
-  await execSQL(
-    `UPDATE user_project_access
-     SET role = ?, active = ?, updated_at = ?, synced = 0
-     WHERE user_id = ? AND project_id = (SELECT project_id FROM users WHERE id = ? LIMIT 1)`,
-    [data.role, data.active ?? 1, new Date().toISOString(), id, id]
+export const updateUser = async (id, data, projectId = null) => {
+  const now = new Date().toISOString();
+  const existing = await execSQL(`SELECT * FROM users WHERE id = ? LIMIT 1`, [id]);
+  const current = existing.rows._array?.[0];
+  if (!current) throw new Error('المستخدم غير موجود.');
+
+  const scopeProjectId = projectId || data?.project_id || current.project_id || null;
+  if (!scopeProjectId) throw new Error('تعذر تحديد المشروع المطلوب لتعديل المستخدم.');
+
+  const membershipResult = await execSQL(
+    `SELECT id, role, active
+     FROM user_project_access
+     WHERE user_id = ? AND project_id = ?
+     LIMIT 1`,
+    [id, scopeProjectId]
   );
-  await addToSyncQueue('users', 'UPDATE', { name: data.name, username: data.username, role: data.role, phone: data.phone, active: data.active ?? 1, password_hash: data.password_hash }, id);
+  const membership = membershipResult.rows._array?.[0] || null;
+
+  // Identity/profile fields belong to users. Project-specific role/activity belongs
+  // to user_project_access whenever a membership exists for the selected project.
+  const nextName = data.name ?? current.name;
+  const nextUsername = data.username ?? current.username;
+  const nextPhone = data.phone ?? current.phone ?? '';
+  const nextPassword = data.password_hash === undefined || data.password_hash === null || data.password_hash === ''
+    ? current.password_hash
+    : data.password_hash;
+
+  if (membership) {
+    const nextMembershipRole = data.role ?? membership.role;
+    const nextMembershipActive = data.active ?? membership.active ?? 1;
+    await execSQL(
+      `UPDATE user_project_access
+       SET role = ?, active = ?, updated_at = ?, synced = 0
+       WHERE id = ? AND user_id = ? AND project_id = ?`,
+      [nextMembershipRole, nextMembershipActive, now, membership.id, id, scopeProjectId]
+    );
+    await execSQL(
+      `UPDATE users
+       SET name = ?, username = ?, phone = ?, password_hash = ?, synced = 0
+       WHERE id = ?`,
+      [nextName, nextUsername, nextPhone, nextPassword, id]
+    );
+  } else {
+    // Legacy single-project fallback only when no membership row exists.
+    if (String(current.project_id || '') !== String(scopeProjectId)) {
+      throw new Error('المستخدم غير مرتبط بالمشروع الحالي.');
+    }
+    await execSQL(
+      `UPDATE users
+       SET name = ?, username = ?, role = ?, phone = ?, active = ?, password_hash = ?, synced = 0
+       WHERE id = ? AND project_id = ?`,
+      [
+        nextName,
+        nextUsername,
+        data.role ?? current.role,
+        nextPhone,
+        data.active ?? current.active ?? 1,
+        nextPassword,
+        id,
+        scopeProjectId,
+      ]
+    );
+  }
+
+  await addToSyncQueue('users', 'UPDATE', {
+    name: nextName,
+    username: nextUsername,
+    phone: nextPhone,
+    ...(data.password_hash ? { password_hash: nextPassword } : {}),
+  }, id);
   notifyDataChanged('users');
+  notifyDataChanged('user_project_access');
   return true;
 };
 
