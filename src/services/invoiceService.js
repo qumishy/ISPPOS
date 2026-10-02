@@ -10,6 +10,29 @@ const getUserBasic = async (userId) => {
   return r.rows._array?.[0] || null;
 };
 
+const isActiveValue = (v) => v === 1 || v === '1' || String(v).trim().toLowerCase() === 'true';
+
+const resolveUserForProject = async (userId, projectId) => {
+  if (!userId || !projectId) return null;
+  const membership = await execSQL(
+    `SELECT role, active FROM user_project_access WHERE user_id = ? AND project_id = ? LIMIT 1`,
+    [userId, projectId]
+  );
+  const mRow = membership.rows._array?.[0];
+  if (mRow) {
+    if (!isActiveValue(mRow.active)) return null;
+    return { id: userId, role: mRow.role, project_id: projectId };
+  }
+  const legacy = await execSQL(
+    `SELECT id, project_id, name, role, active FROM users WHERE id = ? AND project_id = ? LIMIT 1`,
+    [userId, projectId]
+  );
+  const lRow = legacy.rows._array?.[0];
+  if (!lRow) return null;
+  if (lRow.active !== undefined && lRow.active !== null && !isActiveValue(lRow.active)) return null;
+  return { id: lRow.id, role: lRow.role, project_id: lRow.project_id };
+};
+
 const normalizeRole = (role) => String(role || '').trim().toLowerCase();
 const isAgentRole = (role) => ['agent', 'مندوب'].includes(normalizeRole(role));
 const isDiscountApproverRole = (role) => ['admin', 'manager', 'مدير'].includes(normalizeRole(role));
@@ -815,21 +838,11 @@ export const createLocalInvoiceWithItems = async (data = {}, invoiceItems = []) 
   const pos = posRes.rows._array?.[0];
   if (!pos) throw new Error('نقطة البيع غير موجودة أو غير فعالة.');
 
-  const agentRes = await execSQL(
-    `SELECT id, name, role FROM users
-     WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
-    [data.agent_id, projectId]
-  );
-  const agent = agentRes.rows._array?.[0];
+  const agent = await resolveUserForProject(data.agent_id, projectId);
   if (!agent) throw new Error('المندوب غير موجود أو غير فعال.');
 
   const actorUserId = data.actor_user_id || data.agent_id;
-  const actorRes = await execSQL(
-    `SELECT id, project_id, name, role FROM users
-     WHERE id = ? AND project_id = ? AND (active = 1 OR active = 'true' OR active IS NULL) LIMIT 1`,
-    [actorUserId, projectId]
-  );
-  const actor = actorRes.rows._array?.[0];
+  const actor = await resolveUserForProject(actorUserId, projectId);
   if (!actor) throw new Error('تعذر التحقق من المستخدم الذي ينشئ الفاتورة.');
   const actorIsAgent = isAgentRole(actor.role);
 
@@ -1282,8 +1295,8 @@ export const approveInvoiceDiscount = async (invoiceId, managerId, appliedValue,
   const invR = await execSQL(`SELECT * FROM invoices WHERE id = ? LIMIT 1`, [invoiceId]);
   const inv = invR.rows._array?.[0];
   if (!inv) throw new Error('الفاتورة غير موجودة');
-  const approver = await getUserBasic(managerId);
-  if (!approver || !isDiscountApproverRole(approver.role) || (inv.project_id && approver.project_id !== inv.project_id)) {
+  const approver = inv.project_id ? await resolveUserForProject(managerId, inv.project_id) : await getUserBasic(managerId);
+  if (!approver || !isDiscountApproverRole(approver.role)) {
     throw new Error('هذه العملية متاحة للمدير أو مسؤول النظام فقط.');
   }
 
@@ -1368,8 +1381,8 @@ export const rejectInvoiceDiscount = async (invoiceId, managerId, reason = '') =
   const invR = await execSQL(`SELECT * FROM invoices WHERE id = ? LIMIT 1`, [invoiceId]);
   const inv = invR.rows._array?.[0];
   if (!inv) throw new Error('الفاتورة غير موجودة');
-  const approver = await getUserBasic(managerId);
-  if (!approver || !isDiscountApproverRole(approver.role) || (inv.project_id && approver.project_id !== inv.project_id)) {
+  const approver = inv.project_id ? await resolveUserForProject(managerId, inv.project_id) : await getUserBasic(managerId);
+  if (!approver || !isDiscountApproverRole(approver.role)) {
     throw new Error('هذه العملية متاحة للمدير أو مسؤول النظام فقط.');
   }
 
