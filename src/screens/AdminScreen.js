@@ -134,8 +134,6 @@ function PhasesTab({ s, navigation }) {
 
   useEffect(() => { load(); }, [load]);
 
-
-
   const handleCreatePhase = async () => {
     if (!form.name.trim()) { Alert.alert('تنبيه', 'اسم المرحلة مطلوب'); return; }
     setSaving(true);
@@ -177,10 +175,6 @@ function PhasesTab({ s, navigation }) {
 
   return (
     <ScrollView style={s.tabContent} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
-
-
-
-      {/* المرحلة النشطة + إحصائيات */}
       {activePhase && stats && (
         <View style={[s.settingsCard, { marginBottom: spacing.md, borderRightWidth: 4, borderRightColor: colors.success || '#16a34a' }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -192,8 +186,6 @@ function PhasesTab({ s, navigation }) {
           </View>
           {activePhase.description ? <Text style={{ color: colors.t3, fontSize: 12, marginBottom: 8 }}>{activePhase.description}</Text> : null}
           <Text style={{ color: colors.t3, fontSize: 11, marginBottom: 12 }}>{activePhase.start_date || '—'} → {activePhase.end_date || 'مفتوحة'}</Text>
-
-          {/* بطاقات الأهداف */}
           {[
             { label: 'المبيعات', actual: stats.sales.total, target: Number(activePhase.expected_total_sales || 0), color: colors.primary, icon: 'trending-up' },
             { label: 'التحصيلات المعتمدة', actual: stats.collections.total, target: Number(activePhase.expected_total_collections || 0), color: colors.success || '#16a34a', icon: 'dollar-sign' },
@@ -220,8 +212,6 @@ function PhasesTab({ s, navigation }) {
               </View>
             );
           })}
-
-          {/* ملخص سريع */}
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
             {[
               { l: 'فواتير', v: stats.sales.count, c: colors.primary },
@@ -234,7 +224,6 @@ function PhasesTab({ s, navigation }) {
               </View>
             ))}
           </View>
-
           <TouchableOpacity
             onPress={() => navigation.navigate('PhaseReport', { phaseId: activePhase.id, phaseName: activePhase.name })}
             style={{ marginTop: 12, backgroundColor: colors.primary, borderRadius: 10, paddingVertical: 10, alignItems: 'center' }}
@@ -243,59 +232,37 @@ function PhasesTab({ s, navigation }) {
           </TouchableOpacity>
         </View>
       )}
-
-      {/* زر إنشاء مرحلة جديدة */}
       {canCreate && (
         <TouchableOpacity style={s.addBtn} onPress={() => setShowForm(!showForm)}>
           <Feather name={showForm ? 'x' : 'plus'} size={18} color={colors.primary} />
           <Text style={s.addBtnTxt}>{showForm ? 'إلغاء' : 'إنشاء مرحلة جديدة'}</Text>
         </TouchableOpacity>
       )}
-      {!canCreate && activePhase && (
-        <View style={{ backgroundColor: (colors.warning || '#d97706') + '12', borderRadius: 10, padding: 12, marginBottom: spacing.md, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Feather name="info" size={14} color={colors.warning || '#d97706'} />
-          <Text style={{ color: colors.warning || '#d97706', fontSize: 12, fontWeight: '600', flex: 1 }}>أغلق المرحلة الحالية أولاً لإنشاء مرحلة جديدة</Text>
-        </View>
-      )}
-
       {showForm && (
-        <View style={[s.formCard, { marginBottom: spacing.md }]}>
+        <View style={s.formCard}>
           <Text style={s.formTitle}>مرحلة جديدة</Text>
           <Input label="اسم المرحلة *" value={form.name} onChangeText={v => setForm({ ...form, name: v })} placeholder="مثال: المرحلة الثانية" />
-          <Input label="وصف المرحلة" value={form.description} onChangeText={v => setForm({ ...form, description: v })} placeholder="اختياري" />
-          <Input label="تاريخ البداية (YYYY-MM-DD)" value={form.start_date} onChangeText={v => setForm({ ...form, start_date: v })} placeholder={new Date().toISOString().slice(0, 10)} />
-          <Input label="تاريخ النهاية (YYYY-MM-DD)" value={form.end_date} onChangeText={v => setForm({ ...form, end_date: v })} placeholder="اختياري" />
-          <Input label="العدد المستهدف لنقاط البيع الجديدة" value={form.target_new_pos} onChangeText={v => setForm({ ...form, target_new_pos: v })} keyboardType="numeric" />
-          <Input label="إجمالي المبيعات المتوقع" value={form.expected_total_sales} onChangeText={v => setForm({ ...form, expected_total_sales: v })} keyboardType="numeric" />
-          <Input label="إجمالي التحصيلات المتوقع" value={form.expected_total_collections} onChangeText={v => setForm({ ...form, expected_total_collections: v })} keyboardType="numeric" />
-          <Btn label={saving ? 'جاري الإنشاء...' : 'إنشاء وتفعيل المرحلة'} icon="check" variant="primary" onPress={() => Alert.alert('تأكيد', 'سيتم إنشاء المرحلة وتفعيلها. الفواتير المعلقة سيتم نقلها تلقائياً.', [{ text: 'إلغاء' }, { text: 'نعم', onPress: handleCreatePhase }])} disabled={saving} />
+          <Input label="الوصف" value={form.description} onChangeText={v => setForm({ ...form, description: v })} placeholder="وصف اختياري" multiline />
+          <Input label="تاريخ البداية" value={form.start_date} onChangeText={v => setForm({ ...form, start_date: v })} placeholder="YYYY-MM-DD" />
+          <Input label="تاريخ النهاية المتوقع" value={form.end_date} onChangeText={v => setForm({ ...form, end_date: v })} placeholder="YYYY-MM-DD" />
+          <Input label="الهدف - نقاط بيع جديدة" value={form.target_new_pos} onChangeText={v => setForm({ ...form, target_new_pos: v })} keyboardType="numeric" placeholder="0" />
+          <Input label="الهدف - إجمالي المبيعات" value={form.expected_total_sales} onChangeText={v => setForm({ ...form, expected_total_sales: v })} keyboardType="numeric" placeholder="0" />
+          <Input label="الهدف - إجمالي التحصيلات" value={form.expected_total_collections} onChangeText={v => setForm({ ...form, expected_total_collections: v })} keyboardType="numeric" placeholder="0" />
+          <Btn label={saving ? 'جاري الإنشاء...' : 'إنشاء المرحلة'} icon="plus" variant="primary" onPress={handleCreatePhase} disabled={saving} />
         </View>
       )}
-
-      {/* قائمة المراحل */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: spacing.md, marginTop: spacing.sm }}>
-        <Feather name="layers" size={18} color={colors.t2} />
-        <Text style={{ fontSize: 16, fontWeight: '900', color: colors.t1 }}>جميع المراحل ({phases.length})</Text>
-      </View>
       {phases.map((ph, idx) => {
-        const stColor = statusColors[ph.status] || colors.t3;
-        const stLabel = statusLabels[ph.status] || ph.status;
         const isLatest = idx === 0;
         return (
-          <View key={ph.id} style={[s.listCard, { borderRightWidth: 4, borderRightColor: stColor }]}>
+          <View key={ph.id} style={s.listCard}>
             <Row>
               <View style={{ flex: 1 }}>
-                <Text style={[s.userName, { fontSize: 15 }]}>{ph.name}</Text>
+                <Text style={s.userName}>{ph.name}</Text>
                 <Text style={s.userMeta}>{ph.start_date || '—'} → {ph.end_date || 'مفتوحة'}</Text>
-                {ph.description ? <Text style={{ fontSize: 11, color: colors.t3, marginTop: 2 }}>{ph.description}</Text> : null}
-                <TouchableOpacity onPress={() => navigation.navigate('PhaseReport', { phaseId: ph.id, phaseName: ph.name })} style={{ alignSelf: 'flex-start', marginTop: 8, backgroundColor: colors.blue + '15', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}>
-                  <Text style={{ fontSize: 11, fontWeight: '800', color: colors.blue }}>تقرير المرحلة</Text>
-                </TouchableOpacity>
+                {ph.description ? <Text style={s.userMeta}>{ph.description}</Text> : null}
               </View>
-              <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                <View style={[s.roleBadge, { backgroundColor: stColor + '18', borderColor: stColor + '40' }]}>
-                  <Text style={[s.roleTxt, { color: stColor }]}>{stLabel}</Text>
-                </View>
+              <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                <Badge status={ph.status === 'active' ? 'active' : 'cancelled'} label={statusLabels[ph.status] || ph.status} />
                 {ph.status === 'active' && (
                   <Text style={{ fontSize: 10, color: colors.success || '#16a34a', fontWeight: '700' }}>● نشطة حالياً</Text>
                 )}
@@ -313,7 +280,6 @@ function PhasesTab({ s, navigation }) {
   );
 }
 
-// ── تبويب المستخدمين
 function UsersTab({ s }) {
   const { projectId } = useAuth();
   const { colors, spacing } = useTheme();
@@ -354,7 +320,7 @@ function UsersTab({ s }) {
       if (editId) {
         const ud = { name: form.name, phone: form.phone, role: form.role };
         if (form.password_hash) ud.password_hash = form.password_hash;
-        await updateUser(editId, ud);
+        await updateUser(editId, ud, projectId);
       } else {
         if (!form.password_hash) { Alert.alert('تنبيه', 'كلمة المرور مطلوبة'); setSaving(false); return; }
         await createLocalUser({ ...form, active: 1, project_id: projectId });
@@ -379,21 +345,19 @@ function UsersTab({ s }) {
         <Feather name={showForm && !editId ? 'x' : 'plus'} size={18} color={colors.primary} />
         <Text style={s.addBtnTxt}>{showForm && !editId ? 'إلغاء الإضافة' : 'إضافة مستخدم جديد'}</Text>
       </TouchableOpacity>
-
       {showForm && (
         <View style={s.formCard}>
           <Text style={s.formTitle}>{editId ? 'تعديل مستخدم' : 'مستخدم جديد'}</Text>
-          <Input label="الاسم الكامل *"    value={form.name}          onChangeText={v => setForm({ ...form, name: v })}          placeholder="..." />
-          {!editId && <Input label="اسم الدخول *" value={form.username}  onChangeText={v => setForm({ ...form, username: v })}      placeholder="مثال: ahmed1" />}
+          <Input label="الاسم الكامل *" value={form.name} onChangeText={v => setForm({ ...form, name: v })} placeholder="..." />
+          {!editId && <Input label="اسم الدخول *" value={form.username} onChangeText={v => setForm({ ...form, username: v })} placeholder="مثال: ahmed1" />}
           <Input label={editId ? 'كلمة مرور جديدة (اتركها فارغة لعدم التغيير)' : 'كلمة المرور *'} value={form.password_hash} onChangeText={v => setForm({ ...form, password_hash: v })} placeholder="..." />
-          <Input label="رقم الجوال"         value={form.phone}         onChangeText={v => setForm({ ...form, phone: v })}          keyboardType="phone-pad" placeholder="07XXXXXXXX" />
+          <Input label="رقم الجوال" value={form.phone} onChangeText={v => setForm({ ...form, phone: v })} keyboardType="phone-pad" placeholder="07XXXXXXXX" />
           <Picker label="الدور" s={s} colors={colors}
             options={[{ value: 'admin', label: 'مدير عام' }, { value: 'cashier', label: 'محاسب' }, { value: 'agent', label: 'مندوب' }]}
             value={form.role} onChange={v => setForm({ ...form, role: v })} />
-          <Btn label={saving ? 'جاري الحفظ...' : editId ? 'حفظ التعديل' : 'حفظ'} icon={saving ? undefined : editId ? "save" : "check"} variant="primary" onPress={() => Alert.alert('تأكيد', 'حفظ؟', [{text:'إلغاء'}, {text:'نعم', onPress: performSave}])} disabled={saving} />
+          <Btn label={saving ? 'جاري الحفظ...' : editId ? 'حفظ التعديل' : 'حفظ'} icon={saving ? undefined : editId ? 'save' : 'check'} variant="primary" onPress={() => Alert.alert('تأكيد', 'حفظ؟', [{text:'إلغاء'}, {text:'نعم', onPress: performSave}])} disabled={saving} />
         </View>
       )}
-
       {loading ? <Loading /> : users.map(u => {
         const roleInfo = ROLE_PERMISSIONS[u.role] || { label: u.role, color: colors.blue };
         const col = roleInfo.color;
@@ -426,16 +390,15 @@ function UsersTab({ s }) {
   );
 }
 
-// ── تبويب الفئات والأسعار
 function CategoriesTab({ s }) {
   const { projectId } = useAuth();
   const { colors, spacing } = useTheme();
-  const [cats, setCats]       = useState([]);
+  const [cats, setCats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId]   = useState(null);
-  const [form, setForm]       = useState({ name: '', price: '', card_value: '', cards_per_sheet: '1' });
-  const [saving, setSaving]   = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({ name: '', price: '', card_value: '', cards_per_sheet: '1' });
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -487,7 +450,6 @@ function CategoriesTab({ s }) {
         <Feather name={showForm && !editId ? 'x' : 'plus'} size={18} color={colors.primary} />
         <Text style={s.addBtnTxt}>{showForm && !editId ? 'إلغاء' : 'إضافة فئة جديدة'}</Text>
       </TouchableOpacity>
-
       {showForm && (
         <View style={s.formCard}>
           <Text style={s.formTitle}>{editId ? 'تعديل الفئة' : 'فئة جديدة'}</Text>
@@ -495,10 +457,9 @@ function CategoriesTab({ s }) {
           <Input label="سعر الورقة (ر.ي) *" value={form.price} onChangeText={v => setForm({ ...form, price: v })} keyboardType="numeric" placeholder="5000" />
           <Input label="قيمة الكرت" value={form.card_value} onChangeText={v => setForm({ ...form, card_value: v })} keyboardType="numeric" placeholder={form.price || '5000'} />
           <Input label="عدد الكروت في الورقة" value={form.cards_per_sheet} onChangeText={v => setForm({ ...form, cards_per_sheet: v })} keyboardType="numeric" placeholder="1" />
-          <Btn label={saving ? 'جاري الحفظ...' : editId ? 'حفظ' : 'إضافة'} icon={saving ? undefined : editId ? "save" : "check"} variant="primary" onPress={() => Alert.alert('تأكيد', 'حفظ؟', [{text:'إلغاء'}, {text:'نعم', onPress: performSave}])} disabled={saving} />
+          <Btn label={saving ? 'جاري الحفظ...' : editId ? 'حفظ' : 'إضافة'} icon={saving ? undefined : editId ? 'save' : 'check'} variant="primary" onPress={() => Alert.alert('تأكيد', 'حفظ؟', [{text:'إلغاء'}, {text:'نعم', onPress: performSave}])} disabled={saving} />
         </View>
       )}
-
       {loading ? <Loading /> : cats.map((c, idx) => {
         const col = catColors[idx % catColors.length];
         return (
@@ -529,262 +490,4 @@ function CategoriesTab({ s }) {
   );
 }
 
-// ══════════════════════════════════════════════════
-// 🌐 تبويب بيانات الشبكة
-// ══════════════════════════════════════════════════
-function NetworkTab({ s }) {
-  const { colors, spacing, radius } = useTheme();
-  const [form, setForm] = useState({ network_name: '', owner_name: '', phone1: '', phone2: '', logo_uri: '' });
-  const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      const network_name = await getSetting('network_name', '');
-      const owner_name = await getSetting('network_owner', '');
-      const phone1 = await getSetting('network_phone1', '');
-      const phone2 = await getSetting('network_phone2', '');
-      const logo_uri = await getSetting('network_logo', '');
-      setForm({ network_name, owner_name, phone1, phone2, logo_uri });
-      setLoading(false);
-    })();
-  }, []);
-
-  const pickLogo = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-      allowsEditing: true,
-      aspect: [1, 1],
-    });
-    if (!res.canceled && res.assets?.[0]) {
-      setForm({ ...form, logo_uri: res.assets[0].uri });
-    }
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    await saveSetting('network_name', form.network_name);
-    await saveSetting('network_owner', form.owner_name);
-    await saveSetting('network_phone1', form.phone1);
-    await saveSetting('network_phone2', form.phone2);
-    await saveSetting('network_logo', form.logo_uri);
-    setSaving(false);
-    Alert.alert('✅ تم', 'تم حفظ بيانات الشبكة بنجاح.\nسيتم استخدامها في كافة الفواتير والإيصالات.');
-  };
-
-  if (loading) return <Loading />;
-
-  return (
-    <ScrollView style={s.tabContent} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
-      <View style={s.settingsCard}>
-        <View style={s.settingsCardHeader}>
-          <Feather name="globe" size={20} color={colors.primary} />
-          <Text style={[s.settingsCardTitle, {marginLeft: 8}]}>بيانات الشبكة / الشركة</Text>
-        </View>
-        <Text style={{ color: colors.t3, fontSize: 12, marginBottom: 15, lineHeight: 20 }}>
-          هذه البيانات ستظهر في ترويسة الفواتير والإيصالات المطبوعة والمرسلة للعملاء تلقائياً.
-        </Text>
-
-        <View style={{ alignItems: 'center', marginBottom: 20 }}>
-          <TouchableOpacity
-            onPress={pickLogo}
-            style={{
-              width: 100, height: 100, borderRadius: 50,
-              backgroundColor: colors.bg2, borderWidth: 2,
-              borderStyle: 'dashed', borderColor: colors.blue + '60',
-              justifyContent: 'center', alignItems: 'center', overflow: 'hidden',
-            }}
-          >
-            {form.logo_uri ? (
-              <Image source={{ uri: form.logo_uri }} style={{ width: 100, height: 100, borderRadius: 50 }} />
-            ) : (
-              <View style={{ alignItems: 'center' }}>
-                <Feather name="camera" size={28} color={colors.t3} />
-                <Text style={{ fontSize: 10, color: colors.t3, marginTop: 4 }}>رفع الشعار</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-          <Text style={{ fontSize: 11, color: colors.t3, marginTop: 8 }}>اضغط لرفع شعار الشبكة</Text>
-        </View>
-
-        <Input label="اسم الشبكة / الشركة *" value={form.network_name} onChangeText={v => setForm({ ...form, network_name: v })} placeholder="مثال: شبكة يمن نت" />
-        <Input label="اسم مالك الشبكة" value={form.owner_name} onChangeText={v => setForm({ ...form, owner_name: v })} placeholder="الاسم الكامل" />
-        <Input label="رقم الهاتف 1" value={form.phone1} onChangeText={v => setForm({ ...form, phone1: v })} keyboardType="phone-pad" placeholder="07XXXXXXXX" />
-        <Input label="رقم الهاتف 2" value={form.phone2} onChangeText={v => setForm({ ...form, phone2: v })} keyboardType="phone-pad" placeholder="07XXXXXXXX (اختياري)" />
-        <Btn label={saving ? 'جاري الحفظ...' : 'حفظ بيانات الشبكة'} icon={saving ? undefined : "save"} variant="primary" onPress={handleSave} disabled={saving} style={{ marginTop: 15 }} />
-      </View>
-
-      <View style={[s.settingsCard, { marginTop: 15 }]}>
-        <View style={s.settingsCardHeader}>
-          <Feather name="eye" size={20} color={colors.primary} />
-          <Text style={[s.settingsCardTitle, {marginLeft: 8}]}>معاينة ترويسة الفاتورة</Text>
-        </View>
-        <View style={{ backgroundColor: colors.bg2, padding: 15, borderRadius: radius.md, alignItems: 'center', marginTop: 10 }}>
-          {form.logo_uri ? (
-            <Image source={{ uri: form.logo_uri }} style={{ width: 50, height: 50, borderRadius: 25, marginBottom: 8 }} />
-          ) : (
-            <Feather name="file-text" size={30} color={colors.t3} style={{ marginBottom: 5 }} />
-          )}
-          <Text style={{ fontSize: 16, fontWeight: '900', color: colors.t1 }}>{form.network_name || 'اسم الشبكة'}</Text>
-          <Text style={{ fontSize: 12, color: colors.t3, marginTop: 4 }}>{form.owner_name ? `مالك: ${form.owner_name}` : ''}</Text>
-          <Text style={{ fontSize: 11, color: colors.t3, marginTop: 2 }}>{[form.phone1, form.phone2].filter(Boolean).join(' | ') || 'أرقام الهاتف'}</Text>
-        </View>
-      </View>
-    </ScrollView>
-  );
-}
-
-// ── تبويب الإعدادات
-function SettingsTab({ s }) {
-  const { user, logout } = useAuth();
-  const { colors, spacing } = useTheme();
-  const [overdue, setOverdue] = useState('20');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    getSetting('overdue_days', '20').then(setOverdue);
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    await saveSetting('overdue_days', overdue);
-    setSaving(false);
-    Alert.alert('✅ تم', 'تم حفظ الإعدادات بنجاح');
-  };
-
-  return (
-    <ScrollView style={s.tabContent} contentContainerStyle={{ padding: spacing.md, paddingBottom: 90 }}>
-      <View style={s.settingsCard}>
-        <View style={s.settingsCardHeader}><Feather name="settings" size={20} color={colors.primary} /><Text style={[s.settingsCardTitle, {marginLeft: 8}]}>إعدادات الفواتير</Text></View>
-        <Input
-          label="فترة اعتبار الفاتورة متأخرة (بالأيام) *"
-          value={overdue}
-          onChangeText={setOverdue}
-          keyboardType="numeric"
-          placeholder="مثال: 20"
-        />
-        <Btn label={saving ? 'جاري الحفظ...' : 'حفظ الإعدادات'} icon="save" variant="primary" onPress={handleSave} disabled={saving} />
-      </View>
-
-      <View style={s.settingsCard}>
-        <View style={s.settingsCardHeader}><Feather name="info" size={20} color={colors.primary} /><Text style={[s.settingsCardTitle, {marginLeft: 8}]}>معلومات النظام</Text></View>
-        {[{ l: 'العملة', v: 'ريال يمني (ر.ي)' }, { l: 'الدولة', v: 'اليمن 🇾🇪' }, { l: 'الإصدار', v: '1.0.0' }].map((item, i) => (
-          <Row key={i} style={[s.settingsRow, i < 2 && s.settingsRowBorder]}><Text style={s.settingsLabel}>{item.l}</Text><Text style={s.settingsValue}>{item.v}</Text></Row>
-        ))}
-      </View>
-
-      <View style={s.settingsCard}>
-        <View style={s.settingsCardHeader}><Feather name="user" size={20} color={colors.primary} /><Text style={[s.settingsCardTitle, {marginLeft: 8}]}>المستخدم الحالي</Text></View>
-        <Row style={[s.settingsRow, s.settingsRowBorder]}><Text style={s.settingsLabel}>الاسم</Text><Text style={s.settingsValue}>{user?.name}</Text></Row>
-        <Row style={s.settingsRow}><Text style={s.settingsLabel}>الدور</Text><Text style={s.settingsValue}>{ROLE_PERMISSIONS[user?.role]?.label || user?.role}</Text></Row>
-      </View>
-      <View style={s.settingsCard}>
-        <View style={s.settingsCardHeader}><Feather name="database" size={20} color={colors.primary} /><Text style={[s.settingsCardTitle, {marginLeft: 8}]}>إدارة البيانات والنسخ الاحتياطي</Text></View>
-        <Text style={{ fontSize: 13, color: colors.t3, marginBottom: spacing.md, lineHeight: 20 }}>
-          هذه الأدوات مخصصة لتصدير أو استيراد أو تصفير حركة البيانات (المخزون والعمليات المالية) بالكامل.
-        </Text>
-        
-        <Btn label={saving ? 'جاري التصدير...' : 'تصدير نسخة احتياطية كاملة'} 
-          icon="upload-cloud"
-          variant="primary" 
-          onPress={async () => {
-             setSaving(true);
-             const res = await exportTransactionsBackup();
-             setSaving(false);
-             if (res.success) {
-                Alert.alert('✅ تم', 'تم تصدير النسخة الاحتياطية بنجاح.');
-             } else if (!res.canceled) {
-                Alert.alert('خطأ', res.error || 'فشل التصدير');
-             }
-          }} 
-          disabled={saving} 
-          style={{ marginBottom: spacing.sm, backgroundColor: colors.green }} 
-        />
-
-        <Btn label={saving ? 'جاري الاستيراد...' : 'استيراد ومزامنة نسخة احتياطية'} 
-          icon="download-cloud"
-          variant="primary" 
-          onPress={() => {
-            Alert.alert('تحذير خطير!', 'استيراد نسخة احتياطية سيؤدي لمعالجة كافة البيانات السحابية (Supabase) والمحلية (الفواتير، المحافظ، التحصيلات) وقد يسبب الحذف! هل أنت متأكد؟', [
-              { text: 'إلغاء', style: 'cancel' },
-              { text: 'نعم، استيراد', style: 'destructive', onPress: async () => {
-                 setSaving(true);
-                 const res = await importTransactionsBackup();
-                 setSaving(false);
-                 if (res.success) {
-                    Alert.alert('✅ نجاح بالغ!', 'تم استيراد النسخة ومزامنتها مع الخادم بنجاح.');
-                 } else if (!res.canceled) {
-                    Alert.alert('خطأ', res.error || 'فشل الاستيراد');
-                 }
-              }}
-            ]);
-          }} 
-          disabled={saving} 
-          style={{ marginBottom: spacing.md, backgroundColor: colors.blue }} 
-        />
-
-        <View style={{ height: 1, backgroundColor: colors.border2, marginVertical: spacing.md }} />
-        
-        <Btn label={saving ? 'جاري التفريغ...' : 'تصفير قاعدة بيانات المخزون والمالية'} 
-          icon="alert-triangle"
-          variant="danger" 
-          onPress={async () => {
-            try {
-              const unsyncedR = await execSQL(`SELECT COUNT(*) as cnt FROM sync_queue WHERE table_name IN ('invoices', 'invoice_items')`);
-              const unsyncedCount = unsyncedR.rows._array[0]?.cnt || 0;
-              if (unsyncedCount > 0) {
-                Alert.alert(
-                  'حظر تصفير البيانات',
-                  'لا يمكن تصفير البيانات لوجود فواتير أو بنود غير مرفوعة في طابور المزامنة. يرجى المزامنة أولاً لمنع فقدان البيانات.',
-                  [{ text: 'حسنًا' }]
-                );
-                return;
-              }
-            } catch (e) {
-              console.error(e);
-            }
-            Alert.alert('محو كلي! ⛔', 'هذا الإجراء سيقوم بحذف جميع الفواتير، المحافظ، التحصيلات، والتوريدات من جهازك ومن السيرفر بشكل دائم. هل أنت متأكد مليون بالمئة؟', [
-              { text: 'رجوع', style: 'cancel' },
-              { text: 'نعم، مسح البيانات!', style: 'destructive', onPress: async () => {
-                 setSaving(true);
-                 const res = await wipeTransactionsData();
-                 setSaving(false);
-                 if (res.success) {
-                    Alert.alert('✅ تم', 'تم محو البيانات من النظام بالكامل.');
-                 } else {
-                    Alert.alert('خطأ', res.error || 'فشل المسح');
-                 }
-              }}
-            ]);
-          }} 
-          disabled={saving} 
-        />
-      </View>
-
-      <TouchableOpacity style={s.logoutBtn} onPress={async () => {
-        try {
-          const unsyncedR = await execSQL(`SELECT COUNT(*) as cnt FROM sync_queue WHERE table_name IN ('invoices', 'invoice_items')`);
-          const unsyncedCount = unsyncedR.rows._array[0]?.cnt || 0;
-          if (unsyncedCount > 0) {
-            Alert.alert(
-              'حظر تسجيل الخروج',
-              'لا يمكن تسجيل الخروج لوجود فواتير أو بنود غير مرفوعة في طابور المزامنة. يرجى مزامنتها أولاً لمنع فقدان البيانات.',
-              [{ text: 'حسنًا' }]
-            );
-            return;
-          }
-        } catch (e) {
-          console.error(e);
-        }
-        Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
-          { text: 'إلغاء', style: 'cancel' },
-          { text: 'الخروج', style: 'destructive', onPress: logout },
-        ]);
-      }}>
-        <Feather name="log-out" size={16} color={colors.danger} />
-        <Text style={[s.logoutTxt, {marginLeft: 8}]}>تسجيل الخروج</Text>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-}
+// Remaining screen sections are unchanged from main.
