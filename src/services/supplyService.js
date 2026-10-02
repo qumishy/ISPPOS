@@ -1,10 +1,43 @@
 import { execSQL, addToSyncQueue, notifyDataChanged, uuidv4 } from './dbCore';
 import { getCached } from './cacheService';
 
-const getUserBasic = async (userId) => {
+const isActiveValue = (value) => !(
+  value === 0
+  || value === false
+  || String(value).trim().toLowerCase() === 'false'
+);
+
+const getUserBasic = async (userId, projectId = null) => {
   if (!userId) return null;
-  const r = await execSQL(`SELECT id, name, role FROM users WHERE id = ? LIMIT 1`, [userId]);
-  return r.rows._array?.[0] || null;
+  const userR = await execSQL(
+    `SELECT id, project_id, name, role, active FROM users WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  const user = userR.rows._array?.[0] || null;
+  if (!user) return null;
+  if (!projectId) return user;
+
+  const membershipR = await execSQL(
+    `SELECT id, role, active
+     FROM user_project_access
+     WHERE user_id = ? AND project_id = ?
+     LIMIT 1`,
+    [userId, projectId]
+  );
+  const membership = membershipR.rows._array?.[0] || null;
+  if (membership) {
+    if (!isActiveValue(membership.active)) return null;
+    return {
+      ...user,
+      role: membership.role,
+      active: membership.active,
+      project_id: projectId,
+      membership_id: membership.id,
+    };
+  }
+
+  if (String(user.project_id || '') !== String(projectId) || !isActiveValue(user.active)) return null;
+  return user;
 };
 
 const getSupplyContext = async (supplyId) => {
@@ -40,7 +73,6 @@ export const createLocalSupply = async (data, collectionIds = []) => {
   const id = uuidv4();
   const payload = { id, supply_number: data.supply_number || `SUP-${Math.floor(Math.random() * 90000) + 10000}`, user_id: data.user_id, agent_id: data.agent_id, amount: Number(data.amount || 0), notes: data.notes || '', type: data.type || 'deposit', status: data.status || 'pending', approved_at: data.approved_at, approval_notes: data.approval_notes, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, project_id: data.project_id, synced: 0 };
 
-  // Auto-inject phase_id from active phase if not provided
   if (!payload.phase_id) {
     try {
       const { getActivePhase } = require('./phaseService');
@@ -62,7 +94,7 @@ export const createLocalSupply = async (data, collectionIds = []) => {
   notifyDataChanged('supplies', payload);
 
   try {
-    const actor = await getUserBasic(payload.user_id);
+    const actor = await getUserBasic(payload.user_id, payload.project_id);
     if (actor?.role === 'cashier' || actor?.role === 'admin') {
       const { triggerAppNotification } = require('./NotificationService');
       await triggerAppNotification({
@@ -110,7 +142,7 @@ export const cancelLocalSupplyApproval = async (id, actorId = null) => {
 
   try {
     const supply = await getSupplyContext(id);
-    const actor = await getUserBasic(actorId || supply?.user_id);
+    const actor = await getUserBasic(actorId || supply?.user_id, supply?.project_id || null);
     const actorName = actor?.name || 'مستخدم النظام';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
@@ -146,7 +178,7 @@ export const rejectLocalSupply = async (id, actorId = null) => {
 
   try {
     const supply = await getSupplyContext(id);
-    const actor = await getUserBasic(actorId || supply?.user_id);
+    const actor = await getUserBasic(actorId || supply?.user_id, supply?.project_id || null);
     const actorName = actor?.name || 'مستخدم النظام';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
