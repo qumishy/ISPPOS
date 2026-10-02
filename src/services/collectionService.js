@@ -22,6 +22,12 @@ const toNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const isActiveValue = (value) => !(
+  value === 0
+  || value === false
+  || String(value).trim().toLowerCase() === 'false'
+);
+
 export const shouldHideCollectionFromAgentList = (collectionLike = {}, userRole) => {
   const normalizedRole = String(userRole || '').trim().toLowerCase();
   if (!['agent', 'مندوب'].includes(normalizedRole)) return false;
@@ -52,10 +58,37 @@ export const shouldHideCollectionFromAgentList = (collectionLike = {}, userRole)
   return paidAndApproved || hasFullApprovedCoverage;
 };
 
-const getUserBasic = async (userId) => {
+const getUserBasic = async (userId, projectId = null) => {
   if (!userId) return null;
-  const r = await execSQL(`SELECT id, name, role FROM users WHERE id = ? LIMIT 1`, [userId]);
-  return r.rows._array?.[0] || null;
+  const userR = await execSQL(
+    `SELECT id, project_id, name, role, active FROM users WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  const user = userR.rows._array?.[0] || null;
+  if (!user) return null;
+  if (!projectId) return user;
+
+  const membershipR = await execSQL(
+    `SELECT id, role, active
+     FROM user_project_access
+     WHERE user_id = ? AND project_id = ?
+     LIMIT 1`,
+    [userId, projectId]
+  );
+  const membership = membershipR.rows._array?.[0] || null;
+  if (membership) {
+    if (!isActiveValue(membership.active)) return null;
+    return {
+      ...user,
+      role: membership.role,
+      active: membership.active,
+      project_id: projectId,
+      membership_id: membership.id,
+    };
+  }
+
+  if (String(user.project_id || '') !== String(projectId) || !isActiveValue(user.active)) return null;
+  return user;
 };
 
 const getCollectionContext = async (collectionId) => {
@@ -185,10 +218,10 @@ export const getLocalCollections = async (filters = {}) => {
          )) as inv_approved,
       apr.name as approver_name
       FROM collections c
-      LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id
+      LEFT JOIN users u ON u.id = c.agent_id
       LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id
       LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${invoiceJoinClause}
-      LEFT JOIN users apr ON apr.id = c.approved_by AND apr.project_id = c.project_id
+      LEFT JOIN users apr ON apr.id = c.approved_by
       WHERE ${activeClause}`;
     const params = [];
     sql += ` AND c.project_id = ?`;
@@ -285,8 +318,6 @@ export const createLocalCollection = async (data) => {
     throw new Error('الفاتورة غير موجودة ضمن المشروع الحالي.');
   }
   if (invoice) {
-    // Block collection on any unresolved discount — covers both 'pending_discount_approval'
-    // (current) and 'pending' (legacy/migration) status values.
     const discountPending =
       Number(invoice.discount_requested_value || 0) > 0 &&
       !['approved', 'auto_approved', 'rejected', 'none', ''].includes(
@@ -332,7 +363,6 @@ export const createLocalCollection = async (data) => {
   const actorId = data.agent_id || data.user_id || data.collector_id || null;
   const payload = { id, collection_number, project_id: projectId, agent_id: actorId, pos_id: data.pos_id, invoice_id: data.invoice_id, amount: toNumber(data.amount), method: data.method || 'cash', reference_number: data.reference_number || '', status: hasCardReturns ? 'pending_card_return_approval' : (data.status || 'pending'), approved_at: data.approved_at, rejection_reason: data.rejection_reason, collection_date: data.collection_date || new Date().toISOString().slice(0, 10), active: data.active ?? 1, created_at: data.created_at || new Date().toISOString(), phase_id: data.phase_id || null, synced: 0 };
 
-  // Auto-inject phase_id from active phase if not provided
   if (!payload.phase_id) {
     try {
       const { getActivePhase } = require('./phaseService');
@@ -361,8 +391,6 @@ export const createLocalCollection = async (data) => {
         });
       }
       payload.collection_number = collection_number;
-      // A strict INSERT is required here: OR REPLACE can delete the collection
-      // that won a concurrent unique-number race instead of letting us retry.
       await execSQL(`INSERT INTO collections (id, project_id, collection_number, agent_id, pos_id, invoice_id, amount, method, reference_number, status, approved_at, rejection_reason, collection_date, active, created_at, phase_id, synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [payload.id, payload.project_id, payload.collection_number, payload.agent_id, payload.pos_id, payload.invoice_id, payload.amount, payload.method, payload.reference_number, payload.status, payload.approved_at, payload.rejection_reason, payload.collection_date, payload.active, payload.created_at, payload.phase_id, payload.synced]);
       break;
@@ -397,7 +425,7 @@ export const createLocalCollection = async (data) => {
   try { await saveNotificationHistory('💰 تحصيل جديد', `تم تسجيل تحصيل بمبلغ ${payload.amount} ر.ي بنجاح`, { project_id: payload.project_id }); } catch (e) { }
 
   try {
-    const actor = await getUserBasic(payload.agent_id);
+    const actor = await getUserBasic(payload.agent_id, payload.project_id);
     if (actor?.role === 'agent') {
       const posName = await getPOSName(payload.pos_id);
       const { sendRoleBasedPush } = require('./NotificationService');
@@ -476,14 +504,6 @@ export const createCollectionForCashInvoiceIfNeeded = async (invoice = {}, conte
 
 export const approveLocalCollection = async (id, notes = '', approvedBy = null) => {
   if (!approvedBy) throw new Error('تعذر التحقق من المستخدم المخول بالاعتماد.');
-  const actorR = await execSQL(
-    `SELECT id, role, active, project_id
-     FROM users
-     WHERE id = ?
-     LIMIT 1`,
-    [approvedBy]
-  );
-  const actor = actorR.rows._array?.[0] || null;
   const collectionR = await execSQL(
     `SELECT c.id, c.project_id, c.phase_id, c.invoice_id, c.pos_id, c.agent_id, c.status, c.active,
             i.discount_status, i.discount_requested_value
@@ -493,7 +513,11 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
     [id]
   );
   const collection = collectionR.rows._array?.[0] || null;
-  const actorRole = String(actor?.role || '').trim().toLowerCase();
+  if (!collection) throw new Error('التحصيل غير موجود.');
+
+  const actor = await getUserBasic(approvedBy, collection.project_id);
+  if (!actor) throw new Error('تعذر التحقق من المستخدم المخول بالاعتماد ضمن المشروع الحالي.');
+  const actorRole = String(actor.role || '').trim().toLowerCase();
   const hasAgentSelfApprovalPermission = actorRole === 'agent'
     ? await hasEffectivePermission(actor, AGENT_SELF_COLLECTION_APPROVAL_PERMISSION)
     : false;
@@ -505,13 +529,13 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
        AND (active = 1 OR active = 'true' OR active IS NULL)
        AND LOWER(TRIM(COALESCE(status, 'pending'))) NOT IN ('approved', 'rejected', 'cancelled', 'canceled', 'deleted')
      LIMIT 1`,
-    [id, collection?.project_id || '']
+    [id, collection.project_id]
   );
   const decision = getCollectionApprovalDecision({
     actor,
     collection,
     hasAgentSelfApprovalPermission,
-    hasPendingCardReturn: String(collection?.status || '').trim().toLowerCase() === 'pending_card_return_approval'
+    hasPendingCardReturn: String(collection.status || '').trim().toLowerCase() === 'pending_card_return_approval'
       || (pendingReturnsR.rows._array || []).length > 0,
     hasBlockingDiscount: hasUnresolvedCollectionDiscount(collection || {}),
   });
@@ -543,19 +567,27 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
        AND (
          EXISTS (
            SELECT 1
-           FROM users current_actor
-           WHERE current_actor.id = ?
-             AND current_actor.project_id = collections.project_id
-             AND (current_actor.active = 1 OR current_actor.active = 'true')
-             AND LOWER(TRIM(current_actor.role)) = ?
-         )
-         OR EXISTS (
-           SELECT 1
            FROM user_project_access current_actor_access
            WHERE current_actor_access.user_id = ?
              AND current_actor_access.project_id = collections.project_id
              AND (current_actor_access.active = 1 OR current_actor_access.active = 'true')
              AND LOWER(TRIM(current_actor_access.role)) = ?
+         )
+         OR (
+           NOT EXISTS (
+             SELECT 1
+             FROM user_project_access existing_actor_access
+             WHERE existing_actor_access.user_id = ?
+               AND existing_actor_access.project_id = collections.project_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM users current_actor
+             WHERE current_actor.id = ?
+               AND current_actor.project_id = collections.project_id
+               AND (current_actor.active = 1 OR current_actor.active = 'true')
+               AND LOWER(TRIM(current_actor.role)) = ?
+           )
          )
        )
        AND NOT EXISTS (
@@ -580,15 +612,16 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
       approvedBy,
       id,
       collection.project_id,
-      String(actor.role || '').trim().toLowerCase(),
+      actorRole,
       actor.id,
       actorRole,
       actor.id,
       AGENT_SELF_COLLECTION_APPROVAL_PERMISSION,
       actor.id,
-      String(actor.role || '').trim().toLowerCase(),
+      actorRole,
       actor.id,
-      String(actor.role || '').trim().toLowerCase(),
+      actor.id,
+      actorRole,
     ]
   );
   try {
@@ -612,20 +645,20 @@ export const approveLocalCollection = async (id, notes = '', approvedBy = null) 
   notifyDataChanged('invoices');
 
   try {
-    const actor = await getUserBasic(approvedBy);
-    if (actor?.role === 'cashier' || actor?.role === 'admin') {
+    const notificationActor = await getUserBasic(approvedBy, collection.project_id);
+    if (notificationActor?.role === 'cashier' || notificationActor?.role === 'admin') {
       const ctx = await getCollectionContext(id);
       const { triggerAppNotification } = require('./NotificationService');
       await triggerAppNotification({
         type: 'collection_approval',
-        actor: actor.name || 'محاسب',
+        actor: notificationActor.name || 'محاسب',
         amount: Number(ctx?.amount || 0),
         pos_name: ctx?.pos_name || 'نقطة غير محددة',
         reference_id: id,
-        projectId: ctx?.project_id || null,
+        projectId: ctx?.project_id || collection.project_id,
         targetRoles: ['admin'],
         targetUserIds: ctx?.agent_id ? [ctx.agent_id] : [],
-        excludeUserIds: [actor.id],
+        excludeUserIds: [notificationActor.id],
       });
     }
   } catch (e) { }
@@ -644,7 +677,7 @@ export const cancelLocalCollectionApproval = async (id, actorId = null) => {
 
   try {
     const ctx = await getCollectionContext(id);
-    const actor = await getUserBasic(actorId || ctx?.approved_by);
+    const actor = await getUserBasic(actorId || ctx?.approved_by, ctx?.project_id || null);
     const actorName = actor?.name || 'مستخدم النظام';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
@@ -680,7 +713,7 @@ export const rejectLocalCollection = async (id, reason = 'مرفوض') => {
 
   try {
     const ctx = await getCollectionContext(id);
-    const actor = await getUserBasic(ctx?.approved_by);
+    const actor = await getUserBasic(ctx?.approved_by, ctx?.project_id || null);
     const actorName = actor?.name || 'الإدارة';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
@@ -744,7 +777,7 @@ export const deleteLocalCollection = async (id, actorId = null) => {
 
   try {
     const ctx = await getCollectionContext(id);
-    const actor = await getUserBasic(actorId);
+    const actor = await getUserBasic(actorId, ctx?.project_id || collection.project_id || null);
     const actorName = actor?.name || 'مستخدم النظام';
     const { sendRoleBasedPush } = require('./NotificationService');
     await sendRoleBasedPush({
@@ -754,7 +787,7 @@ export const deleteLocalCollection = async (id, actorId = null) => {
       excludeUserIds: actor?.id ? [actor.id] : [],
       data: {
         route: 'CollectionsMain',
-        project_id: ctx?.project_id || null,
+        project_id: ctx?.project_id || collection.project_id || null,
         actor_id: actor?.id || null,
         actor_name: actorName,
         actor_role: actor?.role || null,
@@ -776,7 +809,7 @@ export const getCollectionsForSupply = async (agentId, dateFilter = null, approv
   console.log(`[CollectionsForSupply] load project_id=${projectId} phase_id=${phaseId || 'all'} agent_id=${agentId || 'all'}`);
   const cacheKey = `collections:supply:${agentId}:${dateFilter}:${approverId}:${phaseId}:${projectId}`;
   return getCached(cacheKey, async () => {
-    let sql = `SELECT c.*, p.name as pos_name, i.invoice_number, u.name as agent_name FROM collections c LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${ACTIVE_INVOICE_CLAUSE} LEFT JOIN users u ON u.id = c.agent_id AND u.project_id = c.project_id WHERE LOWER(TRIM(COALESCE(c.status, 'pending'))) = 'approved' AND c.supply_id IS NULL AND (c.active = 1 OR c.active = 'true')`;
+    let sql = `SELECT c.*, p.name as pos_name, i.invoice_number, u.name as agent_name FROM collections c LEFT JOIN pos_customers p ON p.id = c.pos_id AND p.project_id = c.project_id LEFT JOIN invoices i ON i.id = c.invoice_id AND i.project_id = c.project_id AND ${ACTIVE_INVOICE_CLAUSE} LEFT JOIN users u ON u.id = c.agent_id WHERE LOWER(TRIM(COALESCE(c.status, 'pending'))) = 'approved' AND c.supply_id IS NULL AND (c.active = 1 OR c.active = 'true')`;
     const params = [];
     sql += ` AND c.project_id = ?`;
     params.push(projectId);
