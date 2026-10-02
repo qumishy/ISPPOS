@@ -11,10 +11,43 @@ import {
 const loggedWalletBalanceWarnings = new Set();
 const ACTIVE_INVOICE_CLAUSE = (alias) => `(COALESCE(${alias}.is_deleted, 0) = 0 AND ${alias}.deleted_at IS NULL AND (${alias}.active = 1 OR ${alias}.active IS NULL OR ${alias}.active = 'true'))`;
 
-const getUserBasic = async (userId) => {
+const isActiveValue = (value) => !(
+  value === 0
+  || value === false
+  || String(value).trim().toLowerCase() === 'false'
+);
+
+const getUserBasic = async (userId, projectId = null) => {
   if (!userId) return null;
-  const r = await execSQL(`SELECT id, name, role FROM users WHERE id = ? LIMIT 1`, [userId]);
-  return r.rows._array?.[0] || null;
+  const userR = await execSQL(
+    `SELECT id, project_id, name, role, active FROM users WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  const user = userR.rows._array?.[0] || null;
+  if (!user) return null;
+  if (!projectId) return user;
+
+  const membershipR = await execSQL(
+    `SELECT id, role, active
+     FROM user_project_access
+     WHERE user_id = ? AND project_id = ?
+     LIMIT 1`,
+    [userId, projectId]
+  );
+  const membership = membershipR.rows._array?.[0] || null;
+  if (membership) {
+    if (!isActiveValue(membership.active)) return null;
+    return {
+      ...user,
+      role: membership.role,
+      active: membership.active,
+      project_id: projectId,
+      membership_id: membership.id,
+    };
+  }
+
+  if (String(user.project_id || '') !== String(projectId) || !isActiveValue(user.active)) return null;
+  return user;
 };
 
 export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) => {
@@ -41,9 +74,7 @@ export const getAgentWalletsDetailed = async (projectId = null, phaseId = null) 
 };
 
 export const transferAgentWalletToStorage = async (walletId, qtyToReturn = null, actorId = null) => {
-  // ── All DB operations inside ONE atomic transaction ──
   const result = await withTransaction(function* () {
-    // 1) Read wallet with current sold_cards
     const wR = yield {
       sql: `SELECT aw.*, COALESCE(aw.sold_cards, 0) as sold_cards_derived
         FROM agent_wallets aw
@@ -56,7 +87,6 @@ export const transferAgentWalletToStorage = async (walletId, qtyToReturn = null,
     if (remaining <= 0) throw new Error('لا توجد أوراق متبقية للاسترجاع');
     const returnQty = qtyToReturn ? Math.min(qtyToReturn, remaining) : remaining;
 
-    // 2) Update batch available_cards + sync_queue (inside same tx)
     if (wallet.batch_id) {
       yield {
         sql: `UPDATE batches SET available_cards = available_cards + ?, synced = 0 WHERE id = ?`,
@@ -74,7 +104,6 @@ export const transferAgentWalletToStorage = async (walletId, qtyToReturn = null,
       }
     }
 
-    // 3) Update wallet total_cards + sync_queue (inside same tx)
     const newTotal = wallet.total_cards - returnQty;
     yield {
       sql: `UPDATE agent_wallets SET total_cards = ?, synced = 0 WHERE id = ?`,
@@ -88,15 +117,14 @@ export const transferAgentWalletToStorage = async (walletId, qtyToReturn = null,
     return { returnedQty: returnQty, newTotal, wallet };
   });
 
-  // ── Notifications fire ONLY after successful transaction commit ──
   notifyDataChanged('agent_wallets');
   notifyDataChanged('batches');
   notifyDataChanged('sync_queue');
   await backfillOperationsFromSyncQueue(50);
 
   try {
-    const actor = await getUserBasic(actorId || result.wallet.issued_by);
-    const agent = await getUserBasic(result.wallet.agent_id);
+    const actor = await getUserBasic(actorId || result.wallet.issued_by, result.wallet.project_id || null);
+    const agent = await getUserBasic(result.wallet.agent_id, result.wallet.project_id || null);
     const categoryInfo = await execSQL(`SELECT name FROM card_categories WHERE id=? LIMIT 1`, [result.wallet.category_id]);
     const catName = categoryInfo.rows._array[0]?.name || 'كروت';
     const actorName = actor?.name || 'مستخدم النظام';
@@ -270,21 +298,17 @@ export const createLocalAgentWallet = async (data) => {
   const id = uuidv4();
   const payload = { id, agent_id: data.agent_id, batch_id: data.batch_id, category_id: data.category_id, total_cards: data.total_cards, sold_cards: 0, issued_by: data.issued_by, notes: data.notes || '', created_at: new Date().toISOString(), synced: 0, project_id: data.project_id, phase_id: data.phase_id };
 
-  // ── All DB operations inside ONE atomic transaction ──
   await withTransaction(function* () {
-    // 1) Insert wallet
     yield {
       sql: `INSERT INTO agent_wallets (id, agent_id, batch_id, category_id, total_cards, sold_cards, issued_by, notes, created_at, synced, project_id, phase_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [payload.id, payload.agent_id, payload.batch_id, payload.category_id, payload.total_cards, payload.sold_cards, payload.issued_by, payload.notes, payload.created_at, payload.synced, payload.project_id, payload.phase_id]
     };
 
-    // 2) Sync queue entry for wallet (inside same tx)
     yield {
       sql: `INSERT INTO sync_queue (table_name, operation, payload, record_id, attempts, created_at) VALUES (?, ?, ?, ?, 0, datetime('now'))`,
       params: ['agent_wallets', 'INSERT', JSON.stringify(payload), id]
     };
 
-    // 3) Deduct batch available_cards + sync_queue (inside same tx)
     const batchQuery = yield {
       sql: `SELECT available_cards FROM batches WHERE id = ?`,
       params: [payload.batch_id]
@@ -302,15 +326,14 @@ export const createLocalAgentWallet = async (data) => {
     }
   });
 
-  // ── Notifications fire ONLY after successful transaction commit ──
   notifyDataChanged('agent_wallets');
   notifyDataChanged('batches');
   notifyDataChanged('sync_queue');
   await backfillOperationsFromSyncQueue(50);
 
   try {
-    const issuer = await getUserBasic(payload.issued_by);
-    const assignee = await getUserBasic(payload.agent_id);
+    const issuer = await getUserBasic(payload.issued_by, payload.project_id || null);
+    const assignee = await getUserBasic(payload.agent_id, payload.project_id || null);
     const categoryInfo = await execSQL(`SELECT name FROM card_categories WHERE id=? LIMIT 1`, [payload.category_id]);
     const catName = categoryInfo.rows._array[0]?.name || 'كروت';
     const issuerName = issuer?.name || 'الإدارة';
@@ -421,7 +444,6 @@ export const createOnlineAdminAgentWallet = async (data) => {
 };
 
 export const updateLocalWalletCards = async (walletId, qtySold) => {
-  // DO NOT USE – wallet updates must follow invoice_items flow.
   throw new Error('updateLocalWalletCards is deprecated and blocked. DO NOT USE – wallet updates must follow invoice_items flow.');
 };
 
