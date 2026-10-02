@@ -7,10 +7,16 @@ on:
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: android-apk-main
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     env:
       CI: true
@@ -20,44 +26,86 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Cancel superseded builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_RUN_ID="${{ github.run_id }}"
+          for RUN_ID in $(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=main&per_page=100" \
+            --jq ".workflow_runs[] | select((.status == \"queued\" or .status == \"in_progress\") and .id != ${CURRENT_RUN_ID} and .path == \".github/workflows/build.yml\") | .id"); do
+            echo "Cancelling superseded run ${RUN_ID}"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/cancel" >/dev/null 2>&1 || true
+          done
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'gradle'
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Ensure Android NDK 25.1.8937393
+        shell: bash
+        run: |
+          set -e
+          NDK_VERSION="25.1.8937393"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+
+          if [ -f "${SDK_ROOT}/ndk/${NDK_VERSION}/source.properties" ]; then
+            echo "NDK ${NDK_VERSION} is already installed."
+            exit 0
+          fi
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          for ATTEMPT in 1 2 3; do
+            echo "Installing NDK ${NDK_VERSION} (attempt ${ATTEMPT}/3)..."
+            rm -rf "${SDK_ROOT}/ndk/${NDK_VERSION}" "${SDK_ROOT}/.temp" || true
+            if sdkmanager --install "ndk;${NDK_VERSION}"; then
+              if [ -f "${SDK_ROOT}/ndk/${NDK_VERSION}/source.properties" ]; then
+                echo "NDK ${NDK_VERSION} installed successfully."
+                exit 0
+              fi
+            fi
+            sleep $((ATTEMPT * 10))
+          done
+
+          echo "Failed to install NDK ${NDK_VERSION} after 3 attempts."
+          exit 1
+
       - name: Generate Android project
-        run: npx expo prebuild --platform android --clean --non-interactive
+        run: npx expo prebuild --platform android --clean
 
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: android/app/build/outputs/apk/release/*.apk
-          retention-days: 7
+          retention-days: 1
 
       - name: Extract Version
         id: app_version
         run: |
           VERSION=$(grep -oP '"version": "\K[^"]+' app.json)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "tag_name=v$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -70,3 +118,15 @@ jobs:
             - تم إضافة حماية لتسجيل الخروج ومسح البيانات في حال وجود فواتير معلقة للمزامنة.
           files: android/app/build/outputs/apk/release/*.apk
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keep only latest successful build run
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_RUN_ID="${{ github.run_id }}"
+          for RUN_ID in $(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=main&per_page=100" \
+            --jq ".workflow_runs[] | select(.id != ${CURRENT_RUN_ID} and .path == \".github/workflows/build.yml\") | .id"); do
+            echo "Deleting old workflow run ${RUN_ID}"
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" >/dev/null 2>&1 || true
+          done
